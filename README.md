@@ -1,4 +1,4 @@
-# caldav-companion
+# swift-mcp-app
 
 [caldav](https://github.com/gigun-dev/caldav)(自作 CalDAV サーバー)の **Swift ネイティブ
 コンパニオンアプリ**。授業の Swift アプリ課題を起点に、caldav の MCP 入口第3号
