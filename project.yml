@@ -1,0 +1,54 @@
+# XcodeGen によるアプリターゲット(MCPHost)定義。
+#
+# なぜ XcodeGen を採用するか:
+# .xcodeproj は XML/plist の巨大な生成物で、複数人・複数セッションでの編集が
+# コンフリクトしやすく差分レビューにも向かない。project.yml のような宣言的な
+# テキスト定義から `xcodegen generate` で毎回作り直せば、.xcodeproj 自体は
+# git 管理外(.gitignore)にでき、レビューすべき差分はこのファイルだけになる
+# (docs/next-directions.md 2026-07-15 「雛形: XcodeGen + ローカル SwiftPM」の決定)。
+#
+# ロジック層(Kernel/Services)はここではなくルートの Package.swift 側で
+# ローカル SwiftPM パッケージとして定義し、下記 dependencies で `path: .` として
+# 取り込む。理由は Package.swift 側コメントを参照(swift test を Xcode なしで回すため)。
+name: MCPHost
+
+options:
+  # Xcode の自動生成する Info.plist をやめ、targets 以下の設定だけで完結させる方が
+  # XcodeGen の差分がシンプルになる(GENERATE_INFOPLIST_FILE を使う)。
+  bundleIdPrefix: dev.gigun
+
+packages:
+  MCPHostKernel:
+    path: .
+
+targets:
+  MCPHost:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources/Features
+    dependencies:
+      # Kernel は Features から直接使わない可能性もあるが、TodosViewModel /
+      # EventsViewModel 相当の描画ロジックを Features が Kernel の型で受け取る
+      # 設計(CLAUDE.md)のため、雛形段階からリンクしておく。
+      - package: MCPHostKernel
+        product: Kernel
+      - package: MCPHostKernel
+        product: Services
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.gigun.mcphost
+        PRODUCT_NAME: MCPHost
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1" # iPhone のみ(iPad 対応は授業要件確定後に判断)
+        # 2026-07-15: 当初は「個人チームに紐付けない」方針で CODE_SIGNING_ALLOWED: NO に
+        # していたが、ユーザーが Xcode で Team を設定したため自動署名に切り替え
+        # (P1 の OAuth/ASWebAuthenticationSession は実機検証が本命のため)。
+        # Team ID は Xcode が .xcodeproj に書いた値を写経 — .xcodeproj は xcodegen で
+        # 毎回作り直されるため、ここに書かないと generate のたびに設定が消える。
+        DEVELOPMENT_TEAM: KK42DL23GH
+        CODE_SIGN_STYLE: Automatic

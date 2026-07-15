@@ -5,3 +5,8 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .swiftpm/
+
+# XcodeGen の生成物。project.yml が正で .xcodeproj は使い捨て(`make gen` で再生成)。
+# XML/plist の巨大ファイルを git 管理下に置くと差分レビューが困難になるため除外する
+# (Makefile / project.yml のコメント参照)。
+*.xcodeproj
