@@ -10,7 +10,9 @@ import SwiftUI
 struct MCPHostApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            // P0 の ContentView(プレースホルダ)は P1 で ConnectionView に置き換えた
+            // (docs/next-directions.md P1: 「接続(OAuth+tools/list)」)。
+            ConnectionView()
         }
     }
 }

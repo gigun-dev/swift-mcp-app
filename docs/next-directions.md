@@ -35,6 +35,14 @@ Swift/iOS のオープンな MCP Apps ホストは存在しない(Claude iOS は
 2. **P1: 接続(MVP フェーズ1)** — OAuth 2.1(ASWebAuthenticationSession +
    swift-sdk の認可フロー)→ 本番 /mcp へ接続 → tools/list を画面表示。
    「繋がった」が最初のマイルストーン。トークンは Keychain。
+   > **2026-07-15 更新:** 実装完了・**残るはユーザー実機での OAuth 実地検証のみ**。
+   > 設計変更: カスタムスキームでなく **loopback リダイレクト**(swift-sdk の
+   > `OAuthURLValidator` が https/loopback しか許可しないため。NWListener の一時ポート +
+   > `ASWebAuthenticationSession(callbackURLScheme: nil)` = アプリ内シートのまま完結、
+   > CFBundleURLTypes 不要)。caldav 側は workers-oauth-provider が RFC 8252 loopback の
+   > ポート可変マッチを実装済みと裏取り済み(main レビューで確認)。
+   > 実機検証の観点: シート表示→caldav ログイン→シート自動クローズ→tools/list 表示、
+   > 2回目起動はブラウザなしで接続(Keychain 再利用)。失敗時は画面の赤字エラーを報告。
 3. **P2: MCP Apps ホストスパイク(勝負どころ・判断ゲート)** — list-todos の `ui://` HTML を
    WKWebView で描画し、カード内操作 → tools/call → 再描画が往復するまで。
    ext-apps の App は postMessage ベースの JSON-RPC なので原理上成立するはずだが未踏。

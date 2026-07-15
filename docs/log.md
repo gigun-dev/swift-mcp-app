@@ -25,3 +25,16 @@
   swift-sdk 0.12.1。make check green・シミュレータビルド成功。
   注意点: swift-sdk の product 参照はパッケージ識別子 "swift-sdk"(URL 末尾)で指定、
   CODE_SIGNING_ALLOWED=NO(実機が要る時点で見直し)。
+
+## 2026-07-15 P1 実装(OAuth 2.1 + tools/list)
+
+- implementer 委譲で実装: KeychainTokenStorage(TokenStorage の Keychain 実装・
+  account=サーバー URL で複数サーバーの芽)、MCPConnection(caldav 非依存の接続層)、
+  LoopbackOAuthAuthorizationDelegate(NWListener + ASWebAuthenticationSession)、
+  ConnectionView/ViewModel(素朴な開発用画面)。
+- 設計変更: swift-sdk の OAuthURLValidator がカスタムスキームを弾くため
+  loopback リダイレクトに変更(詳細は delegate 冒頭コメント)。
+- main レビュー: caldav 側 workers-oauth-provider の RFC 8252 loopback ポート可変マッチを
+  node_modules の実装で裏取り。defer による connection/listener の早期 cancel が
+  200 応答の送信と競合しハングしうる問題を発見・修正(cancel を send 完了ハンドラへ移動)。
+- make check / make app / make device すべて green。実機での OAuth 実地検証はユーザー待ち。
