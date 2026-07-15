@@ -5,16 +5,18 @@
 > `> **YYYY-MM-DD 更新:** ...` の引用ブロックを積層する。大きな節目で全体を棚卸しする。
 > 時系列の生記録は docs/log.md に追記(追記専用アーカイブ)。運用は caldav 側と同一。
 
-**現在地(2026-07-15)**: コア価値を初版の「契約のネイティブ SwiftUI 描画(路線A)」から
-**「iOS 汎用 MCP Apps ホスト(路線B)」に転換**(ユーザー確定)。理由: caldav 側 E-2 が
-本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI(ext-apps 製・
-計約7,500行)がサーバー側に存在する今、ネイティブ再描画は二重実装になる。Swift 側の
-最大の付加価値は「モバイルで MCP Apps を動かすホスト基盤」(≒ claude.ai モバイルの自作版。
-iOS ネイティブの汎用 MCP Apps ホストは前例がほぼ無い)。**コードは未着手**。
-~~既存の Swift/iOS MCP Apps ホスト事例と ext-apps ブリッジプロトコルのリサーチを実施中~~ ✅
-→ **リサーチ完了(下記「MCP Apps ホスト実装の参照スタック」節)。要旨:
-Swift/iOS のオープンな MCP Apps ホストは存在しない(Claude iOS はクローズド)—
-本アプリが初のオープン実装になる。移植元は公式 ext-apps リポジトリ一式。**
+**現在地(2026-07-16)**: コア価値は「**iOS 汎用 MCP Apps ホスト(路線B)**」。
+**P0〜P2 完了 ✅ — 路線B は技術的に確立した。** caldav 本番の todos カードを
+WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 complete → tools/call →
+再描画の往復まで実機/シミュレータで実証済み(判断ゲート全項目 YES)。
+**次は P3(チャット + LLM tool-use ループ)**。
+
+転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
+caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI
+(ext-apps 製・計約7,500行)がサーバー側に存在する今、ネイティブ再描画は二重実装になる。
+Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホスト基盤」(≒ claude.ai モバイルの
+自作版)。リサーチで **Swift/iOS のオープンな MCP Apps ホストは存在しない(Claude iOS は
+クローズド)= 本アプリが初のオープン実装**と判明(下記「参照スタック」節・移植元は公式 ext-apps)。
 
 **確定事項(2026-07-15)**:
 - 個人開発。評価観点は重視しない。提出は repo + プレゼン想定。
@@ -49,19 +51,27 @@ Swift/iOS のオープンな MCP Apps ホストは存在しない(Claude iOS は
    > docs/log.md 2026-07-15 参照。残タスク: 実機での2回目起動(Keychain 再利用)確認のみ。
    > 副産物: MCPHOST_AUTOCONNECT=1 の自動接続 + unified log 計装で E2E をエージェントが
    > 自走検証できるようになった(以後の検証はこの経路を使う)。
-3. **P2: MCP Apps ホストスパイク(勝負どころ・判断ゲート)** — list-todos の `ui://` HTML を
-   WKWebView で描画し、カード内操作 → tools/call → 再描画が往復するまで。
-   ext-apps の App は postMessage ベースの JSON-RPC なので原理上成立するはずだが未踏。
-   **通れば路線B確定、通らなければ路線A(ネイティブ契約描画)へ撤退**。
-   > **2026-07-15 更新:** 設計完了(docs/design/01-apps-bridge.md)。
-   > **S1(Kernel 型)+ S2(postMessage 疎通)完了 ✅ — 最大リスク消滅・路線B確定。**
-   > main が simctl で3仮説(parent===window / isTrusted 判別 / loopback 無し)を
-   > 自己検証。caldav カード改変ゼロで成立。残: S3(状態機械)→S4(実カード描画)→
-   > S5(complete 往復)→S6(片付け: ContentRuleList/非永続ストア/size-changed)。
-4. **P3: チャット(MVP フェーズ3)** — Anthropic API の tool-use ループ
+3. ~~**P2: MCP Apps ホストスパイク(勝負どころ・判断ゲート)** — list-todos の `ui://` HTML を
+   WKWebView で描画し、カード内操作 → tools/call → 再描画が往復するまで。~~ ✅
+   > **2026-07-15 更新:** 設計完了(docs/design/01-apps-bridge.md)。S1〜S6 完了・
+   > **判断ゲート全項目 YES で路線B確定**。実装は Kernel/AppsProtocol(JSON-RPC 封筒・
+   > ui/* 型・JSONValue)、Services/AppsBridge(WebViewTransport の isTrusted インターセプタ・
+   > AppsBridgeSession 状態機械・AppsServerProxy 素通し)、Features/AppCard + Spike。
+   > 核心: WKWebView 主フレームで `window.parent === window` + `isTrusted` 方向判別 +
+   > `stopImmediatePropagation` で、**caldav カードを1バイトも改変せず**双方向 postMessage 成立。
+   > swift-sdk の落とし穴: callTool タプル版は structuredContent を捨てるため
+   > RequestContext オーバーロードを使用。UX 修正済み(ダブルタップズーム無効・カード全画面)。
+   > **未対応(P3 送り)**: focus zoom は caldav 側の文字サイズ改善で(docs/caldav-feedback.md)。
+   > size-changed 追従(チャット内インラインカード)/ CSP meta 注入 / open-link 配線 /
+   > world 分離 / AppsBridgeSession の protocol 抽象化テスト は P3 の堅牢化で。
+4. **P3: チャット(MVP フェーズ3)← 次はここ** — Anthropic API の tool-use ループ
    (tools/list → ツール定義変換 → tools/call)。ツール結果の `ui://` カードを
-   チャット内にインライン描画。BYOK(設定画面+Keychain)。
+   チャット内にインライン描画(**AppsBridgeSession / AppCardView は P2 で完成済み・再利用**。
+   ここで size-changed 追従を活かした複数カードのインライン配置を実装)。BYOK(設定画面+Keychain)。
    LLM エンドポイントは Services/LLM に抽象(SaaS 化時にプロキシへ差し替え)。
+   接続確立は P1 の MCPConnection / LoopbackOAuth… を再利用(TodosCardSpikeView が実例)。
+   focus refetch(refresh-todos, `visibility:["app"]`)を LLM ツール一覧から除外する
+   確認(apps.mdx:400 の MUST)は**このフェーズで必須**(P2 スパイクは LLM 未配線だった)。
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。
@@ -127,13 +137,30 @@ Claude iOS は対応済みだがクローズド)→ 本アプリが初のオー�
   (DCR `token_endpoint_auth_method:"none"` / Accept: text/event-stream)
 - UI 文法(路線A撤退時・P4a 用): caldav `docs/modeling/ui-mockups/`(todos-refined-v3 / agenda-v1)
 - SaaS 構成方針(LLM プロキシ・課金): caldav docs/next-directions.md「Swift コンパニオン」節
-- caldav 側依存: **R-6(OAuth scope 分離)** — 第三者クライアント受け入れの前提整備。
-  caldav 側で優先度上昇済み。並行して進む前提(P1 は現行認可でも繋がる)。
+- caldav 側依存: **R-6(OAuth scope 分離)** — 済(2026-07-15 caldav 側でクローズ済みと確認。
+  現状の接続は scope 未指定で通る。write scope の明示対応は将来)。
+- **caldav へのフィードバック**: `docs/caldav-feedback.md`(ネイティブホストで表面化した
+  caldav 側対処事項。focus zoom の元凶 = `.d-notes` 13px / complete の視覚フィードバック)。
+
+## P2 で確立した実装(P3 以降で再利用する土台)
+
+- **Kernel/AppsProtocol**: JSON-RPC 封筒 / ui/* メッセージ型 / JSONValue(caldav 非依存・純粋)。
+- **Services/AppsBridge**: WebViewTransport(isTrusted インターセプタ)/ AppsBridgeSession
+  (状態機械・outbox・MainActor 隔離)/ AppsServerProxy(_meta.ui 解決・素通し・HTML キャッシュ)。
+- **Features/AppCard**: AppCardView(サンドボックス WKWebView)/ AppCardWebViewFactory
+  (ContentRuleList 全遮断・非永続ストア・ダブルタップズーム無効)。
+- **Features/Spike**: TransportSpikeView(MCPHOST_SPIKE=transport)/ TodosCardSpikeView
+  (=todos。P1 接続再利用→カード1枚の実例)。P3 のチャットはこの配線を複数カードに一般化する。
+- **検証基盤**: MCPHOST_AUTOCONNECT=1 / MCPHOST_SPIKE=<name> の起動切替 + unified log
+  (subsystem `dev.gigun.mcphost`)。エージェントが simctl だけで E2E 自走検証できる。
 
 ## 据え置き・起票のみ
 
+- **P3 の堅牢化(P2 で意図的に送りにした項目)**: size-changed 追従を活かしたチャット内
+  インラインカード / CSP `<meta>` 注入(注入純関数の置き場は Kernel に確保済み)/
+  `ui/open-link` の Features 側ハンドラ配線 / WKContentWorld 分離 / AppsBridgeSession の
+  protocol 抽象化による状態遷移テスト / MCP.Value 経由のロスレス性を send() 直叩きに寄せる判断。
 - LLM プロキシ(Workers)+ メータリング/課金 — SaaS 化フェーズ(授業スコープ外)
-- caldav 側 R-6(OAuth scope 分離)後の write scope 対応
 - 月/週ビュー(アジェンダの粒度追加)— 画面が広い Swift ではカードより自由度が高い
 - Push/ローカル通知(サーバー VALARM との関係整理が先)
 - P4a(ネイティブ二方式描画)/ P4b(他 MCP サーバーデモ)— どちらを取るかは P3 後に判断
