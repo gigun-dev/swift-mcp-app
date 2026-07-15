@@ -105,6 +105,17 @@ window.addEventListener("message", (event) => {
   で WebKit のネイティブ直列化に載せる。`__appsBridgeDeliver(jsonString)` は
   documentStart スクリプト内で `JSON.parse` → `dispatchEvent` する配送関数として定義。
 
+> **2026-07-15 更新(S2 実証済み ✅):** この節の3仮説を iPhone 17 シミュレータ
+> (iOS 26.4)で実機確認した。`Sources/Services/AppsBridge/WebViewTransport.swift` の
+> documentStart インターセプタ + `callAsyncJavaScript` 配送 + 弱参照メッセージハンドラで、
+> View 改変ゼロのミニ HTML(`Sources/Features/Spike/TransportSpikeView.swift`)相手に:
+> (1) `parent===window` で View の `window.parent.postMessage` が Swift の
+> WKScriptMessageHandler に到達(「View→Host 受信: method=echo」)、
+> (2) Swift からの合成 MessageEvent 配送が View に届き `isTrusted=false` で受信、
+> (3) `stopImmediatePropagation` により View 自身の echo が自分のリスナーに返らない
+> (「self-loopback: none」)—— の3点すべてが可視化された。**設計との食い違いなし**
+> (概念コードがそのまま `.page` world で動いた)。起動は `MCPHOST_SPIKE=transport`。
+
 ### スパイクでの世界(WKContentWorld)の扱い
 
 理想は インターセプタ+`messageHandlers.appsBridge` を専用 `WKContentWorld` に置き、

@@ -10,6 +10,18 @@ import SwiftUI
 struct MCPHostApp: App {
     var body: some Scene {
         WindowGroup {
+            rootView
+        }
+    }
+
+    /// 起動環境変数でルート画面を切り替える。通常は接続画面、MCPHOST_SPIKE=transport のときは
+    /// S2 の transport 疎通ハーネス(TransportSpikeView)を出す。P1 の MCPHOST_AUTOCONNECT と
+    /// 同じ流儀で、simctl launch --setenv だけでエージェントが検証画面へ直行できるようにする。
+    @ViewBuilder
+    private var rootView: some View {
+        if ProcessInfo.processInfo.environment["MCPHOST_SPIKE"] == "transport" {
+            TransportSpikeView()
+        } else {
             // P0 の ContentView(プレースホルダ)は P1 で ConnectionView に置き換えた
             // (docs/next-directions.md P1: 「接続(OAuth+tools/list)」)。
             ConnectionView()

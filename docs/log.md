@@ -75,3 +75,19 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 起動になっていたのを修正。ConnectionView に onAppear 自動接続フック。
 
 **P1 完了**: 実機・シミュレータ両方で OAuth(loopback)→ tools/list 表示を確認。
+
+## 2026-07-15 P2 スパイク S1+S2: postMessage ブリッジ疎通 実証 ✅
+
+- S1(Kernel/AppsProtocol): JSONValue(自前・MCP.Value 不採用=Kernel 依存ゼロ制約 +
+  Value の data URL 自動変換が素通しを弱めるため)、JSON-RPC 封筒、ui/* 最小集合、
+  IncomingViewMessage 2レーン。swift-testing 8ケース(structuredContent の未知フィールド
+  ロスレス保存を明示テスト)。全16テスト green。
+- S2(Services/AppsBridge/WebViewTransport + Features/Spike): 設計 §1 の
+  「isTrusted 判別インターセプタ(documentStart 注入)」実装。MCPHOST_SPIKE=transport で
+  疎通確認画面。**main が自分で simctl 検証**: スクショで3仮説すべて可視を確認。
+  1. View→Host 受信 method=echo(parent===window)
+  2. mini view に received isTrusted=false(合成 MessageEvent 配送)
+  3. self-loopback: none(stopImmediatePropagation の登録順)
+  caldav カードを1バイトも改変せず素の HTML で成立。設計文書と食い違いゼロ。
+- **判断ゲート: 路線B続行**(最大リスク消滅)。S3(状態機械)→S4(実カード)→S5(往復)へ。
+- 申し送り: actor AppsBridgeSession 化時、WKWebView 操作の MainActor 隔離を S3 で設計に織り込む。
