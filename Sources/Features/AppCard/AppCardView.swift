@@ -84,10 +84,17 @@ enum AppCardWebViewFactory {
 
     /// transport の configuration(documentStart インターセプタ入り)にサンドボックス設定を足し、
     /// HTML をロードした WKWebView を返す。
+    /// - Parameter scrollEnabled: WKWebView 自身の内部スクロールを許すか。
+    ///   本番のチャット内インラインカード(P3)は高さを size-changed で内容ぴったりに
+    ///   追従させるので false(内部スクロール不要・設計 §5)。一方スパイクの単カード
+    ///   全画面デモは、カードを画面いっぱいに広げて内容をスクロールで見せたいので true。
+    ///   (size-changed 追従は「html を max-content で計測した高さ」を返すが、caldav カードの
+    ///    ように状態でコンテンツが伸びる場合、単カードデモでは固定枠+内部スクロールの方が素直。)
     static func make(
         transport: WebViewTransport,
         html: String,
-        coordinator: AppCardWebCoordinator
+        coordinator: AppCardWebCoordinator,
+        scrollEnabled: Bool = false
     ) async -> WKWebView {
         // インターセプタ + 弱参照ハンドラを含む config(WebViewTransport が組む)を土台にする。
         let configuration = transport.makeConfiguration()
@@ -108,8 +115,20 @@ enum AppCardWebViewFactory {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
-        // 高さは常に内容ぴったりに追従するので内部スクロールは不要(設計 §5)。
-        webView.scrollView.isScrollEnabled = false
+        // 内部スクロール可否(引数)。インラインカードは高さ追従で不要、スパイクは可(上記)。
+        webView.scrollView.isScrollEnabled = scrollEnabled
+
+        // 【重要・タップ遅延の除去】WebKit はタップ後 ~350ms、ダブルタップ(ズーム)の
+        // 可能性を待ってから click を合成する。この遅延で「押しても反応しない」と感じて
+        // ユーザーが複数回タップしてしまう症状が出た(2026-07-15 実機/シミュレータ観測:
+        // 1タップ=1 update-todo は届くが視覚反応が鈍く3回押しになる。docs/log.md)。
+        // ズームを禁止するとダブルタップ判定が不要になり WebKit は単発 click を即発火する。
+        // MCP App カードは固定幅コンテナ前提でズーム不要なので、ホスト側で無効化してよい
+        // (View の HTML には触らない — サンドボックス外殻のジェスチャ制御はホストの領分)。
+        webView.scrollView.minimumZoomScale = 1
+        webView.scrollView.maximumZoomScale = 1
+        webView.scrollView.bouncesZoom = false
+        disableDoubleTapGestures(in: webView.scrollView)
         // 背景を透過にしてカードの角丸/枠と馴染ませる(prefersBorder は P3)。
         webView.isOpaque = false
         webView.backgroundColor = .clear
@@ -119,6 +138,18 @@ enum AppCardWebViewFactory {
         // baseURL: nil = opaque origin(設計 §4)。postMessage は targetOrigin "*" なので通る。
         webView.loadHTMLString(html, baseURL: nil)
         return webView
+    }
+
+    /// WKWebView(scrollView)に付いている「2回タップ要求」のジェスチャ認識器を無効化する。
+    /// これがあると WebKit は単発タップの click 合成を遅延させる(上記コメント参照)。
+    /// zoom を 1:1 固定にしても認識器自体は残ることがあるため、明示的に潰す。
+    /// iOS のバージョンで認識器構成が変わりうるので「見つかったものを無効化」の防御的実装。
+    private static func disableDoubleTapGestures(in scrollView: UIScrollView) {
+        for recognizer in scrollView.gestureRecognizers ?? [] {
+            if let tap = recognizer as? UITapGestureRecognizer, tap.numberOfTapsRequired == 2 {
+                tap.isEnabled = false
+            }
+        }
     }
 
     /// ".*" を block する全遮断ルール1本をコンパイルする(設計 §6)。

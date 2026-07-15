@@ -86,21 +86,32 @@ final class TodosCardSpikeViewModel: ObservableObject {
             self.transport = transport
             let coordinator = AppCardWebCoordinator()
             self.coordinator = coordinator
+            // スパイクは単カード全画面デモなので WKWebView の内部スクロールを許す
+            // (カードを画面いっぱいに広げ、伸びるコンテンツはスクロールで見せる)。
             let webView = await AppCardWebViewFactory.make(
-                transport: transport, html: html, coordinator: coordinator)
+                transport: transport, html: html, coordinator: coordinator, scrollEnabled: true)
 
             // --- 5. セッション起動(initialize 握手)-----------------------------------
             // onSizeChanged: 高さを cardState へ(300ms ease-out・上限 600・設計 §5)。
             let cardState = self.cardState
+            // カード幅は画面幅からカードの左右パディング(各16pt)を引いた実測値を渡す。
+            // 【経緯】当初は 360 固定にしていたが、iPhone 17(≈393pt)では左右に余白が出て
+            // カードが不必要に狭く見えた(2026-07-15 指摘)。View に渡す containerDimensions.width を
+            // 実際の描画幅に合わせると、caldav カードがその幅にレイアウトして画面を活かす。
+            // 本番のチャット内インラインカード幅は P3 で親 View の実測幅を流し込む(設計 §5)。
+            let screenWidth = await MainActor.run { UIScreen.main.bounds.width }
+            let cardWidth = screenWidth - 32
             let session = AppsBridgeSession(
                 transport: transport,
                 proxy: proxy,
-                containerWidth: 360,   // モバイルのコンパクトカード幅(設計 §5 の 300–360px 指針)
-                maxHeight: 600,
+                containerWidth: Double(cardWidth),
+                // スパイクは単カードで画面を占有できるので上限を高めに(チャット内の 600 上限は P3)。
+                maxHeight: 5000,
                 onSizeChanged: { height in
                     await MainActor.run {
                         withAnimation(.easeOut(duration: 0.3)) {
-                            cardState.desiredHeight = min(CGFloat(height), 600)
+                            // スパイクは単カード占有なので高さはほぼ素通し(上限 5000 = 実質無制限)。
+                            cardState.desiredHeight = min(CGFloat(height), 5000)
                         }
                     }
                 })
@@ -161,15 +172,16 @@ struct TodosCardSpikeView: View {
                 Spacer()
 
             case let .card(webView):
-                // カードは幅ホスト固定・高さ size-changed 追従(設計 §5)。角丸+枠で「カード」らしく。
+                // スパイクは単カード全画面デモ。カードを利用可能領域いっぱいに広げ、
+                // 内容は WKWebView の内部スクロールで見せる(size-changed 追従はやめる —
+                // それは P3 のチャット内インラインカード向けの挙動で、単カード占有には
+                // 固定枠+内部スクロールの方が素直。2026-07-15 の「縦幅足りない」への対応)。
                 AppCardView(webView: webView)
-                    .frame(height: viewModel.cardState.desiredHeight)
-                    .frame(maxWidth: 360)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(white: 0.98))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
-                    .padding()
-                Spacer()
+                    .padding(.horizontal)
 
             case let .failed(message):
                 Text(message)

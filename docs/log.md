@@ -107,3 +107,17 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   complete 往復(update-todo ×32 全応答)/ 全遮断下で動作 / size-changed 追従(337→386)。
   caldav 本番の todos カードが素の HTML のまま動いた。**路線B技術的に完全成立**。
 - 残 UX 課題(次コミットで対応): カード幅が狭い / WebKit のダブルタップ遅延で複数回押し。
+
+## 2026-07-15 P2 スパイク UX 修正(カードサイズ・タップ遅延)+ 締め
+
+- 「3回押さないと反応しない」= WebKit のダブルタップ(ズーム)判定による ~350ms click 遅延。
+  scrollView の zoom を 1:1 固定 + numberOfTapsRequired==2 のジェスチャ認識器を無効化 →
+  単発 click 即発火で解消(AppCardWebViewFactory)。
+- 「カードが小さい/縦幅足りない」= size-changed 追従(P3 のチャット内インラインカード向け)が
+  単カード全画面デモに不適。ext-apps は html を max-content 計測した高さを返すが、caldav カードは
+  状態でコンテンツが伸びるため枠に収まらずクリップされた。→ スパイクは WKWebView 内部スクロール
+  有効化(factory に scrollEnabled 引数)+ カードを利用可能領域いっぱいに固定。追従は P3 に残す。
+- 「complete が3段階に分かれる」= ログで 1タップ=1 update-todo 往復・重複ゼロを確認 →
+  ブリッジは正常。多段は caldav todos v3 の becoming-done 演出 × 本番往復レイテンシ(0.6-2.5s)。
+  caldav 側の挙動でホストは忠実に描画しているだけ(ユーザーの見立て通り)。
+- **P2 完了**: 判断ゲート全項目 YES + UX 修正済み。路線B(iOS 汎用 MCP Apps ホスト)確立。
