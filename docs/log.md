@@ -121,3 +121,15 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   ブリッジは正常。多段は caldav todos v3 の becoming-done 演出 × 本番往復レイテンシ(0.6-2.5s)。
   caldav 側の挙動でホストは忠実に描画しているだけ(ユーザーの見立て通り)。
 - **P2 完了**: 判断ゲート全項目 YES + UX 修正済み。路線B(iOS 汎用 MCP Apps ホスト)確立。
+
+## 2026-07-15 ズーム方針の是正 + caldav フィードバック起票
+
+- ユーザー指摘: focus zoom はズームロックでなく文字サイズ改善で直すべき(小さすぎる文字が
+  根本)。ズームロックはピンチズーム=アクセシビリティも殺す。→ 同意。
+- ホスト側: minimumZoomScale=maximumZoomScale=1 のロックを撤回(ボツ案としてコメント保存)。
+  残す介入はダブルタップ・ツー・ズーム認識器の無効化のみ(タップ遅延対策 + ダブルタップズームが
+  うざいというユーザー要望・ピンチズームは残す)。focus zoom はホストで触らない。
+- caldav 側の根本原因を docs/caldav-feedback.md に起票: .d-notes(メモ textarea)が 13px で
+  iOS focus zoom を踏む(.d-title は 16px で OK)。入力欄を 16px 以上にするのが正しい対処。
+  claude.ai は iframe 外側で viewport を持つため隠れていた、ネイティブ WKWebView ホストで表面化。
+- complete の視覚フィードバックの乏しさも caldav-feedback に記載(ホストは 1タップ=1往復で正常)。

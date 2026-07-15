@@ -118,16 +118,16 @@ enum AppCardWebViewFactory {
         // 内部スクロール可否(引数)。インラインカードは高さ追従で不要、スパイクは可(上記)。
         webView.scrollView.isScrollEnabled = scrollEnabled
 
-        // 【重要・タップ遅延の除去】WebKit はタップ後 ~350ms、ダブルタップ(ズーム)の
-        // 可能性を待ってから click を合成する。この遅延で「押しても反応しない」と感じて
-        // ユーザーが複数回タップしてしまう症状が出た(2026-07-15 実機/シミュレータ観測:
-        // 1タップ=1 update-todo は届くが視覚反応が鈍く3回押しになる。docs/log.md)。
-        // ズームを禁止するとダブルタップ判定が不要になり WebKit は単発 click を即発火する。
-        // MCP App カードは固定幅コンテナ前提でズーム不要なので、ホスト側で無効化してよい
-        // (View の HTML には触らない — サンドボックス外殻のジェスチャ制御はホストの領分)。
-        webView.scrollView.minimumZoomScale = 1
-        webView.scrollView.maximumZoomScale = 1
-        webView.scrollView.bouncesZoom = false
+        // 【タップ遅延の除去(ズームは殺さない)】WebKit はタップ後 ~350ms、ダブルタップ
+        // (ズーム)の可能性を待ってから click を合成しうる。この遅延で「押しても反応しない」
+        // と感じて複数回タップしてしまう症状が出た(2026-07-15 観測。docs/log.md)。
+        // 対処は「ダブルタップ・ツー・ズームのジェスチャ認識器だけ無効化」に留める。
+        // 【ボツ案・重要】当初は minimumZoomScale = maximumZoomScale = 1 でズーム自体を
+        // ロックしていたが撤回した: (1) ピンチズーム(アクセシビリティ)まで殺す、
+        // (2) 副次的に <16px 入力の focus zoom も止まるが、それは「小さすぎる文字」という
+        // 根本原因を対症療法で隠すだけ。focus zoom の正しい対処はカード側で入力欄を 16px 以上に
+        // すること(caldav の .d-notes が 13px 等 — docs/caldav-feedback.md に起票)。
+        // ダブルタップ認識器の無効化はピンチズームを残すので、この方針と両立する。
         disableDoubleTapGestures(in: webView.scrollView)
         // 背景を透過にしてカードの角丸/枠と馴染ませる(prefersBorder は P3)。
         webView.isOpaque = false
