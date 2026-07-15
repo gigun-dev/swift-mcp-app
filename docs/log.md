@@ -38,3 +38,14 @@
   node_modules の実装で裏取り。defer による connection/listener の早期 cancel が
   200 応答の送信と競合しハングしうる問題を発見・修正(cancel を send 完了ハンドラへ移動)。
 - make check / make app / make device すべて green。実機での OAuth 実地検証はユーザー待ち。
+
+## 2026-07-15 OAuth 実機デバッグ: NWListener → BSD ソケットへ
+
+- 実機で「接続」→ POSIXErrorCode 22(EINVAL)。ポート .any → 明示ポートでも同じ。
+- macOS 最小再現(scratchpad/nwtest.swift): 素の NWListener(using:on:) 含め全パターン EINVAL、
+  一方 BSD ソケット直(socket/bind/listen)は成功。NWListener の失敗原因は未特定のまま、
+  動作実証済みの最下層に乗り換える判断。
+- Services/OAuth/LoopbackCallbackServer.swift(BSD + DispatchSource)を新設。UIKit 非依存に
+  なったので swift test で実挙動(bind→本物の GET→URL 復元・キャンセル)をテスト化
+  (NWListener 版は Features 層でテスト不能 → 実機で初めて発覚した反省)。
+- delegate は提示とキャンセルだけに痩せた。実機へ再インストール済み・ユーザー再検証待ち。

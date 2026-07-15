@@ -51,7 +51,7 @@ final class ConnectionViewModel: ObservableObject {
                 // 1回のフローに閉じ込めるため使い回さない — LoopbackOAuthAuthorizationDelegate
                 // のコメント参照)。
                 let delegate = LoopbackOAuthAuthorizationDelegate()
-                let redirectURI = try await delegate.prepareRedirectURI()
+                let redirectURI = try delegate.prepareRedirectURI()
                 let result = try await MCPConnection.connect(
                     serverURL: url,
                     redirectURI: redirectURI,
