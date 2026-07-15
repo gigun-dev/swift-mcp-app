@@ -12,7 +12,15 @@ struct ConnectionView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            form
+        }
+        // デバッグ用自動接続(MCPHOST_AUTOCONNECT=1)。simctl launch --setenv だけで
+        // OAuth E2E を人手のタップなしで再現するための入口(ViewModel 側コメント参照)。
+        .onAppear { viewModel.autoConnectIfRequested() }
+    }
+
+    private var form: some View {
+        Form {
                 Section("MCP サーバー") {
                     TextField("https://example.com/mcp", text: $viewModel.serverURLString)
                         .textInputAutocapitalization(.never)
@@ -64,9 +72,13 @@ struct ConnectionView: View {
                             .foregroundStyle(.red)
                     }
                 }
-            }
-            .navigationTitle("MCPHost")
         }
+        .navigationTitle("MCPHost")
+        // swift-format 相当の再インデントは P0 で lint 未導入のため保留(Form 内の
+        // インデントが1段深いのは切り出し時の名残・動作に影響なし)
+        // (旧: body 直下に Form をベタ書きしていたが、onAppear の自動接続フックを
+        // NavigationStack の外に付けるため form を切り出した。navigationTitle は
+        // NavigationStack 配下のこの Form に付ける)
     }
 
     private var isConnecting: Bool {

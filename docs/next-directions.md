@@ -43,6 +43,12 @@ Swift/iOS のオープンな MCP Apps ホストは存在しない(Claude iOS は
    > ポート可変マッチを実装済みと裏取り済み(main レビューで確認)。
    > 実機検証の観点: シート表示→caldav ログイン→シート自動クローズ→tools/list 表示、
    > 2回目起動はブラウザなしで接続(Keychain 再利用)。失敗時は画面の赤字エラーを報告。
+   > **2026-07-15 更新: P1 完了 ✅** — 実機・シミュレータ両方で OAuth→tools/list 到達。
+   > デバッグで潰した4障害(NWListener EINVAL / preconnect でサーバー早畳み /
+   > 認可の複数ラウンド非対応 / 無署名シミュレータの Keychain 失敗による 401 ループ)は
+   > docs/log.md 2026-07-15 参照。残タスク: 実機での2回目起動(Keychain 再利用)確認のみ。
+   > 副産物: MCPHOST_AUTOCONNECT=1 の自動接続 + unified log 計装で E2E をエージェントが
+   > 自走検証できるようになった(以後の検証はこの経路を使う)。
 3. **P2: MCP Apps ホストスパイク(勝負どころ・判断ゲート)** — list-todos の `ui://` HTML を
    WKWebView で描画し、カード内操作 → tools/call → 再描画が往復するまで。
    ext-apps の App は postMessage ベースの JSON-RPC なので原理上成立するはずだが未踏。

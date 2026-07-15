@@ -26,6 +26,7 @@
 // 経緯の生記録は docs/log.md 2026-07-15。
 import AuthenticationServices
 import Foundation
+import OSLog
 import Services  // `@_exported import MCP` 経由で OAuthAuthorizationDelegate 等が見える
 import UIKit
 
@@ -74,8 +75,14 @@ public final class LoopbackOAuthAuthorizationDelegate: NSObject, OAuthAuthorizat
         return uri
     }
 
+    // 認可フローの観察用(unified log)。swift-sdk が認可を何回・いつ要求したかを
+    // `log show --predicate 'subsystem == "dev.gigun.mcphost"'` で追えるようにする。
+    // .notice はデフォルトで永続化される(.info はメモリのみで log show に出ない罠がある)。
+    private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "oauth")
+
     public func presentAuthorizationURL(_ url: URL) async throws -> URL {
         guard let server else { throw DelegateError.redirectURINotPrepared }
+        logger.notice("認可ラウンド開始: \(url.host ?? "?", privacy: .public)")
 
         // 認可シートの提示はメインスレッドで。セッションの completion はローカルサーバー経由の
         // 正規完了とは別経路(ユーザーの手動キャンセル)なので、server.cancel に流して
@@ -97,6 +104,7 @@ public final class LoopbackOAuthAuthorizationDelegate: NSObject, OAuthAuthorizat
         }
 
         let redirectURL = try await server.waitForCallback()
+        logger.notice("認可コールバック受信")
         await MainActor.run {
             self.webAuthSession?.cancel()  // 認可完了 → シートを閉じる
             self.webAuthSession = nil

@@ -49,3 +49,29 @@
   なったので swift test で実挙動(bind→本物の GET→URL 復元・キャンセル)をテスト化
   (NWListener 版は Features 層でテスト不能 → 実機で初めて発覚した反省)。
 - delegate は提示とキャンセルだけに痩せた。実機へ再インストール済み・ユーザー再検証待ち。
+
+## 2026-07-15 P1 完了までのデバッグ(シミュレータで4障害を連続特定)
+
+観測手段を先に整備したのが効いた: MCPHOST_AUTOCONNECT=1(起動環境変数で自動接続)+
+unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ログ
+(cloudflare-observability MCP)+ curl での OAuth フロー完全再現。
+
+1. **preconnect でサーバー早畳み**: WebKit の投機的事前接続(データなしで close)を
+   不正リクエスト扱いしてサーバーごと畳んでいた → 空/不正接続は読み捨てて listen 継続。
+2. **accept ループの起動が waitForCallback 内**: 登録前に届いたリクエストが応答されず
+   ブラウザが 60 秒ハング(テストが検出)→ accept ループを start() 時点で起動 +
+   先着結果の保持箱(finishedResult)。
+3. **認可の複数ラウンド非対応**: swift-sdk は1接続で認可を複数回実行しうる
+   (POST/SSE の2経路 401・リトライ)。1回目のコールバックで listen ソケットまで
+   閉じていたため2回目が notStarted に化けた → 成功時もサーバーを畳まない
+   (畳むのは cancel/deinit のみ)。回帰テスト追加(計7件)。
+4. **無署名シミュレータの Keychain 失敗 → 401 無限ループ(真打ち)**: curl 再現で
+   サーバー正常・Workers ログで「トークン交換 200 なのに POST /mcp 401×10」を確認 →
+   アプリがトークンを付けていない → SecItemAdd が -34018(entitlement 欠如)で無言失敗、
+   load() 常に nil。実機は署名済みで発症せず(「実機では動く」の説明)→
+   メモリキャッシュを一次層に、Keychain はベストエフォート永続化に格下げ+失敗をログ化。
+
+他: Launch Screen 宣言漏れ(INFOPLIST_KEY_UILaunchScreen_Generation)でレターボックス
+起動になっていたのを修正。ConnectionView に onAppear 自動接続フック。
+
+**P1 完了**: 実機・シミュレータ両方で OAuth(loopback)→ tools/list 表示を確認。

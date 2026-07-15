@@ -17,6 +17,7 @@
 // 既に SDK 型 `OAuthAccessToken` を要求しているのでここでの追加の結合は無い)。
 import Foundation
 import MCP
+import OSLog
 import Security
 
 /// swift-sdk の `TokenStorage` を Keychain で実装したもの。
@@ -38,12 +39,29 @@ public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
     ///     トークンはこの URL に紐づく(同じ Keychain サービス内で複数サーバー分を account で書き分ける)。
     ///   - bundleIdentifier: kSecAttrService の接頭辞。project.yml の
     ///     PRODUCT_BUNDLE_IDENTIFIER と同じ値を既定にしている。
+    // 【重要】メモリ上のトークンを一次層にし、Keychain は「再起動をまたぐ永続化」の
+    // ベストエフォート層に格下げする。
+    // 経緯: シミュレータの無署名ビルド(make app の CODE_SIGNING_ALLOWED=NO)では
+    // SecItemAdd が entitlement エラーで失敗する。初版は SecItemAdd の結果を
+    // 握りつぶしていたため、保存が無言で失敗 → load() が常に nil → swift-sdk は
+    // トークン無しで /mcp を叩く → 401 → 再認可…の無限ループになった
+    // (トークン交換自体は毎回 200 — curl 再現と Workers ログで裏取り済み。
+    // 実機は署名済みで Keychain が動くため発症しなかった。docs/log.md 2026-07-15)。
+    // メモリ層があれば Keychain が死んでいても「そのプロセス内の接続」は成立する。
+    private var cachedToken: OAuthAccessToken?
+    private let cacheLock = NSLock()
+    private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "keychain")
+
     public init(serverURL: URL, bundleIdentifier: String = "dev.gigun.mcphost") {
         self.service = "\(bundleIdentifier).oauth-token"
         self.account = serverURL.absoluteString
     }
 
     public func save(_ token: OAuthAccessToken) {
+        cacheLock.lock()
+        cachedToken = token
+        cacheLock.unlock()
+
         guard let data = try? JSONEncoder().encode(token) else { return }
 
         // Keychain には「upsert」API が無いため、SecItemUpdate を先に試し、
@@ -60,11 +78,23 @@ public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
             // thisDeviceOnly を付けて iCloud Keychain 同期対象外にする
             // (トークンは端末固有の認可なので同期は不要・むしろ避けたい)。
             addQuery[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            _ = SecItemAdd(addQuery as CFDictionary, nil)
+            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                // 失敗しても致命ではない(メモリ層で接続は成立する)が、
+                // 「再起動したら再認可になる」症状の手がかりとしてログに残す。
+                logger.notice("Keychain 保存失敗(status \(addStatus)): 永続化なしで続行")
+            }
+        } else if updateStatus != errSecSuccess {
+            logger.notice("Keychain 更新失敗(status \(updateStatus)): 永続化なしで続行")
         }
     }
 
     public func load() -> OAuthAccessToken? {
+        cacheLock.lock()
+        let cached = cachedToken
+        cacheLock.unlock()
+        if let cached { return cached }
+
         var query = baseQuery()
         query[kSecReturnData] = true
         query[kSecMatchLimit] = kSecMatchLimitOne
@@ -76,6 +106,9 @@ public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
     }
 
     public func clear() {
+        cacheLock.lock()
+        cachedToken = nil
+        cacheLock.unlock()
         SecItemDelete(baseQuery() as CFDictionary)
     }
 

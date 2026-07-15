@@ -41,6 +41,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.gigun.mcphost
         PRODUCT_NAME: MCPHost
         GENERATE_INFOPLIST_FILE: YES
+        # Launch Screen の存在宣言。これが無いと iOS は「旧世代アプリ」とみなして
+        # 画面を互換サイズ(レターボックス・上下黒帯)で起動する — シミュレータで
+        # 「アプリの縦幅が狭い」として実際に発症した(2026-07-15)。生成 Info.plist に
+        # UILaunchScreen(空 dict)を入れる INFOPLIST_KEY で宣言だけ行う。
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
