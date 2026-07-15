@@ -64,14 +64,28 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
    > **未対応(P3 送り)**: focus zoom は caldav 側の文字サイズ改善で(docs/caldav-feedback.md)。
    > size-changed 追従(チャット内インラインカード)/ CSP meta 注入 / open-link 配線 /
    > world 分離 / AppsBridgeSession の protocol 抽象化テスト は P3 の堅牢化で。
-4. **P3: チャット(MVP フェーズ3)← 次はここ** — Anthropic API の tool-use ループ
+4. **P3: チャット(MVP フェーズ3)← 次はここ** — LLM の tool-use ループ
    (tools/list → ツール定義変換 → tools/call)。ツール結果の `ui://` カードを
    チャット内にインライン描画(**AppsBridgeSession / AppCardView は P2 で完成済み・再利用**。
    ここで size-changed 追従を活かした複数カードのインライン配置を実装)。BYOK(設定画面+Keychain)。
-   LLM エンドポイントは Services/LLM に抽象(SaaS 化時にプロキシへ差し替え)。
    接続確立は P1 の MCPConnection / LoopbackOAuth… を再利用(TodosCardSpikeView が実例)。
    focus refetch(refresh-todos, `visibility:["app"]`)を LLM ツール一覧から除外する
    確認(apps.mdx:400 の MUST)は**このフェーズで必須**(P2 スパイクは LLM 未配線だった)。
+
+   **LLM 層の設計(2026-07-16 確定・ベンダー中立)**:
+   - **プロバイダ中立の `LLMClient` プロトコル**(`Services/LLM/`)にメッセージ・ツール定義・
+     tool-use ループを一度だけ書く。MCP tools/list↔ツール定義・tool_use↔tools/call の
+     変換はここに集約。→ CLAUDE.md ビジョン1(エンドポイント1箇所抽象・SaaS プロキシ差し替え)。
+   - **第一アダプタは OpenAI 互換(`/chat/completions` + `tools`)**。base URL + モデル名 +
+     キーの差し替えだけで OpenRouter / Together / Groq / ローカル(Ollama/LM Studio)/ 各社の
+     OpenAI 互換エンドポイントに繋がる = 授業フェーズでベンダーロックしない。Anthropic ネイティブ
+     アダプタは第二として後から足す(中立プロトコルがあるので可逆)。Vercel AI SDK は不採用(JS 前提)。
+   - **コスト効率は第一級の価値(ユーザー方針)**: BYOK で API 従量なのでコストが効く。
+     既定は軽量モデル(Haiku / Gemini Flash-Lite 級)を積極採用。設計上気にする点:
+     (a) モデルは設定で差し替え可・既定を軽量に、(b) tool-use ループは毎ターン tools/list
+     スキーマ(caldav ≈18 ツール)を送るのでトークン費が乗る → system prompt を痩せさせる・
+     必要ならツール絞り込み、(c) トークン/コストの可視化(使用量表示)を検討。
+     ※ 具体的なモデル ID・料金は実装時に claude-api スキルで裏取りする(記憶で書かない)。
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。
