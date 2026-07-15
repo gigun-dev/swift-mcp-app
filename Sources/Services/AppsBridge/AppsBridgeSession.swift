@@ -1,0 +1,395 @@
+// MCP Apps のライフサイクル状態機械(設計 §2)。1 セッション = 1 WKWebView = 1 ツールカード。
+//
+// 仕様の順序制約(apps.mdx:485):
+//   View → `ui/initialize`(request) → Host が hostContext 入り result を返す
+//        → View → `ui/notifications/initialized` → **それまで Host は View に
+//          いかなる request/notification も送ってはならない(MUST NOT)**。
+//   破棄前は Host → `ui/resource-teardown`(request)(app-bridge.ts:811-827)。
+//
+// この MUST NOT を「機械的に」守るために、ready 前の Host→View 通知(tool-input/tool-result/
+// host-context-changed)はすべて outbox に積み、initialized 受信で ready へ遷移した瞬間に
+// FIFO で flush する。ready 前に View へ1バイトも送らないことがコードで保証される。
+//
+// スレッド/隔離(設計 §2 + S2 申し送り): このセッションは actor。WKWebView 操作は
+// WebViewTransport.deliver 内で MainActor へホップ済み(WebViewTransport のコメント参照)なので、
+// ここは actor のまま transport.deliver を await するだけでよい。
+import Foundation
+import OSLog
+import Kernel
+
+/// MCP Apps ホスト側のセッション状態機械。
+///
+/// 依存は2つだけ:
+///  - `WebViewTransport`: View との postMessage 往復(Host→View 配送・View→Host 受信ストリーム)。
+///  - `AppsServerProxy`: passthrough(tools/call・resources/read)を実サーバーへ流す口。
+/// caldav 非依存(ツール名も structuredContent の形も知らない — 設計 §0)。
+public actor AppsBridgeSession {
+    // MARK: - 状態
+
+    /// ライフサイクル状態(設計 §2 の enum)。
+    public enum State: Sendable, Equatable {
+        case loadingResource     // resources/read 中(HTML 未ロード)。生成直後の初期値。
+        case awaitingInitialize  // HTML ロード済み・ui/initialize 待ち。
+        case ready               // initialized 受信済み — outbox を flush、以後は即送信。
+        case tearingDown         // resource-teardown 送信済み・応答待ち(タイムアウト付き)。
+        case closed              // 終了。
+    }
+
+    private var state: State = .loadingResource
+
+    // ready 前に積まれた Host→View 通知。ready 遷移で FIFO flush(仕様 MUST NOT の機械的遵守)。
+    private var outbox: [JSONRPCNotification] = []
+
+    // MARK: - 協調オブジェクト
+
+    private let transport: WebViewTransport
+    private let proxy: AppsServerProxy
+    private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "appssession")
+
+    // initialize 応答に載せる Host 情報と hostContext の材料(設計 §2/§3-2 の最小集合)。
+    private let hostInfo: Implementation
+    // コンテナ寸法。幅はホスト固定(設計 §5)。size-changed の width は無視し、幅変化は
+    // AppCardView からの setContainerWidth 経由でのみ更新する。
+    private var containerWidth: Double
+    private let maxHeight: Double
+
+    // size-changed の height を Features(AppCardView)へ流すコールバック。
+    // actor から MainActor の @Observable を直接触らないための注入点(設計 §5)。
+    private let onSizeChanged: @Sendable (Double) async -> Void
+
+    // teardown の応答待ち continuation とその id(応答相関に使う)。
+    private var teardownContinuation: CheckedContinuation<Void, Never>?
+    private var teardownRequestID: RequestID?
+
+    // Host→View request(teardown)に振る id 採番。負値を使い View 由来 id と衝突させない。
+    private var nextHostRequestID = -1
+
+    private var consumeTask: Task<Void, Never>?
+
+    public init(
+        transport: WebViewTransport,
+        proxy: AppsServerProxy,
+        hostInfo: Implementation = Implementation(name: "MCPHost", version: "0.1.0"),
+        containerWidth: Double,
+        maxHeight: Double = 600,
+        onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in }
+    ) {
+        self.transport = transport
+        self.proxy = proxy
+        self.hostInfo = hostInfo
+        self.containerWidth = containerWidth
+        self.maxHeight = maxHeight
+        self.onSizeChanged = onSizeChanged
+    }
+
+    // MARK: - 起動 / 受信ループ
+
+    /// transport.incoming の消費を開始する。HTML ロード後・ここで awaitingInitialize に入る。
+    /// 二重起動しても副作用が無いよう guard する。
+    public func start() {
+        guard consumeTask == nil else { return }
+        // HTML はこの直前に Features 側が loadHTMLString している前提。ここから initialize 待ち。
+        state = .awaitingInitialize
+        logger.notice("session start: awaitingInitialize(ui/initialize を待つ)")
+        consumeTask = Task { [weak self] in
+            guard let self else { return }
+            // transport.incoming は (message, raw) のタプル。ここでは判別済み message だけ使う。
+            for await item in await self.transport.incoming {
+                await self.handleIncoming(item.message)
+            }
+        }
+    }
+
+    // MARK: - Host→View API(basic-host implementation.ts:229/235 と同じ語彙)
+
+    /// ツール入力(arguments)を tool-input 通知として送る。ready 前なら outbox へ積む。
+    public func sendToolInput(arguments: JSONValue) async {
+        let params = ToolInputParams(arguments: arguments)
+        let note = JSONRPCNotification(
+            method: AppsMethod.toolInput,
+            params: try? JSONValue(encoding: params))
+        await enqueueOrSend(note, label: "tool-input")
+    }
+
+    /// ツール結果(CallToolResult 相当の JSON をそのまま)を tool-result 通知として送る。
+    /// params は CallToolResult を **JSONValue のまま素通し**(設計 §3 のロスレス要件)。
+    public func sendToolResult(_ raw: JSONValue) async {
+        let note = JSONRPCNotification(method: AppsMethod.toolResult, params: raw)
+        await enqueueOrSend(note, label: "tool-result")
+    }
+
+    /// ツールキャンセルを送る(結果取得に失敗したとき等)。
+    public func sendToolCancelled(reason: String) async {
+        let params = ToolCancelledParams(reason: reason)
+        let note = JSONRPCNotification(
+            method: AppsMethod.toolCancelled,
+            params: try? JSONValue(encoding: params))
+        await enqueueOrSend(note, label: "tool-cancelled")
+    }
+
+    /// コンテナ幅の変化を View に伝える(host-context-changed・設計 §5)。
+    /// ready 前は「initialize で返す幅」を更新するだけ(まだ何も送らない = MUST NOT)。
+    public func setContainerWidth(_ width: Double) async {
+        containerWidth = width
+        guard state == .ready else {
+            logger.notice("setContainerWidth: ready 前なので initialize 値のみ更新 width=\(width)")
+            return
+        }
+        // hostContext の部分更新。containerDimensions だけを載せる(設計 §5)。
+        let patch = HostContext(containerDimensions: ContainerDimensions(width: width, maxHeight: maxHeight))
+        let note = JSONRPCNotification(
+            method: AppsMethod.hostContextChanged,
+            params: try? JSONValue(encoding: patch))
+        await deliver(notification: note)
+        logger.notice("host-context-changed 送信 width=\(width)")
+    }
+
+    // MARK: - 片付け(設計 §4/§5)
+
+    /// resource-teardown を送り、応答 or タイムアウト(既定 2s)後に closed へ遷移する。
+    /// ready でない場合は握手が終わっていない = 送っても無駄なので即 closed にする。
+    public func teardown(timeout: Duration = .seconds(2)) async {
+        guard state == .ready else {
+            logger.notice("teardown: ready でないので即 closed(state=\(String(describing: self.state)))")
+            close()
+            return
+        }
+        state = .tearingDown
+        let id = RequestID.int(makeHostRequestID())
+        teardownRequestID = id
+        let request = JSONRPCRequest(
+            id: id,
+            method: AppsMethod.resourceTeardown,
+            params: try? JSONValue(encoding: ResourceTeardownParams()))
+        logger.notice("resource-teardown 送信 id=\(String(describing: id))")
+
+        // 応答 or タイムアウトのどちらか早い方で先に進む。
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                await self?.awaitTeardownResponse()
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+            }
+            // request をここで投げる(応答待ちタスク登録より後でも、応答は continuation で待つので競合しない)。
+            if let data = try? JSONEncoder().encode(request) {
+                await self.transport.deliver(rawJSON: String(decoding: data, as: UTF8.self))
+            }
+            // 最初に終わった一方で group を畳む(残りは破棄)。
+            await group.next()
+            group.cancelAll()
+        }
+        // teardown 応答の continuation がまだ生きていれば(タイムアウト勝ち)ここで解放。
+        if let cont = teardownContinuation {
+            teardownContinuation = nil
+            cont.resume()
+        }
+        logger.notice("teardown 完了 → closed")
+        close()
+    }
+
+    /// 明示クローズ(webView 破棄時など)。ストリームを閉じ、以後の送受信を止める。
+    public func close() {
+        guard state != .closed else { return }
+        state = .closed
+        consumeTask?.cancel()
+        consumeTask = nil
+        transport.finish()
+    }
+
+    // MARK: - 受信ディスパッチ(View→Host)
+
+    private func handleIncoming(_ message: JSONRPCMessage) async {
+        // Kernel の2レーン分類。malformed(typed の params デコード失敗)は throw されるので
+        // ここで握って onerror 相当のログに落とす(設計 §1: transport は黙殺・昇格は状態機械の仕事)。
+        let classified: IncomingViewMessage
+        do {
+            classified = try IncomingViewMessage.classify(message)
+        } catch {
+            logger.error("classify 失敗(malformed): \(String(reflecting: error), privacy: .public)")
+            return
+        }
+
+        switch classified {
+        case let .typed(typed):
+            await handleTyped(typed)
+        case let .passthrough(method, id, params):
+            await handlePassthrough(method: method, id: id, params: params)
+        case let .response(response):
+            handleResponse(response)
+        }
+    }
+
+    private func handleTyped(_ typed: TypedViewMessage) async {
+        switch typed {
+        case let .initialize(id, params):
+            await handleInitialize(id: id, params: params)
+
+        case .initialized:
+            // ready へ遷移し outbox を flush。ここが「送信解禁」の唯一の起点。
+            logger.notice("ui/notifications/initialized 受信 → ready 遷移・outbox flush(件数=\(self.outbox.count))")
+            state = .ready
+            await flushOutbox()
+
+        case let .sizeChanged(params):
+            // 高さだけ採用(幅はホスト固定・設計 §5)。height が来たら Features へ流す。
+            if let height = params.height {
+                logger.notice("size-changed 受信 height=\(height)(width は無視)")
+                await onSizeChanged(height)
+            }
+
+        case let .openLink(id, params):
+            // open-link は「実装1行」の約束(設計 §3-2)。ただし UIApplication.open は UIKit 依存で
+            // Services には持ち込めない。ここでは受理応答({})だけ返し、実際に開くのは Features 側の
+            // 責務にする余地を残す(スパイクでは todos カードは外部リンクを踏まないので未配線)。
+            // TODO(P3): open-link を Features のハンドラへ委譲する注入点を足す。
+            logger.notice("open-link 受信 url=\(params.url, privacy: .public)(スパイクでは受理のみ)")
+            await deliver(response: JSONRPCResponse(id: id, result: .object([:])))
+        }
+    }
+
+    /// ui/initialize への応答。hostContext(theme/locale/displayMode/containerDimensions/
+    /// availableDisplayModes)を載せて result を返す(設計 §2)。
+    private func handleInitialize(id: RequestID, params: InitializeParams) async {
+        logger.notice("ui/initialize 受信 appInfo=\(params.appInfo.name, privacy: .public) proto=\(params.protocolVersion, privacy: .public)")
+
+        // availableDisplayModes は ["inline"] 固定(設計 §4: fullscreen/pip はスパイク外)。
+        let hostContext = HostContext(
+            theme: .light,
+            locale: "ja-JP",
+            displayMode: .inline,
+            availableDisplayModes: [.inline],
+            containerDimensions: ContainerDimensions(width: containerWidth, maxHeight: maxHeight))
+
+        // protocolVersion は View が送ってきたものをそのまま返す(バージョン交渉はスパイク外・
+        // 同一版を echo するのが最小の合法応答)。hostCapabilities は最小(空オブジェクト)。
+        let result = InitializeResult(
+            protocolVersion: params.protocolVersion,
+            hostInfo: hostInfo,
+            hostCapabilities: .object([:]),
+            hostContext: hostContext)
+
+        if let resultJSON = try? JSONValue(encoding: result) {
+            await deliver(response: JSONRPCResponse(id: id, result: resultJSON))
+            logger.notice("ui/initialize 応答済み(hostContext.availableDisplayModes=[inline])")
+        } else {
+            await deliver(response: JSONRPCResponse(
+                id: id, error: JSONRPCError(code: -32603, message: "initialize result のエンコードに失敗")))
+        }
+    }
+
+    /// passthrough レーン(tools/call・resources/read・ping・未知)。状態を持たない素通しプロキシ。
+    private func handlePassthrough(method: String, id: RequestID?, params: JSONValue?) async {
+        switch method {
+        case AppsMethod.toolsCall:
+            await proxyRequest(id: id, label: "tools/call") {
+                try await self.proxy.passthroughToolsCall(params: params)
+            }
+
+        case AppsMethod.resourcesRead:
+            await proxyRequest(id: id, label: "resources/read") {
+                try await self.proxy.passthroughResourcesRead(params: params)
+            }
+
+        case AppsMethod.ping:
+            // ping はホストが自分で答える(空 result)。サーバーへは流さない。
+            if let id { await deliver(response: JSONRPCResponse(id: id, result: .object([:]))) }
+
+        default:
+            // 未知メソッド。request には -32601、notification はログのみ(設計 §2)。
+            if let id {
+                logger.error("未知 request method=\(method, privacy: .public) → -32601")
+                await deliver(response: JSONRPCResponse(id: id, error: JSONRPCError.methodNotFound(method)))
+            } else {
+                logger.notice("未知 notification method=\(method, privacy: .public)(黙殺)")
+            }
+        }
+    }
+
+    /// passthrough リクエストの共通処理: プロキシを呼び、成功なら result、失敗なら error を返す。
+    /// notification(id なし)で来た passthrough はサーバーへ流すが応答は返せないので投げっぱなし。
+    private func proxyRequest(id: RequestID?, label: String, _ work: @Sendable () async throws -> JSONValue) async {
+        do {
+            let result = try await work()
+            if let id {
+                await deliver(response: JSONRPCResponse(id: id, result: result))
+                logger.notice("\(label, privacy: .public) 素通し応答済み")
+            } else {
+                logger.notice("\(label, privacy: .public) 通知として素通し(応答なし)")
+            }
+        } catch {
+            logger.error("\(label, privacy: .public) 素通し失敗: \(String(reflecting: error), privacy: .public)")
+            if let id {
+                // -32603 = Internal error。サーバー起因の失敗を View へ透過的に伝える。
+                await deliver(response: JSONRPCResponse(
+                    id: id, error: JSONRPCError(code: -32603, message: "\(label) 失敗: \(error)")))
+            }
+        }
+    }
+
+    /// View からの応答(ホストが投げた teardown への返答など)を相関して解消する。
+    private func handleResponse(_ response: JSONRPCResponse) {
+        if let expected = teardownRequestID, response.id == expected {
+            logger.notice("resource-teardown 応答受信")
+            teardownRequestID = nil
+            if let cont = teardownContinuation {
+                teardownContinuation = nil
+                cont.resume()
+            }
+        } else {
+            // 相関先の無い応答。ホストは teardown 以外の request を View に投げていないので通常来ない。
+            logger.notice("相関先の無い response id=\(String(describing: response.id))(無視)")
+        }
+    }
+
+    // MARK: - outbox / 配送ヘルパ
+
+    /// ready なら即送信、そうでなければ outbox に積む(MUST NOT の機械的遵守)。
+    private func enqueueOrSend(_ note: JSONRPCNotification, label: String) async {
+        if state == .ready {
+            await deliver(notification: note)
+            logger.notice("\(label, privacy: .public) 即送信(ready)")
+        } else {
+            outbox.append(note)
+            logger.notice("\(label, privacy: .public) を outbox に退避(state=\(String(describing: self.state)) 現在 \(self.outbox.count) 件)")
+        }
+    }
+
+    /// outbox を FIFO で flush する。ready 遷移直後にのみ呼ぶ。
+    private func flushOutbox() async {
+        let pending = outbox
+        outbox.removeAll()
+        for note in pending {
+            await deliver(notification: note)
+        }
+        if !pending.isEmpty {
+            logger.notice("outbox flush 完了(\(pending.count) 件)")
+        }
+    }
+
+    private func deliver(notification: JSONRPCNotification) async {
+        guard let data = try? JSONEncoder().encode(notification) else { return }
+        await transport.deliver(rawJSON: String(decoding: data, as: UTF8.self))
+    }
+
+    private func deliver(response: JSONRPCResponse) async {
+        await transport.deliver(response: response)
+    }
+
+    private func awaitTeardownResponse() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // すでに応答済み(相関が先に解消)なら即 resume。そうでなければ保持して待つ。
+            if teardownRequestID == nil {
+                continuation.resume()
+            } else {
+                teardownContinuation = continuation
+            }
+        }
+    }
+
+    private func makeHostRequestID() -> Int {
+        let id = nextHostRequestID
+        nextHostRequestID -= 1
+        return id
+    }
+}

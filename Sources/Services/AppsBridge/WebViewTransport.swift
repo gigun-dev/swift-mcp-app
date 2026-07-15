@@ -138,7 +138,22 @@ public final class WebViewTransport: NSObject {
 
     /// JSON-RPC メッセージ(すでに JSON 文字列化済み)を View へ配送する。
     /// 文字列連結ではなく callAsyncJavaScript の arguments に載せる(設計 §1: エスケープ事故回避)。
+    ///
+    /// nonisolated のまま受けるが、WKWebView 操作は **必ず MainActor で**行う
+    /// (下の deliverOnMain に委譲)。理由(S2 申し送りの反映・設計 §2 の MainActor 隔離判断):
+    /// この deliver は `AppsBridgeSession`(actor)から呼ばれる。actor のエグゼキュータは
+    /// メインスレッドではないため、ここで直に `webView.callAsyncJavaScript` を叩くと WKWebView を
+    /// 非メインスレッドから触ることになり未定義動作になる(WebKit は UI スレッド専有)。S2 では
+    /// たまたま動いていたが、正しくは MainActor へホップする。deliver を丸ごと @MainActor に
+    /// しなかったのは、呼び出し側(actor)に「配送は非同期の投げっぱなし」という素朴な API を
+    /// 保つため —— 隔離の詳細は transport の内側に閉じ込める。
     public func deliver(rawJSON: String) async {
+        await deliverOnMain(rawJSON: rawJSON)
+    }
+
+    /// WKWebView への実配送。MainActor 隔離(上のコメントの根拠)。
+    @MainActor
+    private func deliverOnMain(rawJSON: String) async {
         guard let webView else {
             logger.error("deliver: webView 未 attach。配送をスキップ")
             return

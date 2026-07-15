@@ -242,6 +242,35 @@ structuredContent を丸ごと欲しがる。
 
 ---
 
+> **2026-07-15 更新(S3〜S6 実装で判明・swift-sdk の素通しロスレス性の穴と対処):**
+> 設計 §3/§4 は「tools/call は JSONValue ロスレス素通し」を要件にしていたが、swift-sdk 0.12.1
+> の `Client` の**便利メソッドはロスレスではない**ことが実装時に判明した:
+> - `callTool(name:arguments:) -> (content:isError:)`(タプル版)は **structuredContent と
+>   _meta を捨てる**。todos カードは structuredContent を丸ごと読む(todos-entry.ts:2333)ので
+>   これでは描画できない。→ **`RequestContext<CallTool.Result>` を返すもう一方の
+>   `callTool` オーバーロードを使い、`await ctx.value` で完全な `CallTool.Result`(content/
+>   structuredContent/isError/_meta 全部)を取る**。オーバーロード解決は戻り値型注釈で強制する
+>   (両者とも `await client.callTool(...)` で呼べてしまい曖昧なため)。実装は
+>   `Sources/Services/AppsBridge/AppsServerProxy.swift` の `callTool(name:arguments:)`。
+> - `readResource(uri:) -> [Resource.Content]` は **result-level の _meta を落とす**(contents
+>   だけ返す)。ただし MCP App の `_meta.ui` は content-level に載る(caldav server.ts の read
+>   ハンドラ)ので実用上は問題ない。resources/read 素通しは `{contents:[...]}` を組み直して返す。
+> - 引数/結果を swift-sdk の `MCP.Value` に一度写す都合上、`MCP.Value` の「data URL 文字列を
+>   .data 種別へ自動変換」(Value.swift:98-104)が原理的にはロスの火種になる。todos の引数
+>   (id 等)・structuredContent に data URL は現れないので実害なしだが、P3 で真にロスレスに
+>   したければ `client.send(request)` 直叩き(生 JSON を通す)に寄せる余地を残す。
+>
+> **MainActor 隔離(S2 申し送りの反映):** `WebViewTransport.deliver` は actor
+> (`AppsBridgeSession`)から呼ばれるため、WKWebView 操作を非メインスレッドから触らないよう
+> `deliver` 内で `@MainActor` の `deliverOnMain` へホップする形にした(deliver の公開シグネチャは
+> nonisolated async のまま = 呼び出し側 actor には「投げっぱなし」の素朴 API を保つ)。詳細は
+> `WebViewTransport.swift` の deliver コメント。
+>
+> **状態機械の height/幅コールバック:** size-changed の height は actor から
+> `onSizeChanged: @Sendable (Double) async -> Void` 経由で Features(`AppCardState`・MainActor
+> @Observable)へ流す(設計 §5 の「actor から MainActor の @Observable を直接触らない」注入点)。
+> 幅は size-changed の width を無視し `setContainerWidth`(host-context-changed)経由のみ更新。
+
 ## 4. HTML の読み込みとサンドボックス
 
 ### 発見とプリフェッチ(basic-host implementation.ts:91-156 の写経)

@@ -91,3 +91,19 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   caldav カードを1バイトも改変せず素の HTML で成立。設計文書と食い違いゼロ。
 - **判断ゲート: 路線B続行**(最大リスク消滅)。S3(状態機械)→S4(実カード)→S5(往復)へ。
 - 申し送り: actor AppsBridgeSession 化時、WKWebView 操作の MainActor 隔離を S3 で設計に織り込む。
+
+## 2026-07-15 P2 スパイク S3-S6 完了: MCP Apps ホスト成立(判断ゲート全 YES)✅
+
+- S3 AppsBridgeSession(actor + State + outbox)、S4 AppsServerProxy(_meta.ui 解決 +
+  HTML プリフェッチ + tools/call/resources/read 素通し)、S5 往復、S6 サンドボックス
+  (ContentRuleList 全遮断・非永続ストア・navigation/window.open 封じ)+ AppCardView。
+- swift-sdk の落とし穴: callTool のタプル版は structuredContent/_meta を捨てるため
+  RequestContext<CallTool.Result> オーバーロードを使用(todos カードは structuredContent
+  を描画に使う)。readResource は result-level _meta を落とすが _meta.ui は content-level
+  なので実害なし。
+- MainActor 隔離: WebViewTransport.deliver 内で @MainActor deliverOnMain へホップ。
+- **main が simctl + log stream + screenshot でゲート7項目を自己検証**:
+  initialize 到達 / initialized 前送信ゼロ(outbox 退避→flush)/ 実データ描画 /
+  complete 往復(update-todo ×32 全応答)/ 全遮断下で動作 / size-changed 追従(337→386)。
+  caldav 本番の todos カードが素の HTML のまま動いた。**路線B技術的に完全成立**。
+- 残 UX 課題(次コミットで対応): カード幅が狭い / WebKit のダブルタップ遅延で複数回押し。

@@ -53,6 +53,11 @@ Swift/iOS のオープンな MCP Apps ホストは存在しない(Claude iOS は
    WKWebView で描画し、カード内操作 → tools/call → 再描画が往復するまで。
    ext-apps の App は postMessage ベースの JSON-RPC なので原理上成立するはずだが未踏。
    **通れば路線B確定、通らなければ路線A(ネイティブ契約描画)へ撤退**。
+   > **2026-07-15 更新:** 設計完了(docs/design/01-apps-bridge.md)。
+   > **S1(Kernel 型)+ S2(postMessage 疎通)完了 ✅ — 最大リスク消滅・路線B確定。**
+   > main が simctl で3仮説(parent===window / isTrusted 判別 / loopback 無し)を
+   > 自己検証。caldav カード改変ゼロで成立。残: S3(状態機械)→S4(実カード描画)→
+   > S5(complete 往復)→S6(片付け: ContentRuleList/非永続ストア/size-changed)。
 4. **P3: チャット(MVP フェーズ3)** — Anthropic API の tool-use ループ
    (tools/list → ツール定義変換 → tools/call)。ツール結果の `ui://` カードを
    チャット内にインライン描画。BYOK(設定画面+Keychain)。

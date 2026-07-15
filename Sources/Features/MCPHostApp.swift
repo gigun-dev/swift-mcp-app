@@ -21,6 +21,10 @@ struct MCPHostApp: App {
     private var rootView: some View {
         if ProcessInfo.processInfo.environment["MCPHOST_SPIKE"] == "transport" {
             TransportSpikeView()
+        } else if ProcessInfo.processInfo.environment["MCPHOST_SPIKE"] == "todos" {
+            // P2 スパイク S4/S5: caldav に OAuth 接続して list-todos カードを1枚描画する。
+            // OAuth 対話(changeme 入力→許可)は人手が要るため、起動後にシートが出る。
+            TodosCardSpikeView()
         } else {
             // P0 の ContentView(プレースホルダ)は P1 で ConnectionView に置き換えた
             // (docs/next-directions.md P1: 「接続(OAuth+tools/list)」)。
