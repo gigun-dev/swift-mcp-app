@@ -1,32 +1,38 @@
 # swift-mcp-app
 
-[caldav](https://github.com/gigun-dev/caldav)(自作 CalDAV サーバー)の **Swift ネイティブ
-コンパニオンアプリ**。授業の Swift アプリ課題を起点に、caldav の MCP 入口第3号
-(DAV・claude.ai カスタムコネクタに次ぐ)として開発する。
+**iOS 汎用 MCP Apps ホスト**(≒ claude.ai モバイルの自作版)。授業の Swift アプリ課題を
+起点に開発する。最初の接続先は [caldav](https://github.com/gigun-dev/caldav)(自作 CalDAV
+サーバー・MCP Apps 対応済み)——本アプリは caldav にとって DAV・claude.ai カスタムコネクタに
+次ぐ **MCP 入口第3号**でもある。
 
-## 方針(2026-07-15 確定。詳細は caldav 側 docs/next-directions.md「Swift コンパニオン」)
+## 方針(2026-07-15 第2版。初版「契約のネイティブ SwiftUI 描画」からの転換経緯は docs/next-directions.md)
 
 1. **MCP クライアント** — [swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) の
-   `HTTPClientTransport` + OAuth 2.1(DCR→authorize→token のフルフロー対応)で
+   `HTTPClientTransport` + OAuth 2.1(DCR→authorize→token のフルフロー)で
    `caldav.gigun-dev.workers.dev/mcp` に接続。**サーバー側の変更ゼロ**で繋がる
    (claude.ai とまったく同じ手順)。
-2. **LLM オーケストレータ** — tools/list → LLM ツール定義変換 → tool-use ループ。
-   授業フェーズは BYOK(API キー手入力)。SaaS 化時は薄い LLM プロキシ(Workers)を
-   課金の関所にし、フリーミアム/サブスクで LLM コストを回収(ユーザーは Claude サブスク不要)。
-   アプリ側は LLM エンドポイントを1箇所に抽象しておき、プロキシ差し替えだけで移行する。
-3. **UI は EventKit でなく MCP 直** — caldav の TodosViewModel / EventsViewModel 契約
-   (UI 技術非依存に設計済み。caldav 側 docs/modeling/12 §3)を SwiftUI でネイティブ描画。
-   共有カーネル(contract + 純関数)戦略の3つ目の消費者。
-   情報設計は todos カード v3(一覧=走査 / 選択=インライン編集 / 詳細=ページ /
-   プリセット chips)を SwiftUI に写す。
+2. **MCP Apps ホスト(コア)** — ツール結果が参照する `ui://` HTML カード
+   (`text/html;profile=mcp-app`)を WKWebView サンドボックスで描画し、
+   postMessage⇔MCP の JSON-RPC ブリッジでカード内操作をツール呼び出しに往復させる。
+   ext-apps のホスト SDK は TypeScript のみで、iOS ネイティブの汎用ホストは前例がほぼ無い —
+   **ホスト側プロトコルを Swift で実装すること自体が本体**。caldav の検証済み UI 資産
+   (todos v3 / agenda カード)がそのまま画面になる。
+3. **LLM オーケストレータ** — tools/list → LLM ツール定義変換 → tool-use ループ。
+   ツール結果カードはチャット内にインライン描画。授業フェーズは BYOK(API キー手入力)。
+   SaaS 化時は薄い LLM プロキシ(Workers)を課金の関所にし、フリーミアム/サブスクで
+   LLM コストを回収(ユーザーは Claude サブスク不要)。アプリ側は LLM エンドポイントを
+   1箇所に抽象しておき、プロキシ差し替えだけで移行する。
 
 ## MVP フェーズ
 
 1. 接続: OAuth(ASWebAuthenticationSession)+ tools/list 表示
-2. リマインダークライアント: list-todos → SwiftUI 一覧、complete / create
-3. チャット: LLM tool-use ループ(自然言語でタスク操作)
-4. (余力)カレンダー: list-events-expanded / get-freebusy(caldav 側 E-3 の完了に依存)
+2. **MCP Apps ホストスパイク(判断ゲート)**: list-todos カードの描画と双方向操作。
+   通れば本路線確定、通らなければネイティブ契約描画(路線A)へ撤退
+3. チャット: LLM tool-use ループ + カードのインライン描画
+4. (余力)ネイティブ二方式描画の対比 or 他 MCP サーバー接続デモ
 
-## 未確定(授業の制約待ち)
+## 開発環境
 
-- 期限・個人/チーム・評価観点 → パッケージ構成と MVP の切り方に反映
+- iOS 17+ / Swift / SwiftUI
+- XcodeGen + ローカル SwiftPM パッケージ(Kernel / Services)
+- `make check` = swift build + swift test + lint

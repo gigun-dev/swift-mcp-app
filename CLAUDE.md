@@ -1,39 +1,54 @@
 # swift-mcp-app
 
-[caldav](https://github.com/gigun-dev/caldav)(自作 CalDAV サーバー・ローカル:
-`~/ghq/github.com/gigun-dev/caldav`)の **Swift ネイティブコンパニオンアプリ**。
-授業の Swift アプリ課題を起点に、caldav の **MCP 入口第3号**(DAV・claude.ai
-カスタムコネクタに次ぐ)として開発する。
+**iOS 汎用 MCP Apps ホスト**(≒ claude.ai モバイルの自作版)。授業の Swift アプリ課題を
+起点に開発する。任意の MCP サーバーに OAuth 2.1 で繋ぎ、チャットで LLM がツールを叩き、
+ツール結果の `ui://` HTML カード(MCP Apps / SEP-1865)を WKWebView サンドボックス +
+postMessage⇔MCP ブリッジで描画・双方向操作できるホストアプリ。
 
-**コア価値: caldav の MCP 契約を SwiftUI でネイティブに消費する + LLM オーケストレーション。**
-この2つに寄与しない機能は後回し。
+最初の(最良の)接続先は [caldav](https://github.com/gigun-dev/caldav)(自作 CalDAV サーバー・
+ローカル: `~/ghq/github.com/gigun-dev/caldav`)。caldav は MCP Apps 対応済み
+(todos v3 / agenda カード、`@modelcontextprotocol/ext-apps` 製)で、本アプリは
+DAV・claude.ai カスタムコネクタに次ぐ **MCP 入口第3号**でもある。
+
+**コア価値: MCP Apps のホスト側プロトコルを Swift で実装する + LLM オーケストレーション。**
+この2つに寄与しない機能は後回し。iOS ネイティブの汎用 MCP Apps ホストは前例がほぼ無く、
+ext-apps のホスト SDK も TypeScript のみ — 「ホスト側を Swift で実装した」こと自体が主張。
+(旧コア価値「契約のネイティブ SwiftUI 描画」= 路線A は撤退先として保持。
+経緯は docs/next-directions.md「路線の定義」)
 
 長期ビジョン(設計判断はこれを裏切らないこと):
 1. **SaaS 展開** — 授業フェーズは BYOK(API キー手入力)だが、LLM 呼び出しは
    エンドポイント1箇所に抽象しておき、将来は薄い LLM プロキシ(Workers)へ差し替えるだけで
    フリーミアム/サブスク課金(ユーザーは Claude サブスク不要)に移行できる構造を保つ。
-2. **caldav 側との共有カーネル** — UI は EventKit でなく **MCP 直**。
-   TodosViewModel / EventsViewModel(caldav 側 `docs/modeling/12` §3 が契約の正)を
-   SwiftUI で描画する。契約の解釈ロジック(DTO デコード・日付整形・セクショニング)は
-   UI から分離した純関数層に置き、caldav の ui/ 純関数群と対応づける。
+   「caldav 専用クライアント」は機能だが「モバイル MCP ホスト」は製品になりうる。
+2. **汎用ホストとしての中立性** — ブリッジ・チャット・OAuth は caldav 固有の知識を持たない。
+   caldav 固有の解釈(DTO・UI 文法)が必要になる場面(路線A撤退・P4a)では Kernel に隔離する。
 
 ## 技術スタック
 
-- Swift / SwiftUI(iOS。授業の要件に従い最小 OS バージョンは決定待ち)
+- Swift / SwiftUI(iOS 17+。授業指定があれば従う)
 - MCP: [swift-sdk](https://github.com/modelcontextprotocol/swift-sdk)
   (ローカル: `~/ghq/github.com/modelcontextprotocol/swift-sdk`)。
   `HTTPClientTransport`(Streamable HTTP)+ OAuth 2.1 フルフロー(DCR→authorize→token)。
   接続先は本番 `https://caldav.gigun-dev.workers.dev/mcp`(サーバー変更ゼロで繋がる —
   claude.ai と同じ手順。DCR は `token_endpoint_auth_method:"none"`)。
+  MCP Apps は swift-sdk に専用サポートが無いが、基本プリミティブ(tools・embedded resource・
+  resources/read)は 2025-11-25 プロトコルで対応済み。ホスト側ブリッジ(WKWebView +
+  `WKScriptMessageHandler` で ext-apps の App と JSON-RPC 会話)は本アプリの自前実装。
 - LLM: Anthropic API(tool-use ループを自前実装)。キーは Keychain 保存・BYOK。
-- ビルド/検証: Xcode + SwiftPM。`make check` 相当(swift build + swift test + lint)を
-  Makefile に整備する(CI 導入は授業の提出形態が決まってから)。
+- 雛形: **XcodeGen**(project.yml → `xcodegen generate`、.xcodeproj は git 管理外)+
+  Kernel/Services は**ローカル SwiftPM パッケージ**(`swift test` が Xcode なしで回る)。
+- ビルド/検証: `make check`(swift build + swift test + lint)を Makefile に整備
+  (CI 導入は提出形態が固まってから)。
 
 ## 開発プロセス(caldav から移植した規律)
 
-- **契約の正は caldav 側**: ツール入力スキーマ・DTO の形は caldav の
-  `src/presentation/mcp/server.ts` と `docs/modeling/12` を読む。写経した契約には
-  「caldav 側の出典」をコメントで残す。ズレたら caldav 側 docs を先に直す。
+- **契約の正は caldav 側**: MCP Apps のサーバー側実装(`registerAppResource` /
+  `registerAppTool`・`_meta.ui.resourceUri`)は caldav の `src/presentation/mcp/server.ts`、
+  カード実体は `src/presentation/mcp/ui/` を読む。ブリッジプロトコルの正は
+  `@modelcontextprotocol/ext-apps`(SEP-1865・spec `specification/2026-01-26/apps.mdx`)。
+  写経した契約には出典をコメントで残す。
+  ズレたら caldav 側 docs を先に直す。
 - **UI はモックで合意してから実装**: SwiftUI プレビュー or HTML モックで方向を
   ユーザーと合意 → 実装(caldav の todos v3 / agenda で確立した進め方)。
 - **実装は subagent に委譲、main は設計・レビュー**(ユーザーのグローバル方針)。
@@ -45,15 +60,17 @@
 
 ```
 Sources/
-├── Kernel/        # 契約層: MCP DTO の Codable・日付/繰り返し整形・セクショニング(純関数・UI 非依存)
-├── Services/      # MCP クライアント(接続・OAuth・tools/call)、LLM オーケストレータ(tool-use ループ)、Keychain
-└── Features/      # SwiftUI: リマインダー一覧 / アジェンダ / チャット(Kernel+Services を消費)
+├── Kernel/        # プラットフォーム非依存の純関数層: MCP DTO の Codable、ブリッジの
+│                  # メッセージ型(JSON-RPC エンベロープ)、(路線A撤退時は契約解釈もここ)
+├── Services/      # MCP クライアント(接続・OAuth・tools/call・resources/read)、
+│                  # AppsBridge(WKWebView⇔MCP の JSON-RPC 仲介)、
+│                  # LLM オーケストレータ(tool-use ループ)、Keychain
+└── Features/      # SwiftUI: チャット / サーバー接続・設定 / カード表示(WKWebView ラッパー)
 ```
 
 - Kernel はプラットフォーム非依存(swift-testing で高速にテスト)。
 - LLM エンドポイントは `Services/LLM/` の1箇所に抽象(ビジョン1)。
-- 情報設計は caldav の todos v3 / agenda カードの文法(一覧=走査 / 選択=インライン編集 /
-  詳細=ページ / プリセット chips)を SwiftUI に写す。
+- AppsBridge は接続先サーバーに対して中立(ビジョン2)。
 
 ## 情報の書き分け方針(caldav と同一・このリポジトリでも基本ルール)
 
