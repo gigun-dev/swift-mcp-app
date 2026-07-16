@@ -207,3 +207,20 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - **未実施(人手 E2E・T4 の残作業)**: 実機/シミュレータで OAuth 対話(caldav changeme)+ 実 LLM
   チャット往復の目視。OAuth ブラウザシート操作は人手が要る。次はこれ → その後 T5(インラインカード)。
 - モック逸脱(レビュー保留): 設定 chips に OpenAI 追加/接続前ゲート画面はモック外で新設。
+
+## 2026-07-16 P3 T4 人手 E2E: 実機ランタイムでチャット往復成功
+
+- シミュレータ iPhone 17 Pro に install、MCPHOST_AUTOCONNECT=1 + MCPHOST_LLM_KEY(.env)+
+  MCPHOST_LLM_MODEL=gpt-5.4-mini で起動。OAuth 同意(書込スコープ)を人手で通過。
+- 確認できたこと:
+  - OAuth 実接続成功 → tools=19 取得。
+  - **visibility 除外の MUST(apps.mdx:400)が実機で発火**: 19 → LLM 定義 17 件
+    (refresh-todos/refresh-events = visibility:["app"] の2件が除外)。
+  - チャット「List todo」→ 🔧 list-todos 実行 → **ストリーミング応答**が伸びる
+    = **T2 の `.lines` 空行バグ修正が iOS ランタイムでも有効**(macOS swift test での発見が
+    実機でも問題ないことを確認・next-directions の ⚠️ 解消)。
+  - 実 caldav データ4件(追加へ1/テスト/test/新規)を取得・要約。ツールステップ可視化・
+    コスト表示(このターン ≈8,818 tok・累計 32,364 tok)動作。
+- コスト論点: 毎ターン ≈17 ツールのスキーマ送信でトークンが乗る(設計 §6 予期どおり)→ T7 で。
+- 軽微 UI: model chip が小さく潰れて見える(後で詰める)。
+- T4 完了。P3 のコア(チャット + LLM tool-use + 実 MCP)が実機で end-to-end 成立。次は T5(カード)。

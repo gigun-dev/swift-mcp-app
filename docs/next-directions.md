@@ -115,20 +115,22 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > 表示 turns と wire messages を分離・複数 tool_call は TaskGroup 並行・role:tool は
      > tool_call_id 昇順で安定・ツール失敗はステップ failed + role:tool にエラーで**ループ継続**・
      > 最大反復8で打ち切り。caldav 実接続(OAuth)は Features 未実装のため T5 送り。
-   - ~~T4: Features/Chat + Settings(チャット主画面・BYOK 設定・OAuth 実接続配線)~~ ✅（実装）
-     > **2026-07-16 更新:** T4 実装完了・`make app` BUILD SUCCEEDED・`make check` 66 件維持・
-     > シミュレータ起動非クラッシュ。`Sources/Features/Settings/`(LLMSettingsStore=キーは
-     > Keychain・baseURL/model は Defaults・env 注入 MCPHOST_LLM_KEY/_BASEURL/_MODEL・既定
-     > model=gpt-5.4-mini / SettingsSheet=プリセット chips)+ `Sources/Features/Chat/`
-     > (ChatHomeViewModel=OAuth→setTools→toolDefinitions→OpenAICompatClient→ChatViewModel /
-     > ChatHomeView / ChatBodyView=吹き出し・ツールステップ・コスト表示)。通常起動を
-     > ChatHomeView に差し替え(SPIKE/AUTOCONNECT 温存)。カードは非表示(T5)。
-     > **⚠️ 未実施(人手 E2E)**: 実機/シミュレータでの OAuth 対話(caldav パスワード changeme)+
-     > 実 LLM チャット往復の目視確認。MCPHOST_AUTOCONNECT=1 + MCPHOST_LLM_KEY で自走配線済みだが
-     > OAuth のブラウザシート操作は人手が要る。**ここが T4 の残作業**。
-     > レビュー保留点(モック逸脱): 設定 chips に OpenAI を追加/接続前ゲート画面はモック外で新設。
-   - T5: インラインカード ← 次はここ(T4 の人手 E2E 確認後)/ T6: 履歴永続化 + サイドバー /
-     T7: コスト表示
+   - ~~T4: Features/Chat + Settings(チャット主画面・BYOK 設定・OAuth 実接続配線)~~ ✅
+     > **2026-07-16 更新:** T4 完了(人手 E2E まで通過)。`Sources/Features/Settings/`
+     > (LLMSettingsStore=キーは Keychain・baseURL/model は Defaults・env 注入
+     > MCPHOST_LLM_KEY/_BASEURL/_MODEL・既定 model=gpt-5.4-mini / SettingsSheet=プリセット chips)
+     > + `Sources/Features/Chat/`(ChatHomeViewModel=OAuth→setTools→toolDefinitions→
+     > OpenAICompatClient→ChatViewModel / ChatHomeView / ChatBodyView=吹き出し・ツールステップ・
+     > コスト表示)。通常起動を ChatHomeView に差し替え。カードは非表示(T5)。
+     > **実機ランタイム E2E 成功(シミュレータ iPhone 17 Pro)**: OAuth 実接続(書込スコープ同意)→
+     > tools=19 → **LLM 定義 17 件(visibility:["app"] の refresh-todos/refresh-events 2件が除外 =
+     > apps.mdx:400 MUST を実機で実証)** → チャット「List todo」で 🔧 list-todos 実行 →
+     > **ストリーミング応答**(= T2 の `.lines` バグ修正が iOS でも有効・⚠️ 解消)→ 実 caldav
+     > データ4件を要約。コスト表示動作(≈8,818 tok/ターン)。
+     > **観測されたコスト論点**: 毎ターン ≈17 ツールのスキーマ送信でトークンが乗る(設計 §6 の
+     > 予期どおり)→ T7/最適化の対象。**軽微 UI**: model chip が小さく潰れて見える(後で詰める)。
+     > レビュー保留(モック逸脱): 設定 chips に OpenAI 追加/接続前ゲート画面はモック外で新設。
+   - T5: インラインカード ← 次はここ / T6: 履歴永続化 + サイドバー / T7: コスト表示
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。
