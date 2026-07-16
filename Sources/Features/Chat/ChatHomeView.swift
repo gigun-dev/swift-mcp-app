@@ -19,8 +19,12 @@ struct ChatHomeView: View {
     @State private var settings: LLMSettingsStore
     @State private var home: ChatHomeViewModel
     @State private var showingSettings = false
-    // 履歴サイドバー(引き出し)の開閉。ZStack + offset の overlay drawer で見せる(下の drawer 参照)。
+    // 履歴サイドバーの開閉(committed 状態)。実際の見せ方は「メイン画面を右へスライドして
+    // 下層のサイドバーを露出する」方式(body 参照)。
     @State private var showingSidebar = false
+    // 引き出しの横ドラッグ量(live)。ジェスチャ中だけ値が入り、終了で 0 に戻る(@GestureState の性質)。
+    // committed の showingSidebar と合わせて実オフセットを決める(currentOffset)。
+    @GestureState private var dragX: CGFloat = 0
 
     init() {
         // settings を先に作り、それを home に注入する。@State の init 直接代入は
@@ -31,14 +35,69 @@ struct ChatHomeView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            // drawer を素直に動かすため ZStack で本体の上にサイドバーを重ねる(下の drawer 参照)。
+        // 【引き出しの実装方式(2026-07-16 全面修正・ユーザー指摘 + Claude iOS 手本)】
+        // 手本は「drawer がコンテンツの上に被さる」のではなく、**サイドバーが下層にいて、
+        // メイン画面(角丸カード + ドロップシャドウ)が右へスライドして退く**方式。さらに
+        // 画面を右へドラッグするとカードが指に追従して開く(「漫画のページめくり」)。
+        // → 下層 = ChatHistorySidebar(左 revealWidth・全高)、上層 = メインを角丸カード化して
+        //   x オフセット。オフセットは ☰ タップ(committed=showingSidebar)+ 横ドラッグ(live=dragX)で決める。
+        GeometryReader { geo in
+            // 露出幅: 画面の 84%(上限 330)。手本はカードの左端 ~15% が右に残る = reveal ~85%。
+            let revealWidth = min(geo.size.width * 0.84, 330)
+            let offset = currentOffset(revealWidth: revealWidth)
+            // safe area の実測 inset(geo はまだ safe area を尊重した測定)。下でサイドバー内容を
+            // これで寄せる。ZStack 全体は下の .ignoresSafeArea() で全画面へ広げる(カード bleed)。
+            let topInset = geo.safeAreaInsets.top
+            let bottomInset = geo.safeAreaInsets.bottom
             ZStack(alignment: .leading) {
-                routedContent
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { toolbarContent }
-                drawer
+                // 下層: サイドバー(左 revealWidth・全高)。**内容だけ safe area inset で寄せる**
+                // (ヘッダがステータスバー/ノッチに潜らない・FAB がホームインジケータに被らない)。
+                // 背景 paper は ZStack ごと全画面 bleed する(下の .background+.ignoresSafeArea)。
+                ChatHistorySidebar(
+                    store: home.chatStore,
+                    activeSessionID: activeSessionID,
+                    onSelect: { id in home.openHistory(id: id) },
+                    onNewChat: { home.newChat() },
+                    onClose: { closeSidebar() }
+                )
+                .frame(width: revealWidth)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .padding(.top, topInset)
+                .padding(.bottom, bottomInset)
+
+                // 上層: メイン(NavigationStack)を角丸カード化して右へスライド。
+                // 【カードを物理画面の上下端まで bleed(2026-07-16・ユーザー指摘の再修正)】
+                // ZStack ごと .ignoresSafeArea() で全画面に広げ、カード(NavigationStack)を物理端まで
+                // 届かせる。こうすると右へ退いても見えるのは**左の縦エッジだけ**で、上端/下端の横エッジは
+                // 出ない(手本 Claude iOS の「縦に貫通してめくれる」印象)。ナビバー・コンテンツの
+                // safe area は NavigationStack が自前で確保する(ステータスバー下に navbar・
+                // ホームインジケータ上に composer)。
+                NavigationStack {
+                    routedContent
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { toolbarContent }
+                }
+                .background(Color(.systemBackground))  // 下層が透けないよう不透明。ZStack ごと bleed する。
+                .clipShape(RoundedRectangle(cornerRadius: offset > 0.5 ? 22 : 0, style: .continuous))
+                .shadow(color: .black.opacity(offset > 0.5 ? 0.22 : 0), radius: 16, x: -6, y: 0)
+                .offset(x: offset)
+                // 開いている間は、退いたメインカードをタップで閉じる(手本と同じ・操作を「閉じる」に一本化)。
+                .overlay {
+                    if offset > 1 {
+                        Color.black.opacity(0.0001)
+                            .contentShape(Rectangle())
+                            .onTapGesture { closeSidebar() }
+                    }
+                }
+                // 横ドラッグでカードを追従させて開閉(「漫画のページめくり」)。縦スクロール・タップと
+                // 両立させるため simultaneousGesture + 横方向優位ガード(縦優位のときは無反応)。
+                .simultaneousGesture(dragGesture(revealWidth: revealWidth))
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // paper を全画面へ(サイドバーのステータスバー下も埋める)+ ZStack ごと物理端まで広げる
+            // (これがカード bleed の肝。個別 .ignoresSafeArea(edges:.vertical) では効きが弱かった)。
+            .background(SidebarPalette.paper)
+            .ignoresSafeArea()
         }
         .sheet(isPresented: $showingSettings) {
             SettingsSheet(store: settings)
@@ -58,7 +117,14 @@ struct ChatHomeView: View {
             Text(home.historyLoadError ?? "")
         }
         // デバッグ用自動接続(MCPHOST_AUTOCONNECT=1)。ConnectionView と同じ導線。
-        .onAppear { home.autoConnectIfRequested() }
+        .onAppear {
+            home.autoConnectIfRequested()
+            // 【一時デバッグ・2026-07-16】開いた状態のレイアウトをエージェントがスクショで検証する
+            // ための起動時オープン(UI タップができないため)。MCPHOST_SIDEBAR_OPEN=1 のときだけ。確認後に外す。
+            if ProcessInfo.processInfo.environment["MCPHOST_SIDEBAR_OPEN"] == "1" {
+                showingSidebar = true
+            }
+        }
     }
 
     // MARK: - ツールバー(モックのナビバー)
@@ -124,58 +190,37 @@ struct ChatHomeView: View {
         return false
     }
 
-    // MARK: - 履歴サイドバー(引き出し式 drawer)
+    // MARK: - 引き出し(メイン画面を右へスライドして下層サイドバーを露出する方式)
 
-    /// 引き出し式サイドバー(モック3画面目)。
-    ///
-    /// 【drawer 実装方式の判断(タスク指示で裁量)】モックは「ナビバー左から左スライドで引き出す」
-    /// drawer なので、.sheet(下からのモーダル)ではなくその見た目に寄せて **ZStack + offset の
-    /// overlay drawer** で実装する。開くと半透明の暗幕 + 左からスライドインするパネル。暗幕タップ・
-    /// パネル内の選択/新規で閉じる。ドラッグで閉じる操作も足す(左へスワイプで dismiss)。
-    /// NavigationSplitView の常設サイドバーにしないのは、モックが iPhone は「常設でなく引き出し式」
-    /// と明記しているため(iPad 常設化は将来の余地・モック注記)。
-    @ViewBuilder
-    private var drawer: some View {
-        if showingSidebar {
-            // 暗幕(タップで閉じる)。ZStack 全面を覆う。
-            // sidebar-v2 実装メモ9: 暗幕は black.opacity(0.3)(前版の 0.25 から微調整・モック --dim 準拠)。
-            Color.black.opacity(0.3)
-                .ignoresSafeArea()
-                .onTapGesture { closeSidebar() }
-                .transition(.opacity)
+    /// 実オフセット = committed(showingSidebar なら revealWidth)+ live ドラッグ(dragX)を 0...reveal にクランプ。
+    /// これで「☰ タップで開閉」と「横ドラッグで指追従」を同じオフセットに合流させる。
+    private func currentOffset(revealWidth: CGFloat) -> CGFloat {
+        let base: CGFloat = showingSidebar ? revealWidth : 0
+        return min(max(base + dragX, 0), revealWidth)
+    }
 
-            GeometryReader { proxy in
-                // sidebar-v2 実装メモ9: 幅 min(width*0.82, 320)。前版は固定 320pt のみだったが、
-                // モックの drawer chrome(width:316px ≒ 82%)に合わせ画面幅追従の上限付きに変更。
-                ChatHistorySidebar(
-                    store: home.chatStore,
-                    activeSessionID: activeSessionID,
-                    onSelect: { id in home.openHistory(id: id) },
-                    onNewChat: { home.newChat() },
-                    onClose: { closeSidebar() }
-                )
-                .frame(width: min(proxy.size.width * 0.82, 320))
-                .frame(maxHeight: .infinity)
-                // sidebar-v2 実装メモ9: 右端のみ角丸(UnevenRoundedRectangle・topTrailing/bottomTrailing
-                // = 20)。前版は矩形のままだったが、モックの drawer chrome(border-radius:0 20px 20px 0)
-                // に合わせて右端だけ丸める(左端は画面端に接するので角丸不要)。
-                .clipShape(UnevenRoundedRectangle(bottomTrailingRadius: 20, topTrailingRadius: 20))
-                .shadow(color: .black.opacity(0.18), radius: 16, x: 8, y: 0)
-                .ignoresSafeArea(edges: .bottom)
-                .transition(.move(edge: .leading))
-                // 左スワイプで閉じる(引き出しを押し戻す自然な操作)。閾値を超えたら dismiss。
-                .gesture(
-                    DragGesture()
-                        .onEnded { value in
-                            if value.translation.width < -40 { closeSidebar() }
-                        }
-                )
+    /// 横ドラッグで引き出しを開閉するジェスチャ。
+    /// - 縦スクロール/タップと両立させるため **横方向優位のときだけ**反応(縦優位は無反応で素通し)。
+    /// - 指を離したら、投射位置(予測を少し加味)が reveal の 40% を超えていれば開、未満なら閉に snap。
+    private func dragGesture(revealWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 12)
+            .updating($dragX) { value, state, _ in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                state = value.translation.width
             }
-        }
+            .onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                let base: CGFloat = showingSidebar ? revealWidth : 0
+                // predictedEndTranslation を少し加味して「勢いのあるフリック」でも自然に開閉する。
+                let projected = base + value.translation.width + value.predictedEndTranslation.width * 0.2
+                withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                    showingSidebar = projected > revealWidth * 0.4
+                }
+            }
     }
 
     private func closeSidebar() {
-        withAnimation(.easeOut(duration: 0.22)) { showingSidebar = false }
+        withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) { showingSidebar = false }
     }
 
     /// サイドバーの .active ハイライト対象。ライブ時は現在セッション、履歴閲覧時は閲覧中セッション。

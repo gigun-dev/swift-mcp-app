@@ -70,6 +70,14 @@ final class InlineCardHost {
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "inlinecard")
 
+    /// インラインカードの高さの安全上限。**基本は内容に応じて高さ追従**する方針(ユーザー方針・
+    /// 2026-07-16「スクロールより普通に高さを内容に応じて調整」)。ネストした内部スクロールは
+    /// チャット全体のスクロールと二重になり UX が悪いため採らない。この値は「暴走(カードが
+    /// 異常な巨大高さを報告する等)への安全網」で、実カード(todos/agenda)は到達しない大きさに
+    /// する。maxHeight を大きく渡すことで、カードは内部スクロールせず全内容を展開して高さを報告し、
+    /// その高さぴったりに .frame を追従させられる(+ ボタン等 下端も見える)。
+    static let inlineCardMaxHeight: CGFloat = 4000
+
     /// カードを1度だけ構築する。2回目以降(スクロール往復での再 .task)は no-op(既存 webView を維持)。
     /// - Parameters:
     ///   - proxy: 接続共有の AppsServerProxy(fetchAppHTML と tools/call 素通しの両方を担う・設計 §4)。
@@ -103,11 +111,17 @@ final class InlineCardHost {
                 transport: transport,
                 proxy: proxy,
                 containerWidth: Double(containerWidth),
-                maxHeight: 600,
+                maxHeight: Self.inlineCardMaxHeight,
                 onSizeChanged: { [weak self] height in
                     await MainActor.run {
+                        // 【カードは内容に応じて高さ追従(2026-07-16・ユーザー方針)】キャップして
+                        // 内部スクロール、ではなく **内容ぴったりの高さに素直に追従**する(todos が
+                        // 9件でも全部見えて + ボタンも下端に出る)。安全網の上限(inlineCardMaxHeight
+                        // =4000)にだけ min をかけるが、実カードは到達しない。scrollEnabled は
+                        // factory 既定の false のまま(ネスト内スクロールは使わない・チャット全体で
+                        // スクロールする)。
                         withAnimation(.easeOut(duration: 0.3)) {
-                            cardState.desiredHeight = min(CGFloat(height), 600)
+                            cardState.desiredHeight = min(CGFloat(height), Self.inlineCardMaxHeight)
                         }
                         // スナップショット取得の第一候補(設計 §5): tool-result 配送後、カードが
                         // 描画確定した合図として size-changed が到達した時点で outerHTML を取る。
