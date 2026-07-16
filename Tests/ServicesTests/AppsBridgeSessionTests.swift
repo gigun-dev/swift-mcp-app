@@ -68,7 +68,11 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         // HOLB: size-changed が View から来たとき呼ばれるコールバック(既定は無視)。
         onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in },
         // 既定 nil = 本番の「ハンドラ未注入」構成に一致(fullscreen 非広告・request-display-mode 拒否)。
-        onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil
+        onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil,
+        // UX #1: カード capability(fullscreen 対応)を Features へ流す注入点(既定は無視)。
+        onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil,
+        // UX #1: initialize で push する appCapabilities の生 JSON(fullscreen 宣言の有無をテストで切替える)。
+        appCapabilitiesJSON: String = "{}"
     ) async -> AppsBridgeSession {
         let session = AppsBridgeSession(
             transport: transport,
@@ -76,13 +80,14 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
             containerWidth: 340,
             maxHeight: 600,
             onSizeChanged: onSizeChanged,
-            onDisplayModeRequested: onDisplayModeRequested)
+            onDisplayModeRequested: onDisplayModeRequested,
+            onCardCapabilities: onCardCapabilities)
         await session.start()
 
         transport.push(#"""
         {"jsonrpc":"2.0","id":1,"method":"ui/initialize","params":{
           "appInfo":{"name":"test-card","version":"1"},
-          "appCapabilities":{},
+          "appCapabilities":\#(appCapabilitiesJSON),
           "protocolVersion":"2025-11-21"}}
         """#)
         await waitUntil { !transport.sentRawJSON.isEmpty }
@@ -215,6 +220,41 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
             transport: transport,
             onDisplayModeRequested: { _ in DisplayModeResolution(mode: .inline) })
         #expect(try advertisedModes(transport) == [.inline, .fullscreen])
+        await session.close()
+    }
+
+    // MARK: - カード capability(fullscreen 対応)の検出(UX #1・fable #1・apps.mdx:786)
+
+    /// onCardCapabilities の受領値を記録する actor(initialize の非同期消化を跨いで観測する)。
+    private actor CapabilityRecorder {
+        private(set) var received: [Bool] = []
+        func record(_ v: Bool) { received.append(v) }
+        var count: Int { received.count }
+    }
+
+    @Test("appCapabilities に fullscreen があれば onCardCapabilities(true)")
+    func cardCapabilitiesTrueWhenFullscreenDeclared() async throws {
+        let transport = MockTransport()
+        let recorder = CapabilityRecorder()
+        let session = await makeReadySession(
+            transport: transport,
+            onCardCapabilities: { await recorder.record($0) },
+            appCapabilitiesJSON: #"{"availableDisplayModes":["inline","fullscreen"]}"#)
+        await waitUntil { await recorder.count >= 1 }
+        #expect(await recorder.received == [true])
+        await session.close()
+    }
+
+    @Test("appCapabilities に fullscreen が無ければ onCardCapabilities(false)")
+    func cardCapabilitiesFalseWhenNotDeclared() async throws {
+        let transport = MockTransport()
+        let recorder = CapabilityRecorder()
+        // 空の appCapabilities(availableDisplayModes 欠落)→ false に倒す(死にボタン排除)。
+        let session = await makeReadySession(
+            transport: transport,
+            onCardCapabilities: { await recorder.record($0) })
+        await waitUntil { await recorder.count >= 1 }
+        #expect(await recorder.received == [false])
         await session.close()
     }
 

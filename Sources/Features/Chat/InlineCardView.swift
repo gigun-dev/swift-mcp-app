@@ -64,6 +64,14 @@ final class InlineCardHost: Identifiable {
     /// この値の「影(ワイヤ通知の相関用)」であって真実ではない。
     var displayMode: UIDisplayMode = .inline
 
+    /// カードが fullscreen 昇格に対応するか(UX #1・fable #1)。Session が initialize で受け取った
+    /// appCapabilities.availableDisplayModes に "fullscreen" があれば true。@Observable なので、
+    /// これを読む InlineCardView は変化で再評価され、⤢ オーバーレイの出し分けが発火する。
+    /// 【なぜこれで出し分けるか(apps.mdx:786)】ホスト発の fullscreen 切替はカードが宣言したモードにしか
+    /// できない。宣言していないカードに ⤢ を出すと押しても違反になる(死にボタン)ので、宣言時だけ出す。
+    /// 初期値 false = 未 initialize / 非対応カードでは ⤢ を出さない(安全側)。
+    private(set) var cardSupportsFullscreen: Bool = false
+
     /// fullscreen 昇格の調停役(高々1枚・決定2b)。registry 経由で ChatBodyView 所有の
     /// FullscreenCoordinator が注入される。weak: coordinator は ChatBodyView(@State)が所有し、
     /// host はそれを参照するだけ(所有の輪を作らない)。名前が既存の AppCardWebCoordinator
@@ -197,6 +205,11 @@ final class InlineCardHost: Identifiable {
                         let dims = self.estimatedFullscreenDimensions()
                         return coordinator.requestFullscreen(self, estimatedDimensions: dims)
                     }
+                },
+                // カードが fullscreen を宣言しているか(⤢ ボタンの出し分け・UX #1・fable #1)を受け取り、
+                // @Observable の cardSupportsFullscreen に反映する。actor(Session)→ MainActor へ hop する。
+                onCardCapabilities: { [weak self] supports in
+                    await MainActor.run { self?.cardSupportsFullscreen = supports }
                 })
             self.session = session
             await session.start()
@@ -233,6 +246,22 @@ final class InlineCardHost: Identifiable {
     }
 
     // MARK: - fullscreen(sheet)器の連携(P4-DM・設計 04 §5 H4)
+
+    /// ホスト UI(⤢ ボタン)発の fullscreen 昇格(UX #1・fable #1)。カード発 request-display-mode と
+    /// **入口が違うだけで出口は同じ**: 調停役(coordinator)に受理を問い(高々1枚・決定2b)、受理されたら
+    /// host-context-changed(fullscreen)をカードへ通知する。カード発は Session.onDisplayModeRequested 経由、
+    /// ホスト発はこのメソッド経由。dismiss(inline 復帰)は既存の restoreInline / coordinator.dismiss が
+    /// そのまま効く(出口が同じなので後始末も共通)。
+    func requestFullscreenFromHost() {
+        guard let coordinator = fullscreenCoordinator else { return }
+        let dims = estimatedFullscreenDimensions()
+        // requestFullscreen は host.displayMode=.fullscreen への更新も行う(占有中は .inline を返し何もしない)。
+        let resolution = coordinator.requestFullscreen(self, estimatedDimensions: dims)
+        guard resolution.mode == .fullscreen else { return }  // 別カードが占有中なら昇格しない。
+        // カードへ host-context-changed(fullscreen)を通知(apps.mdx:776・カード発と同じ終着点)。
+        let session = self.session
+        Task { await session?.notifyDisplayModeChanged(to: .fullscreen, containerDimensions: dims) }
+    }
 
     /// fullscreen 昇格時にカードへ渡す推定寸法(§5 H4-D)。sheet の large detent は
     /// 「画面高 − トップの安全余白」に近い。sheet 実寸は提示アニメーション完了まで確定しないため、
@@ -376,6 +405,28 @@ struct InlineCardView: View {
         // ChatBodyView が registry.teardownAll() でまとめて行う。
     }
 
+    /// 右上のマキシマイズ ⤢ ボタン(UX #1・fable #1)。claude.ai は MCP カード右上に ⤢ を置く。
+    /// 見た目は控えめ(小さい SF Symbol + 半透明の丸背景)。カードの角丸(cornerRadius 12)に馴染ませ、
+    /// 右上の余白側に軽くパディングしてカード内容(caldav の「完了」等)と重ならない位置に置く。
+    /// 表示条件: cardSupportsFullscreen && displayMode==.inline(fullscreen 中・非対応カードでは非表示)。
+    @ViewBuilder
+    private var maximizeButton: some View {
+        if host.cardSupportsFullscreen && host.displayMode == .inline {
+            Button {
+                host.requestFullscreenFromHost()
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(8)  // カード角から少し離し、内容と重ならない右上の余白側へ置く。
+            .accessibilityLabel("最大化")
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         // host.webView(@Observable)を読むことで、構築完了(nil→非nil)時に自動で差し替わる。
@@ -392,6 +443,10 @@ struct InlineCardView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 // 角丸+枠(TodosCardSpike の見た目を踏襲)。
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
+                // 右上の汎用マキシマイズ ⤢(UX #1・fable #1・claude.ai 準拠で右上に控えめに置く)。
+                // 表示条件: カードが fullscreen を宣言していて(cardSupportsFullscreen)かつ現在 inline のときだけ
+                // (fullscreen 中は出さない)。inline 復帰時は @Observable 観測で自動的に再表示される。
+                .overlay(alignment: .topTrailing) { maximizeButton }
         } else if host.buildFailed {
             // 【fable #3: 構築失敗のエラー表示】旧実装はこの分岐が無く、失敗時も下のローディングに
             // 落ちてスピナーが回り続けていた(ファイル冒頭 buildFailed 宣言のコメント参照)。

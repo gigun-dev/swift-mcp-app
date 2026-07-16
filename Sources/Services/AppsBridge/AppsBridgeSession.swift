@@ -78,6 +78,18 @@ public actor AppsBridgeSession {
     // actor から MainActor の @Observable を直接触らないための注入点(設計 §5)。
     private let onSizeChanged: @Sendable (Double) async -> Void
 
+    // カードが initialize で申告した appCapabilities.availableDisplayModes に fullscreen が
+    // 含まれるか(= カードがホスト発 fullscreen 昇格に対応するか)を Features へ流す注入点
+    // (UX #1・fable ベスプラ調査 #1)。onSizeChanged と同型で、actor から MainActor の
+    // @Observable(InlineCardHost.cardSupportsFullscreen)を直接触らないためにコールバックにする。
+    //
+    // 【なぜカード側の申告を見るのか(spec 上の合法性・apps.mdx:786)】ホスト発の displayMode 切替は
+    // 「その mode がカードの appCapabilities.availableDisplayModes に含まれるとき」だけ合法。よって
+    // ホスト UI(⤢ ボタン)も「カードが fullscreen を宣言しているとき」だけ出す。宣言していない
+    // カードに ⤢ を出すと、押しても spec 違反の要求になる(=死にボタン)。この判定を Features へ渡し、
+    // Features が ⤢ の表示可否に使う。パース失敗・欠落は false(=⤢ を出さない)で安全側に倒す。
+    private let onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)?
+
     // request-display-mode を受けたとき、実際にどのモードへ遷移するかを決める注入点
     // (P4-DM・設計 04 §5 H3 + H4-F)。Features(H4)が sheet 器を持つかどうかを知っているのは
     // Features 側なので、Session 自身は「昇格してよいか」を判断しない。
@@ -137,7 +149,9 @@ public actor AppsBridgeSession {
         maxHeight: Double = 600,
         onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in },
         // 既定 nil = fullscreen を広告しない・request-display-mode は拒否(H4-F)。本番は Features が注入する。
-        onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil
+        onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil,
+        // 既定 nil = カード capability を Features へ通知しない(⤢ ボタン不要のホスト構成)。本番は Features が注入する。
+        onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil
     ) {
         self.transport = transport
         self.proxy = proxy
@@ -146,6 +160,7 @@ public actor AppsBridgeSession {
         self.maxHeight = maxHeight
         self.onSizeChanged = onSizeChanged
         self.onDisplayModeRequested = onDisplayModeRequested
+        self.onCardCapabilities = onCardCapabilities
     }
 
     // MARK: - 起動 / 受信ループ
@@ -400,6 +415,17 @@ public actor AppsBridgeSession {
             await deliver(response: JSONRPCResponse(
                 id: id, error: JSONRPCError(code: -32603, message: "initialize result のエンコードに失敗")))
         }
+
+        // カードが fullscreen を宣言しているか(appCapabilities.availableDisplayModes に "fullscreen" が
+        // あるか)を Features へ通知する(UX #1・fable #1)。JSONValue のアクセサ(subscript / arrayValue /
+        // stringValue・JSONValue.swift の便利アクセサ群)で素直に引く。appCapabilities 欠落・型違い・
+        // fullscreen 未宣言はすべて false(⤢ を出さない)に倒す —— apps.mdx:786 の「宣言されたモードにしか
+        // ホスト発切替できない」を守り、押しても違反になる死にボタンを構造的に排除する。
+        // 応答を返した後に呼ぶ(initialize の result 配送を capability 通知より先に確定させる)。
+        let supportsFullscreen = params.appCapabilities["availableDisplayModes"]?
+            .arrayValue?.contains { $0.stringValue == UIDisplayMode.fullscreen.rawValue } ?? false
+        await onCardCapabilities?(supportsFullscreen)
+        logger.notice("カード capability 判定: supportsFullscreen=\(supportsFullscreen)")
     }
 
     /// passthrough レーン(tools/call・resources/read・ping・未知)。状態を持たない素通しプロキシ。
