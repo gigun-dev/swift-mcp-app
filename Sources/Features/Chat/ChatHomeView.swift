@@ -22,9 +22,12 @@ struct ChatHomeView: View {
     // 履歴サイドバーの開閉(committed 状態)。実際の見せ方は「メイン画面を右へスライドして
     // 下層のサイドバーを露出する」方式(body 参照)。
     @State private var showingSidebar = false
-    // 引き出しの横ドラッグ量(live)。ジェスチャ中だけ値が入り、終了で 0 に戻る(@GestureState の性質)。
-    // committed の showingSidebar と合わせて実オフセットを決める(currentOffset)。
-    @GestureState private var dragX: CGFloat = 0
+    // 引き出しの横ドラッグ量(live)。**@GestureState でなく @State** にしているのは、指を離した
+    // 瞬間の 0 リセットを自前で(snap と同じ withAnimation 内で)行うため — @GestureState は
+    // 終了時に 0 へ即リセットされ、committed(showingSidebar)反映との間に1フレームの隙間ができて
+    // 「一度閉じてから開く」ちらつきになる(ユーザー指摘・2026-07-16)。committed の showingSidebar と
+    // 合わせて実オフセットを決める(currentOffset)。
+    @State private var dragTranslation: CGFloat = 0
 
     init() {
         // settings を先に作り、それを home に注入する。@State の init 直接代入は
@@ -215,25 +218,32 @@ struct ChatHomeView: View {
     /// これで「☰ タップで開閉」と「横ドラッグで指追従」を同じオフセットに合流させる。
     private func currentOffset(revealWidth: CGFloat) -> CGFloat {
         let base: CGFloat = showingSidebar ? revealWidth : 0
-        return min(max(base + dragX, 0), revealWidth)
+        return min(max(base + dragTranslation, 0), revealWidth)
     }
 
     /// 横ドラッグで引き出しを開閉するジェスチャ。
     /// - 縦スクロール/タップと両立させるため **横方向優位のときだけ**反応(縦優位は無反応で素通し)。
     /// - 指を離したら、投射位置(予測を少し加味)が reveal の 40% を超えていれば開、未満なら閉に snap。
+    ///
+    /// 【ちらつき対策(2026-07-16・ユーザー指摘)】@State の dragTranslation を使い、onEnded で
+    /// **snap 確定(showingSidebar)と dragTranslation=0 を同一 withAnimation 内**で行う。こうすると
+    /// 実オフセット(base + dragTranslation)が「離した位置」から「snap 先」へ連続してアニメーション
+    /// する。@GestureState だと離した瞬間に 0 リセットが先行し、committed 反映との隙間で「一度閉じて
+    /// から開く」1フレームのちらつきが出ていた(開閉とも)。
     private func dragGesture(revealWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 12)
-            .updating($dragX) { value, state, _ in
+            .onChanged { value in
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                state = value.translation.width
+                dragTranslation = value.translation.width
             }
             .onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                let horizontal = abs(value.translation.width) > abs(value.translation.height)
                 let base: CGFloat = showingSidebar ? revealWidth : 0
                 // predictedEndTranslation を少し加味して「勢いのあるフリック」でも自然に開閉する。
                 let projected = base + value.translation.width + value.predictedEndTranslation.width * 0.2
                 withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
-                    showingSidebar = projected > revealWidth * 0.4
+                    if horizontal { showingSidebar = projected > revealWidth * 0.4 }
+                    dragTranslation = 0  // snap と同じアニメーション内でリセット(隙間=ちらつきを作らない)。
                 }
             }
     }
