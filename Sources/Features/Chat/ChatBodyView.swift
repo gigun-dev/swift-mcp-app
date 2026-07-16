@@ -43,6 +43,15 @@ struct ChatBodyView: View {
     // fullscreen 昇格の調停役(高々1枚・決定2b・設計 04 §5 H4-C)。@State で1個所有し registry と並置する。
     @State private var fullscreenCoordinator = FullscreenCoordinator()
 
+    // カード拡大の zoom トランジション用 namespace(P4-DM 遷移アニメ・設計 04 §5 決定2 2026-07-17 追更新の
+    // 改訂: 自前 overlay スナップショットズームは高依存でボツ→財産、iOS 18 公式 zoom transition を採用)。
+    // source(inline カード)と destination(fullScreenCover 中身)を同じ id で結ぶと「カード rect →
+    // 全画面 rect へその場から拡大/縮小」が得られる。id は host.id(ObjectIdentifier・高々1枚昇格なので衝突なし)。
+    // iOS 17 は fullScreenCover の遷移差し替えが公開 API 上不可 → 下の zoomSource/zoomTransition 拡張が
+    // #available で既定カバー(下からせり上がり)にフォールバックする(⤢ メタファ不整合は iOS 17 のみ残るが
+    // 授業/提出想定は iOS 18 実機で、既定挙動より劣化させない範囲で許容・§4 可逆)。
+    @Namespace private var cardZoom
+
     /// inline カードの実 maxHeight を可視高から算出する(P4-DM 決定1・設計 04 §5 H1)。
     /// 可視高 × 0.65 を floor。可視高未確定(0)の間はカード構築が columnWidth==0 で保留されるため
     /// フォールバック値(600)は実際にはほぼ使われないが、念のため 0 を避ける。
@@ -76,7 +85,10 @@ struct ChatBodyView: View {
         // coordinator.dismiss()(= host.restoreInline の順序復帰)を呼ぶ。sheet(.large)は「上余白 dead 領域・
         // ⤢ 拡大メタファとボトムシートの不整合・スクロール前提なら全画面が素直」でユーザー却下 → 全画面に。
         .fullScreenCover(item: activeHostBinding) { host in
+            // destination 側 zoom アンカー: source(inline カード)と同じ id/namespace で結ぶ。
+            // iOS 18+ でのみ .navigationTransition(.zoom) が効き、それ未満では no-op(既定カバー)。
             FullscreenCardView(host: host)
+                .zoomTransition(id: host.id, in: cardZoom)
         }
     }
 
@@ -171,8 +183,11 @@ struct ChatBodyView: View {
                 // registry から同じ host を引くことで、スクロール再生成でも往復状態が保たれる。
                 if let proxy {
                     ForEach(Array(turn.cards.enumerated()), id: \.offset) { cardIndex, card in
+                        // host を先に束ねる: zoom source の id(host.id)を InlineCardView 本体と
+                        // .matchedTransitionSource の両方に使うため(call site で参照が要る)。
+                        let host = cardRegistry.host(for: "\(turnIndex)-\(cardIndex)", coordinator: fullscreenCoordinator)
                         InlineCardView(
-                            host: cardRegistry.host(for: "\(turnIndex)-\(cardIndex)", coordinator: fullscreenCoordinator),
+                            host: host,
                             proxy: proxy,
                             card: card,
                             containerWidth: columnWidth,
@@ -184,6 +199,10 @@ struct ChatBodyView: View {
                                 chatVM.setCardSnapshot(turnIndex: turnIndex, cardIndex: cardIndex, html: html)
                             }
                         )
+                        // zoom source アンカー(拡大の起点=この inline カード枠)。destination の
+                        // .zoomTransition(id: host.id) と同じ id/namespace で「その場から拡大」になる。
+                        // iOS 18+ でのみ効き、未満では no-op。
+                        .zoomSource(id: host.id, in: cardZoom)
                     }
                 }
             }
@@ -515,6 +534,37 @@ private func prettyJSON(_ raw: String) -> String {
           let s = String(data: pretty, encoding: .utf8)
     else { return raw }
     return s
+}
+
+// MARK: - zoom トランジション(P4-DM 遷移アニメ・設計 04 §5 決定2 2026-07-17 改訂)
+//
+// iOS 18 の zoom transition(matchedTransitionSource + navigationTransition(.zoom))を薄くラップする。
+// source(inline カード)と destination(fullScreenCover 中身)を同じ (id, namespace) で結ぶと、
+// カード枠 rect ↔ 全画面 rect の「その場から拡大/縮小」遷移が公式に得られる(⤢=拡大メタファに一致)。
+// iOS 17 は fullScreenCover の遷移差し替えが公開 API 上不可なので #available で no-op に落とし、
+// 既定のカバー(下からせり上がり)にフォールバックする(遷移だけの差で機能は同一・§4 可逆)。
+// 自前 overlay スナップショットズーム(旧案)は Web プロセス再レイアウト飛行のコスト・自前提示機構の
+// 高依存でボツ=財産(設計 04 §5 の 2026-07-17 追更新ブロック参照)。id は host.id(ObjectIdentifier)。
+private extension View {
+    /// 拡大の起点(inline カード枠)に付ける source アンカー。
+    @ViewBuilder
+    func zoomSource(id: ObjectIdentifier, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 18.0, *) {
+            self.matchedTransitionSource(id: id, in: namespace)
+        } else {
+            self  // iOS 17: 差し替え不可 → 既定カバー遷移のまま。
+        }
+    }
+
+    /// 拡大の着地先(fullScreenCover 中身)に付ける destination アンカー。source と同 id/namespace で対応。
+    @ViewBuilder
+    func zoomTransition(id: ObjectIdentifier, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 18.0, *) {
+            self.navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            self
+        }
+    }
 }
 
 /// メッセージ列の内側幅(カード列幅)を GeometryReader → onPreferenceChange で吸い上げる鍵(設計 §5)。

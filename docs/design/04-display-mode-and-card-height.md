@@ -339,6 +339,16 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   > フォールバックは `scale(anchor:カード中心)+opacity`。overlay 化の自前責務: safe area 確保・キーボード
   > フォーカス解除・「overlay 中は他 sheet を出さない」不変条件・zIndex/ステータスバー配色の実機確認。
   > 最小ストリップ+⤡・restore シーケンスは上記のまま(onDismiss は ⤡ ハンドラに一本化)。
+  > **2026-07-17 再々改訂(overlay ボツ → iOS 18 公式 zoom transition 採用・実装済み):** 上の自前 overlay
+  > スナップショットズームは「Web プロセス再レイアウト飛行のコスト・自前提示機構(safe area/フォーカス/
+  > zIndex/他 sheet 抑止)の高依存」で着手前にボツ=財産。代わりに **iOS 18 の zoom transition**
+  > (`matchedTransitionSource(id:in:)` を inline カード= source に、`.navigationTransition(.zoom(sourceID:in:))`
+  > を fullScreenCover 中身= destination に付与)を採用。`fullScreenCover` の器はそのまま、モディファイア数個で
+  > 「カード枠 rect ↔ 全画面 rect のその場拡大/縮小」が公式に得られ、⤢=拡大メタファに一致(ユーザー却下だった
+  > 下からのカバーアップを解消)。id は host.id(ObjectIdentifier・高々1枚昇格で衝突なし)。**iOS 17 は
+  > fullScreenCover の遷移差し替えが公開 API 上不可** → ChatBodyView の `zoomSource`/`zoomTransition` 拡張が
+  > `#available(iOS 18, *)` で no-op に落ち、既定カバー遷移にフォールバック(遷移だけの差・機能同一・§4 可逆)。
+  > 実装: `Sources/Features/Chat/ChatBodyView.swift`(`@Namespace cardZoom` + source/destination + 拡張)。
   - **InlineCardHost に `displayMode`(@Observable)を新設** = 単一の真実(§3 責務表)。Session は状態を持たない。
   - **AppCardView を container 再アダプト方式へ全面変更**(inline-only 経路含む):makeUIView は空の
     container UIView を返し、updateUIView が **displayMode ガード付きで** adopt する(inline 側 container は
@@ -384,6 +394,25 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   > FAB に集約、ボタン高+下余白を budget から先引きするので「畳み決定後に append してボタン高が計算外」だった
   > 現行欠陥と「すべて表示の下余白不足」を同時に根治。N を1ずつ減らす反復案は却下(累積 offsetTop で1回測定
   > すれば閉じる)。host 変更不要(クランプは安全網のまま=§3 責務分担)。
+  > **2026-07-17 追更新(ユーザー実機 FB で「folded では FAB 非表示」を撤回 → 常時表示 + budget に FAB 分も先引き):**
+  > 上記「folded では FAB を非表示にし fullscreen の FAB に集約する」という fable の設計判断を、ユーザーの
+  > 実機フィードバック「+ 追加ボタンは主要アクションなので、畳んだ inline カードでも常に見えているべき」で
+  > **上書きする**(プロダクト判断がアーキテクチャ判断に優先する例 — 「主要導線を inline から消さない」は
+  > 「fullscreen へ切替を要求してから追加」という余分な1ステップをユーザーに強制することになり、
+  > FAB を隠すことによる収まり計算の単純化よりも実害が大きいと判断)。
+  > 撤回に伴い、`computeInlineFit` の第4引数(旧 `buttonBlock`)を `bottomChrome`(「畳んだ行より下に必ず
+  > 並ぶ要素群の合計高さ」)へ意味を拡張 — 「すべて表示」ボタンの高さだけでなく **+ FAB(`.fab-row`)の
+  > 高さも合算**して budget から先引きする。FAB を隠さない以上、畳んだ行・「すべて表示」・FAB の3つ全部が
+  > maxHeight に収まらなければ再発バグ(FAB クリップ)がそのまま folded 側で再現してしまうため。
+  > 加えて実装時に判明した事実訂正: **caldav の `#quick-add-fab`(`.fab-row`)は `#root` の**外**(兄弟要素)**
+  > に置かれており(`#root の外に置いたこの FAB は再描画の影響を受けない`という既存コメントどおり)、
+  > `root.scrollHeight` は FAB の高さを**含まない**。前回の「fullHeight=root.scrollHeight が FAB 込み」という
+  > 記述は実際の DOM 構造と食い違っていた誤りだったため、本更新で `fullHeight = root.scrollHeight + FAB実測高`
+  > に訂正する(`.fab-row` の実要素を直接 `offsetHeight` + `marginTop` で測る。ボタンと違い FAB は常時 DOM に
+  > 存在し隠されなくなったので probe 不要)。`computeInlineFit` 自体のシグネチャ・判定ロジックは無変更
+  > (第4引数の“中身”が1要素分から2要素の合計に変わっただけ)。caldav 側の詳細は
+  > `todos-fold.ts`(`computeInlineFit` の `bottomChrome` 引数コメント)・`todos-entry.ts`
+  > (`measureFabBlockPx` コメント)を参照。
 - **C3: 昇格(full ループの最後)**: `appCapabilities.availableDisplayModes: ["inline","fullscreen"]` 宣言
   (todos-entry.ts:2781 の `new App`)+ C2 の「残り n 件」表示を **「すべて表示 (全n件)」ボタンに置換** →
   `app.requestDisplayMode({mode:"fullscreen"})`(fullscreen が広告されているホストのみ・無ければ受動表示のまま)
