@@ -5,8 +5,9 @@
 // ext-apps 側の行番号を各定数に付す。2026-07-15 時点のチェックアウト)。
 //
 // 設計 §3-2 の最小集合ぶんだけ写経する。sandbox-proxy 系(ネイティブホストでは往復ごと省略・
-// 設計 §0)や download-file / update-model-context / message / request-display-mode は
-// スパイク対象外なので、必要になった時点で足す(可逆)。
+// 設計 §0)や download-file / update-model-context / message はスパイク対象外なので、
+// 必要になった時点で足す(可逆)。request-display-mode は P4-DM(displayMode ネゴシエーション)で
+// 追加済み(設計 04)。
 public enum AppsMethod {
     // ライフサイクル。
     // View→Host: 初期化リクエスト。spec.types.ts:838 INITIALIZE_METHOD
@@ -38,6 +39,10 @@ public enum AppsMethod {
     // View→Host: 外部リンクを開くリクエスト(実装は UIApplication.open 1行・設計 §3-2)。
     // spec.types.ts:814 OPEN_LINK_METHOD
     public static let openLink = "ui/open-link"
+
+    // View→Host: displayMode 変更リクエスト(P4-DM・設計 04 §2 決定2/§5 H2)。
+    // spec.types.ts:842 REQUEST_DISPLAY_MODE_METHOD
+    public static let requestDisplayMode = "ui/request-display-mode"
 
     // --- 素通し(型を付けずに method 文字列でルーティングする系。設計 §3-3)---
     // これらは MCP 標準メソッドで ext-apps の *_METHOD 定数には無い。View→サーバーの

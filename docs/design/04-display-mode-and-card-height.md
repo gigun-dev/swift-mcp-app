@@ -291,6 +291,14 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
     (AppsBridgeSession.swift:58)。
   - swift-testing: 「request → result.mode 応答 → host-context-changed 送出」の順序をモック
     transport で検証。inline しか返さないコールバックのケース(昇格拒否)も。
+  > **2026-07-16 更新(H2+H3 実装完了・make check green):** 実装は上記どおり。加えて **`AppsBridgeTransport`
+  > プロトコルを新設**した(Sources/Services/AppsBridge/WebViewTransport.swift)。理由: Session は具象
+  > `WebViewTransport`(WKWebView 必須)に直接依存しており単体テストで送信内容を観測できなかったため、
+  > Session が使う面(incoming / deliver(rawJSON:) / deliver(response:) / finish())だけをプロトコルに
+  > 切り出し、テストは軽量な MockTransport を注入。`WebViewTransport` は extension で自動適合し**本番配線は
+  > 無変更**。可逆・影響最小の seam。DisplayModeResolution(mode + containerDimensions?)は指示どおり
+  > Services 内 struct(Kernel の wire 型と分離)。テスト: 昇格受理(応答→通知の順)・既定拒否(通知なし)・
+  > notifyDisplayModeChanged の3本 + Kernel classify/Codable 4本。
 - **H4: Features の fullscreen 器**(**モック/プレビューでユーザー合意してから実装** —
   「UI はモックで合意してから実装」の規律。sheet の見た目・閉じ方・戻り遷移を SwiftUI プレビュー
   or HTML モックで先に見せる)

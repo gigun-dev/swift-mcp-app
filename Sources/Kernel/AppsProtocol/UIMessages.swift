@@ -180,3 +180,27 @@ public struct OpenLinkParams: Codable, Hashable, Sendable {
         self.url = url
     }
 }
+
+// MARK: - ui/request-display-mode(View→Host リクエスト / Host→View 結果・P4-DM)
+
+/// ui/request-display-mode のパラメータ。カードが希望する displayMode を1つ運ぶだけ。
+/// 出典: spec.types.ts:739-748 McpUiRequestDisplayModeRequest.params / apps.mdx:1036-1056。
+/// 既存の `UIDisplayMode`(hostContext と共通)をそのまま使う。
+public struct RequestDisplayModeParams: Codable, Hashable, Sendable {
+    public let mode: UIDisplayMode
+
+    public init(mode: UIDisplayMode) {
+        self.mode = mode
+    }
+}
+
+/// ui/request-display-mode の結果。ホストが**実際に設定した**モード(要求どおりとは限らない —
+/// 昇格を拒否すれば要求と異なる値を返してよい)。出典: spec.types.ts:749-751 /
+/// apps.mdx:787「Host MUST return the resulting mode」(拒否時も省略不可)。
+public struct RequestDisplayModeResult: Codable, Hashable, Sendable {
+    public let mode: UIDisplayMode
+
+    public init(mode: UIDisplayMode) {
+        self.mode = mode
+    }
+}

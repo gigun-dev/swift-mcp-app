@@ -17,10 +17,28 @@ import Foundation
 import OSLog
 import Kernel
 
+/// request-display-mode の解決結果(P4-DM・設計 04 §5 H3)。Kernel の wire 型
+/// (RequestDisplayModeResult 等)とは別に Services 側で持つ小さな struct —— containerDimensions
+/// という「結果に付随する追加情報」を wire 型に足すと Kernel が displayMode ごとの寸法計算という
+/// ホスト側の判断ロジックを知ることになり、Kernel のプラットフォーム非依存性(CLAUDE.md)を汚す。
+public struct DisplayModeResolution: Sendable {
+    /// 実際に設定するモード(拒否時は現状維持のモード。要求どおりとは限らない)。
+    public let mode: UIDisplayMode
+    /// 新モードでの寸法。nil なら Session 側が現行 inline 寸法(containerWidth/maxHeight)を使う。
+    public let containerDimensions: ContainerDimensions?
+
+    public init(mode: UIDisplayMode, containerDimensions: ContainerDimensions? = nil) {
+        self.mode = mode
+        self.containerDimensions = containerDimensions
+    }
+}
+
 /// MCP Apps ホスト側のセッション状態機械。
 ///
 /// 依存は2つだけ:
-///  - `WebViewTransport`: View との postMessage 往復(Host→View 配送・View→Host 受信ストリーム)。
+///  - `AppsBridgeTransport`(実装は `WebViewTransport`): View との postMessage 往復
+///    (Host→View 配送・View→Host 受信ストリーム)。プロトコルに切ってあるのはテスト用の
+///    インメモリ実装を挿せるようにするため(WebViewTransport のコメント参照・P4-DM H3)。
 ///  - `AppsServerProxy`: passthrough(tools/call・resources/read)を実サーバーへ流す口。
 /// caldav 非依存(ツール名も structuredContent の形も知らない — 設計 §0)。
 public actor AppsBridgeSession {
@@ -42,7 +60,7 @@ public actor AppsBridgeSession {
 
     // MARK: - 協調オブジェクト
 
-    private let transport: WebViewTransport
+    private let transport: any AppsBridgeTransport
     private let proxy: AppsServerProxy
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "appssession")
 
@@ -57,6 +75,19 @@ public actor AppsBridgeSession {
     // actor から MainActor の @Observable を直接触らないための注入点(設計 §5)。
     private let onSizeChanged: @Sendable (Double) async -> Void
 
+    // request-display-mode を受けたとき、実際にどのモードへ遷移するかを決める注入点
+    // (P4-DM・設計 04 §5 H3)。Features(H4)が sheet 器を持つかどうかを知っているのは
+    // Features 側なので、Session 自身は「昇格してよいか」を判断しない。既定は
+    // 「昇格拒否(inline のまま)」——H4 の sheet 器が未実装でも安全に動く
+    // (カードが fullscreen を要求しても inline を返すだけで、host-context-changed も飛ばない)。
+    private let onDisplayModeRequested: @Sendable (UIDisplayMode) async -> DisplayModeResolution
+
+    // 現在の displayMode(Session が最後に View へ通知した値)。単一の真実は将来
+    // Features 側(InlineCardHost)に置く設計(設計 04 §3 責務表)だが、Session は
+    // 「変化したときだけ host-context-changed を送る」ための相関に自分の記憶が要る
+    // (Features の実際の UI 状態の「影」であって、真実そのものではない)。
+    private var currentDisplayMode: UIDisplayMode = .inline
+
     // teardown の応答待ち continuation とその id(応答相関に使う)。
     private var teardownContinuation: CheckedContinuation<Void, Never>?
     private var teardownRequestID: RequestID?
@@ -67,12 +98,14 @@ public actor AppsBridgeSession {
     private var consumeTask: Task<Void, Never>?
 
     public init(
-        transport: WebViewTransport,
+        transport: any AppsBridgeTransport,
         proxy: AppsServerProxy,
         hostInfo: Implementation = Implementation(name: "MCPHost", version: "0.1.0"),
         containerWidth: Double,
         maxHeight: Double = 600,
-        onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in }
+        onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in },
+        onDisplayModeRequested: @escaping @Sendable (UIDisplayMode) async -> DisplayModeResolution
+            = { _ in DisplayModeResolution(mode: .inline) }
     ) {
         self.transport = transport
         self.proxy = proxy
@@ -80,6 +113,7 @@ public actor AppsBridgeSession {
         self.containerWidth = containerWidth
         self.maxHeight = maxHeight
         self.onSizeChanged = onSizeChanged
+        self.onDisplayModeRequested = onDisplayModeRequested
     }
 
     // MARK: - 起動 / 受信ループ
@@ -142,6 +176,26 @@ public actor AppsBridgeSession {
             params: try? JSONValue(encoding: patch))
         await deliver(notification: note)
         logger.notice("host-context-changed 送信 width=\(width)")
+    }
+
+    /// ホスト起点の displayMode 変更(sheet dismiss で inline へ戻す等・P4-DM 設計 04 §5 H3)。
+    /// View 発の request-display-mode と違い応答は無く、host-context-changed 通知だけ送る
+    /// (apps.mdx:776)。H4(Features の sheet 器)未実装の現時点では誰も呼ばないが、
+    /// H3 の API としてここに用意しておく。
+    public func notifyDisplayModeChanged(to mode: UIDisplayMode, containerDimensions: ContainerDimensions? = nil) async {
+        guard state == .ready else {
+            // ready 前(MUST NOT の対象)は送らず、記憶だけ更新する。setContainerWidth の
+            // ready-前分岐と同じ考え方(design 04 §5 H3・ready 後の再遷移で改めて通知される想定)。
+            currentDisplayMode = mode
+            logger.notice("notifyDisplayModeChanged: ready 前なので記憶のみ更新 mode=\(String(describing: mode))")
+            return
+        }
+        currentDisplayMode = mode
+        let dims = containerDimensions ?? ContainerDimensions(width: containerWidth, maxHeight: maxHeight)
+        let patch = HostContext(displayMode: mode, containerDimensions: dims)
+        await deliver(notification: JSONRPCNotification(
+            method: AppsMethod.hostContextChanged, params: try? JSONValue(encoding: patch)))
+        logger.notice("host-context-changed 送信(ホスト起点) mode=\(String(describing: mode))")
     }
 
     // MARK: - 片付け(設計 §4/§5)
@@ -245,6 +299,24 @@ public actor AppsBridgeSession {
             // TODO(P3): open-link を Features のハンドラへ委譲する注入点を足す。
             logger.notice("open-link 受信 url=\(params.url, privacy: .public)(スパイクでは受理のみ)")
             await deliver(response: JSONRPCResponse(id: id, result: .object([:])))
+
+        case let .requestDisplayMode(id, params):
+            // カード発のモード変更要求。Features(H4)が実モードを決めて返す。既定は拒否(inline)。
+            let resolution = await onDisplayModeRequested(params.mode)
+            // apps.mdx:787 MUST: 変えなかった場合も「結果のモード」を必ず返す。
+            let result = RequestDisplayModeResult(mode: resolution.mode)
+            await deliver(response: JSONRPCResponse(
+                id: id, result: (try? JSONValue(encoding: result)) ?? .object([:])))
+            // モードが実際に変わったときだけ host-context-changed で通知(apps.mdx:776)。
+            if resolution.mode != currentDisplayMode {
+                currentDisplayMode = resolution.mode
+                let dims = resolution.containerDimensions
+                    ?? ContainerDimensions(width: containerWidth, maxHeight: maxHeight)
+                let patch = HostContext(displayMode: resolution.mode, containerDimensions: dims)
+                await deliver(notification: JSONRPCNotification(
+                    method: AppsMethod.hostContextChanged, params: try? JSONValue(encoding: patch)))
+                logger.notice("displayMode 変更 → \(String(describing: resolution.mode)) を host-context-changed で通知")
+            }
         }
     }
 
@@ -253,12 +325,13 @@ public actor AppsBridgeSession {
     private func handleInitialize(id: RequestID, params: InitializeParams) async {
         logger.notice("ui/initialize 受信 appInfo=\(params.appInfo.name, privacy: .public) proto=\(params.protocolVersion, privacy: .public)")
 
-        // availableDisplayModes は ["inline"] 固定(設計 §4: fullscreen/pip はスパイク外)。
+        // availableDisplayModes: fullscreen を広告する(P4-DM・設計 04 §5 H3)。pip は見送り
+        // (設計 04 §4 ボツ案 — ユースケースが薄く、host-context-changed の寸法契約も未整理)。
         let hostContext = HostContext(
             theme: .light,
             locale: "ja-JP",
-            displayMode: .inline,
-            availableDisplayModes: [.inline],
+            displayMode: currentDisplayMode,
+            availableDisplayModes: [.inline, .fullscreen],
             containerDimensions: ContainerDimensions(width: containerWidth, maxHeight: maxHeight))
 
         // protocolVersion は View が送ってきたものをそのまま返す(バージョン交渉はスパイク外・
@@ -271,7 +344,7 @@ public actor AppsBridgeSession {
 
         if let resultJSON = try? JSONValue(encoding: result) {
             await deliver(response: JSONRPCResponse(id: id, result: resultJSON))
-            logger.notice("ui/initialize 応答済み(hostContext.availableDisplayModes=[inline])")
+            logger.notice("ui/initialize 応答済み(hostContext.availableDisplayModes=[inline,fullscreen])")
         } else {
             await deliver(response: JSONRPCResponse(
                 id: id, error: JSONRPCError(code: -32603, message: "initialize result のエンコードに失敗")))

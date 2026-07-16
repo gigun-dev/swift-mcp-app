@@ -42,12 +42,32 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// `AppsBridgeSession` が transport に要求する最小の口(P4-DM・設計 04 §5 H3 で追加)。
+///
+/// なぜプロトコルを切ったか: `AppsBridgeSession` は本来 `WebViewTransport`(WKWebView 必須)
+/// にしか依存していなかったが、それだと単体テストが「実際に WKWebView を生成して
+/// postMessage を仕込む」重い統合テストにしかならない(webView 未 attach だと
+/// `deliver(rawJSON:)` は何もせず抜けるため、送信内容をテストで観測できない)。
+/// Session が使う面(受信ストリーム・応答/通知の配送・終了)だけを切り出しておけば、
+/// テストは軽量なインメモリ実装を挿せる。`WebViewTransport` は下で `extension` により
+/// 追加コードなしでこのプロトコルに適合する。
+public protocol AppsBridgeTransport: Sendable {
+    /// View→Host の受信ストリーム(判別済み message と生 JSON のタプル)。
+    var incoming: AsyncStream<(message: JSONRPCMessage, raw: String)> { get }
+    /// 生 JSON 文字列を View へ配送する(通知の組み立ては呼び出し側の責務)。
+    func deliver(rawJSON: String) async
+    /// JSON-RPC レスポンスを組み立てて配送する薄いヘルパ。
+    func deliver(response: JSONRPCResponse) async
+    /// ストリームを閉じる(webView 破棄時など)。
+    func finish()
+}
+
 /// WKWebView 上の postMessage ⇔ Kernel JSON-RPC を仲介するトランスポート。
 ///
 /// 1 WKWebView = 1 Transport。Features 側が `makeConfiguration()` で得た configuration で
 /// WKWebView を作り、生成後に `attach(to:)` で Transport に webView を渡す
 /// (delivery の callAsyncJavaScript に webView 参照が要るため)。
-public final class WebViewTransport: NSObject {
+public final class WebViewTransport: NSObject, AppsBridgeTransport, @unchecked Sendable {
     // webkit ハンドラ名。documentStart スクリプトの
     // `window.webkit.messageHandlers.appsBridge` と一致させる(定数で二重管理を防ぐ)。
     private static let handlerName = "appsBridge"

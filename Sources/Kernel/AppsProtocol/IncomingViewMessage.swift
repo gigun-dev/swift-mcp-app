@@ -2,7 +2,8 @@
 //
 // ブリッジは「ホストが解釈する ui/*(typed レーン)」と「サーバーへ素通しする MCP 標準系
 // (passthrough レーン)」を分けて扱う。typed に載せるのは設計 §3-2 の最小集合のうち
-// View→Host 方向のものだけ(initialize / initialized / size-changed / open-link)。
+// View→Host 方向のものだけ(initialize / initialized / size-changed / open-link /
+// request-display-mode・P4-DM で追加)。
 // 残り(tools/call・resources/read・ping・未実装の ui/message 等)はすべて passthrough に
 // 落ちる。将来 ui/update-model-context などを typed に昇格させるのは、classify の分岐を
 // 1本足すだけで済む(可逆)。
@@ -12,6 +13,7 @@ public enum TypedViewMessage: Sendable {
     // リクエスト(応答が要る)。id を保持して応答に使う。
     case initialize(id: RequestID, InitializeParams)
     case openLink(id: RequestID, OpenLinkParams)
+    case requestDisplayMode(id: RequestID, RequestDisplayModeParams)
     // 通知(応答不要)。
     case initialized
     case sizeChanged(SizeChangedParams)
@@ -42,6 +44,10 @@ public enum IncomingViewMessage: Sendable {
             case AppsMethod.openLink:
                 let params = try (request.params ?? .object([:])).decode(OpenLinkParams.self)
                 return .typed(.openLink(id: request.id, params))
+            case AppsMethod.requestDisplayMode:
+                // mode は必須(欠落・不正な文字列は decode 失敗 → 上位で malformed として扱う)。
+                let params = try (request.params ?? .object([:])).decode(RequestDisplayModeParams.self)
+                return .typed(.requestDisplayMode(id: request.id, params))
             default:
                 // tools/call・resources/read・ping・未実装 ui/* リクエストはここへ。
                 return .passthrough(method: request.method, id: request.id, params: request.params)

@@ -174,3 +174,45 @@ func classifyNotifications() throws {
     else { Issue.record("size-changed が typed にならない"); return }
     #expect(params.height == 420)
 }
+
+// MARK: - ui/request-display-mode(P4-DM・設計 04 §5 H2)
+
+@Test("classify: ui/request-display-mode は typed レーンへ(id・mode を保持)")
+func classifyRequestDisplayMode() throws {
+    let message = try JSONRPCMessage.decode(from: Data(#"""
+    {"jsonrpc":"2.0","id":9,"method":"ui/request-display-mode","params":{"mode":"fullscreen"}}
+    """#.utf8))
+    guard case .typed(.requestDisplayMode(let id, let params)) = try IncomingViewMessage.classify(message)
+    else { Issue.record("request-display-mode が typed に落ちなかった"); return }
+    #expect(id == .int(9))
+    #expect(params.mode == .fullscreen)
+}
+
+@Test("classify: request-display-mode は params 欠落だと malformed として throw する")
+func classifyRequestDisplayModeMissingParams() throws {
+    // params 自体を省略(mode は必須フィールドなので空 object でも decode 失敗する)。
+    let message = try JSONRPCMessage.decode(from: Data(
+        #"{"jsonrpc":"2.0","id":9,"method":"ui/request-display-mode"}"#.utf8))
+    #expect(throws: (any Error).self) {
+        _ = try IncomingViewMessage.classify(message)
+    }
+}
+
+@Test("classify: request-display-mode は mode が不正な文字列だと malformed として throw する")
+func classifyRequestDisplayModeInvalidMode() throws {
+    // "modal" は UIDisplayMode の3値(inline/fullscreen/pip)のどれでもない不正値。
+    let message = try JSONRPCMessage.decode(from: Data(#"""
+    {"jsonrpc":"2.0","id":9,"method":"ui/request-display-mode","params":{"mode":"modal"}}
+    """#.utf8))
+    #expect(throws: (any Error).self) {
+        _ = try IncomingViewMessage.classify(message)
+    }
+}
+
+@Test("RequestDisplayModeParams/Result は inline/fullscreen/pip すべてで round-trip する")
+func requestDisplayModeParamsAndResultRoundTrip() throws {
+    for mode in [UIDisplayMode.inline, .fullscreen, .pip] {
+        #expect(try roundTrip(RequestDisplayModeParams(mode: mode)) == RequestDisplayModeParams(mode: mode))
+        #expect(try roundTrip(RequestDisplayModeResult(mode: mode)) == RequestDisplayModeResult(mode: mode))
+    }
+}
