@@ -49,6 +49,9 @@ struct ChatHomeView: View {
             // これで寄せる。ZStack 全体は下の .ignoresSafeArea() で全画面へ広げる(カード bleed)。
             let topInset = geo.safeAreaInsets.top
             let bottomInset = geo.safeAreaInsets.bottom
+            // 開度(0=閉 1=開)。オフセットを reveal 幅で正規化。暗幕の opacity 駆動に使う
+            // (ベスプラ: 開閉を boolean でなく 0..1 の fraction で駆動すると滑らか)。
+            let progress = revealWidth > 0 ? min(max(offset / revealWidth, 0), 1) : 0
             ZStack(alignment: .leading) {
                 // 下層: サイドバー(左 revealWidth・全高)。**内容だけ safe area inset で寄せる**
                 // (ヘッダがステータスバー/ノッチに潜らない・FAB がホームインジケータに被らない)。
@@ -64,6 +67,17 @@ struct ChatHomeView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .padding(.top, topInset)
                 .padding(.bottom, bottomInset)
+
+                // サイドバーの暗幕(手本 image15・ユーザー指摘「完全展開まで全体に shadow が入る方が自然」)。
+                // progress で opacity を駆動: 開ききるまで薄暗く、完全展開(progress=1)で 0。これで
+                // 「サイドバーが影から現れる」自然な奥行きになる。閉時(progress=0)は最大 dim だがカードが
+                // 覆うので不可視。opacity 0(全開)のとき SwiftUI が hit-test も自動で外す(ベスプラ)。
+                // allowsHitTesting(false) でドラッグ中もサイドバー操作を妨げない。
+                Color.black
+                    .opacity((1 - progress) * 0.32)
+                    .frame(width: revealWidth)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .allowsHitTesting(false)
 
                 // 上層: メイン(NavigationStack)を角丸カード化して右へスライド。
                 // 【カードを物理画面の上下端まで bleed(2026-07-16・ユーザー指摘の再修正)】
@@ -99,6 +113,11 @@ struct ChatHomeView: View {
             .background(SidebarPalette.paper)
             .ignoresSafeArea()
         }
+        // ハプティクス(iOS 17+ 現行推奨 .sensoryFeedback・UIKit 不要)。committed の showingSidebar が
+        // 変わる = 開閉が snap 確定した瞬間に発火する(ドラッグ追従中は dragX 駆動で committed は
+        // 変わらないので鳴らない = スナップ完了時だけ鳴る・ベスプラどおり)。iPhone のみ想定なので
+        // iPad の非対応(ハプティクス無し)は考慮不要。
+        .sensoryFeedback(.impact(weight: .medium), trigger: showingSidebar)
         .sheet(isPresented: $showingSettings) {
             SettingsSheet(store: settings)
         }
