@@ -61,7 +61,10 @@ public actor AppsBridgeSession {
     // MARK: - 協調オブジェクト
 
     private let transport: any AppsBridgeTransport
-    private let proxy: AppsServerProxy
+    // HOLB S0: 具象 AppsServerProxy でなくプロトコル越しに持つ。テストでゲート式モックを挿し、
+    // passthrough 往復 await 中に size-changed を interleave できるかを決定的に固定するため。
+    // 生成箇所は具象 AppsServerProxy(actor= AppsServerProxying 適合)を渡すので本番挙動は不変。
+    private let proxy: any AppsServerProxying
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "appssession")
 
     // initialize 応答に載せる Host 情報と hostContext の材料(設計 §2/§3-2 の最小集合)。
@@ -103,9 +106,32 @@ public actor AppsBridgeSession {
 
     private var consumeTask: Task<Void, Never>?
 
+    // 実行中の passthrough(tools/call・resources/read)の追跡テーブル(HOLB S1)。
+    // なぜ passthrough だけ非直列化するのか(Why・順序不変条件):
+    //   - typed/response レーンは直列でなければならない: initialize→initialized→outbox flush の直列性と
+    //     teardown の request↔response 相関が受信順処理に依存する。順序を崩すと ready ゲートの機械的遵守や
+    //     teardown 相関が壊れる。
+    //   - passthrough の応答は id 相関で順不同 OK: tools/call/resources/read は JSON-RPC id で一意相関する
+    //     ので、複数を並行に流し到着順に応答しても View は正しく突き合わせる。よって passthrough だけは
+    //     「実サーバー往復 await 中に後続の size-changed 等を先に処理させてよい」。これで実機 ~730ms の
+    //     head-of-line blocking が消える。
+    // 実装(追跡付き非構造化 Task): UUID 採番して Task 登録・完了時に自身を除去。actor リエントランシーで
+    // Task が proxy 往復を await 中、受信ループは即次メッセージへ進み typed/notification が interleave できる。
+    // close() で全 Task cancel(寿命 S2)。
+    // Why not(back-pressure のハード上限を今は設けない): 暴走的な tools/call 連打はサンドボックス(WKWebView)
+    // 側の脅威モデルで扱う領域。上限を入れるならここ(登録前に inflightPassthrough.count を見て超過なら
+    // proxyRequest を呼ばず JSONRPCError(code: -32000) を即 deliver)。今は素直に無制限で持つ。
+    private var inflightPassthrough: [UUID: Task<Void, Never>] = [:]
+
+    // テスト専用の readiness プローブ。ready 遷移(initialized 受信→outbox flush)は受信ループの非同期消化に
+    // 依存するため、テストが「ready になったか」を決定的に待つ手段が要る。HOLB テストで並行スケジューリング
+    // 負荷が増え、Task.yield 1回では ready 到達前に次操作へ進むレースが顕在化した(pre-existing latent
+    // flakiness の顕在化)。本番経路は一切使わない。
+    var isReadyForTests: Bool { state == .ready }
+
     public init(
         transport: any AppsBridgeTransport,
-        proxy: AppsServerProxy,
+        proxy: any AppsServerProxying,
         hostInfo: Implementation = Implementation(name: "MCPHost", version: "0.1.0"),
         containerWidth: Double,
         maxHeight: Double = 600,
@@ -254,6 +280,10 @@ public actor AppsBridgeSession {
         state = .closed
         consumeTask?.cancel()
         consumeTask = nil
+        // HOLB S2: 実行中の passthrough Task を全 cancel しテーブルクリア(consumeTask 停止と同じ寿命管理)。
+        // cancel されても各 Task は proxyRequest 内の closed ガードで配送を握り潰すので破棄後の配送は起きない。
+        for task in inflightPassthrough.values { task.cancel() }
+        inflightPassthrough.removeAll()
         transport.finish()
     }
 
@@ -274,7 +304,17 @@ public actor AppsBridgeSession {
         case let .typed(typed):
             await handleTyped(typed)
         case let .passthrough(method, id, params):
-            await handlePassthrough(method: method, id: id, params: params)
+            // HOLB S1: passthrough は await せず追跡付き Task へ逃がす。ここで await すると proxy 往復が終わるまで
+            // 受信ループが止まり、直後の size-changed が詰まる(実機 ~730ms)。Task 登録後は即 return し次メッセージへ。
+            // [weak self]: 既存流儀(consumeTask)に合わせる。actor が Task を保持する構造で強参照でもリークしないが、
+            // consumeTask と同じく弱参照で統一し「Session が Task を生かし続ける」誤読を避ける(自己参照の輪を作らない)。
+            let key = UUID()
+            let task = Task { [weak self] in
+                guard let self else { return }
+                await self.handlePassthrough(method: method, id: id, params: params)
+                await self.removeInflightPassthrough(key)
+            }
+            inflightPassthrough[key] = task
         case let .response(response):
             handleResponse(response)
         }
@@ -395,6 +435,13 @@ public actor AppsBridgeSession {
     private func proxyRequest(id: RequestID?, label: String, _ work: @Sendable () async throws -> JSONValue) async {
         do {
             let result = try await work()
+            // HOLB S1: 往復 await から戻った時点で closed(webView 破棄後)なら配送しない。非直列化で往復中に
+            // close() が走りうる=応答到着時に配送先 View が無いレース。closed への配送は無意味なので握り潰す。
+            // Why not tearingDown も弾く: teardown 中は View がまだ生存しているので配送は許容する。
+            guard state != .closed else {
+                logger.notice("\(label, privacy: .public) 応答破棄(往復完了時に既に closed)")
+                return
+            }
             if let id {
                 await deliver(response: JSONRPCResponse(id: id, result: result))
                 logger.notice("\(label, privacy: .public) 素通し応答済み")
@@ -469,6 +516,11 @@ public actor AppsBridgeSession {
                 teardownContinuation = continuation
             }
         }
+    }
+
+    // HOLB S1: 完了した passthrough Task を追跡テーブルから外す(Task の末尾で自身を除去)。
+    private func removeInflightPassthrough(_ key: UUID) {
+        inflightPassthrough[key] = nil
     }
 
     private func makeHostRequestID() -> Int {

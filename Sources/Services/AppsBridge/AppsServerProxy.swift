@@ -22,6 +22,20 @@ import OSLog
 import MCP
 import Kernel
 
+/// `AppsBridgeSession` の passthrough レーンが proxy に要求する最小の口(HOLB S0)。
+/// なぜプロトコルを切ったか(Why): S1 で passthrough を非構造化 Task 化して非直列に流すが、その
+/// 振る舞いを決定的にテストしたい。実 AppsServerProxy は swift-sdk の Client(actor・実往復)依存で、
+/// テストから「往復をゲートで止めて size-changed を割り込ませる」制御ができない。Session が
+/// passthrough で使う面(tools/call・resources/read の素通し)だけ切り出せば、CheckedContinuation で
+/// 手動開放するゲート式モックを挿せる。
+/// Why not(Session の proxy 依存を具象のまま残さない理由): 具象 actor 依存だとテストが Client 実接続を
+/// 要し、HOLB 中核挙動(往復 await 中に通知を interleave できるか)を固定できない。境界はこの1点に閉じる。
+/// Sendable: 実装(AppsServerProxy)は actor なので自動 Sendable。
+public protocol AppsServerProxying: Sendable {
+    func passthroughToolsCall(params: JSONValue?) async throws -> JSONValue
+    func passthroughResourcesRead(params: JSONValue?) async throws -> JSONValue
+}
+
 /// 発見〜取得〜素通しをまとめた、接続1本ぶんのサーバープロキシ。
 ///
 /// caldav 固有の知識は持たない(ツール名も structuredContent の形も知らない)。
@@ -230,6 +244,10 @@ public actor AppsServerProxy {
         return try JSONDecoder().decode([String: Value].self, from: data)
     }
 }
+
+// AppsServerProxying への適合(HOLB S0)。要求2メソッド(passthroughToolsCall・
+// passthroughResourcesRead)は actor 本体に既存なので、ここは適合宣言のみ・挙動は不変。
+extension AppsServerProxy: AppsServerProxying {}
 
 /// プロキシ層のエラー。すべて「サーバー応答/View 入力が契約から外れた」ことを表す。
 public enum AppsServerProxyError: Error, CustomStringConvertible {

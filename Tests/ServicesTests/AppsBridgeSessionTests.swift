@@ -63,14 +63,19 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     /// initialized を push する(Session の受信ループは非同期なので、応答到着を軽くポーリングする)。
     private func makeReadySession(
         transport: MockTransport,
+        // HOLB: passthrough レーンのゲート式モックを挿すための注入点(既定は接続不要の実 proxy)。
+        proxy: (any AppsServerProxying)? = nil,
+        // HOLB: size-changed が View から来たとき呼ばれるコールバック(既定は無視)。
+        onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in },
         // 既定 nil = 本番の「ハンドラ未注入」構成に一致(fullscreen 非広告・request-display-mode 拒否)。
         onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil
     ) async -> AppsBridgeSession {
         let session = AppsBridgeSession(
             transport: transport,
-            proxy: makeProxy(),
+            proxy: proxy ?? makeProxy(),
             containerWidth: 340,
             maxHeight: 600,
+            onSizeChanged: onSizeChanged,
             onDisplayModeRequested: onDisplayModeRequested)
         await session.start()
 
@@ -83,8 +88,9 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         await waitUntil { !transport.sentRawJSON.isEmpty }
 
         transport.push(#"{"jsonrpc":"2.0","method":"ui/notifications/initialized"}"#)
-        // ready 遷移(outbox flush)が非同期なので一呼吸置く。以後のテストは ready 前提で push する。
-        await Task.yield()
+        // ready 遷移(outbox flush)は受信ループの非同期消化に依存する。Task.yield 1回では ready 到達前に
+        // 次操作へ進むレースが HOLB テストの並行負荷で顕在化したので、決定的に ready を待つ(以前これで直した)。
+        await waitUntil { await session.isReadyForTests }
         return session
     }
 
@@ -94,6 +100,17 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     private func waitUntil(timeout: Duration = .seconds(1), _ condition: @Sendable () -> Bool) async {
         let deadline = ContinuousClock.now + timeout
         while !condition(), ContinuousClock.now < deadline {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// 上の同期版の async クロージャ版オーバーロード(HOLB)。actor 隔離状態(session.isReadyForTests・
+    /// SizeRecorder.count など)を await で覗きながら待つために要る。sync 版はそのまま残す
+    /// (既存呼び出しは exact match で sync 版を選ぶ)。
+    private func waitUntil(timeout: Duration = .seconds(1), _ condition: @Sendable () async -> Bool) async {
+        let deadline = ContinuousClock.now + timeout
+        while await !condition(), ContinuousClock.now < deadline {
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(5))
         }
@@ -199,5 +216,136 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
             onDisplayModeRequested: { _ in DisplayModeResolution(mode: .inline) })
         #expect(try advertisedModes(transport) == [.inline, .fullscreen])
         await session.close()
+    }
+
+    // MARK: - HOLB(head-of-line blocking の解消)
+
+    /// passthrough(tools/call)の実往復を手動開放の CheckedContinuation でゲートするモック proxy。
+    /// sleep で待つのではなく、テストが `open(_:result:)` を呼ぶまで往復を止める(決定的)。
+    /// 呼び出しは params.arguments.k をキーに識別する(複数 in-flight を別々に開放するため)。
+    private actor GatedMockProxy: AppsServerProxying {
+        private var waiters: [String: CheckedContinuation<Void, Never>] = [:]
+        private var opened: [String: JSONValue] = [:]
+
+        /// キーの往復が現在ゲートで停止中か(テストの観測用)。
+        func isWaiting(_ key: String) -> Bool { waiters[key] != nil }
+
+        func passthroughToolsCall(params: JSONValue?) async throws -> JSONValue {
+            let key = params?["arguments"]?["k"]?.stringValue ?? "default"
+            await gate(key)
+            // open で渡された結果を id 相関確認用に返す(なければ最小の object)。
+            return opened[key] ?? .object(["ok": .bool(true)])
+        }
+
+        func passthroughResourcesRead(params: JSONValue?) async throws -> JSONValue {
+            .object([:])
+        }
+
+        private func gate(_ key: String) async {
+            if opened[key] != nil { return }   // 既に開放済みなら止めない。
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                waiters[key] = c
+            }
+        }
+
+        /// ゲートを開けて往復を先へ進める。result は passthroughToolsCall の戻り値になる。
+        func open(_ key: String, result: JSONValue) {
+            opened[key] = result
+            if let c = waiters.removeValue(forKey: key) { c.resume() }
+        }
+    }
+
+    /// onSizeChanged の呼び出しを記録する actor(応答との順序を決定的に観測する)。
+    private actor SizeRecorder {
+        private(set) var heights: [Double] = []
+        func record(_ h: Double) { heights.append(h) }
+        var count: Int { heights.count }
+    }
+
+    @Test("HOLB①: ゲート停止中の tools/call を追い越して size-changed が応答より先に処理される")
+    func sizeChangedNotBlockedByInflightToolsCall() async throws {
+        let transport = MockTransport()
+        let proxy = GatedMockProxy()
+        let recorder = SizeRecorder()
+        let session = await makeReadySession(
+            transport: transport, proxy: proxy,
+            onSizeChanged: { await recorder.record($0) })
+
+        let beforeCount = transport.sentRawJSON.count
+        // tools/call を push(proxy 往復がゲートで停止)。
+        transport.push(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"k":"slow"}}}"#)
+        // 続けて size-changed を push。直列実装だと tools/call の往復完了まで詰まる。
+        transport.push(#"{"jsonrpc":"2.0","method":"ui/notifications/size-changed","params":{"height":222}}"#)
+
+        // 応答より前に onSizeChanged が呼ばれる(HOLB 解消の中核)。
+        await waitUntil { await recorder.count >= 1 }
+        #expect(await recorder.heights == [222])
+        // この時点で tools/call 応答はまだ配送されていない。
+        #expect(transport.sentRawJSON.count == beforeCount)
+
+        // ゲート開放 → id 相関した応答が配送される。
+        await proxy.open("slow", result: .object(["ok": .bool(true)]))
+        await waitUntil { transport.sentRawJSON.count > beforeCount }
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self, from: Data(transport.sentRawJSON.last!.utf8))
+        #expect(response.id == .int(1))
+        #expect(response.result?["ok"] == .bool(true))
+
+        await session.close()
+    }
+
+    @Test("HOLB②: 複数 in-flight — 速い tools/call(id=2)が遅い(id=1)より先に応答・両者 id 相関が正")
+    func multipleInflightRespondOutOfOrder() async throws {
+        let transport = MockTransport()
+        let proxy = GatedMockProxy()
+        let session = await makeReadySession(transport: transport, proxy: proxy)
+
+        let beforeCount = transport.sentRawJSON.count
+        transport.push(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow","arguments":{"k":"slow"}}}"#)
+        transport.push(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fast","arguments":{"k":"fast"}}}"#)
+        // 両方の往復がゲートに到達するのを待つ(非直列に両方 in-flight)。
+        // && の右辺は非 async autoclosure になり await を通せないので、2つの await を別々に評価して畳む。
+        await waitUntil {
+            let slow = await proxy.isWaiting("slow")
+            let fast = await proxy.isWaiting("fast")
+            return slow && fast
+        }
+
+        // 速い方(id=2)を先に開放 → 先に応答が来る。
+        await proxy.open("fast", result: .object(["r": .int(2)]))
+        await waitUntil { transport.sentRawJSON.count >= beforeCount + 1 }
+        let first = try JSONDecoder().decode(
+            JSONRPCResponse.self, from: Data(transport.sentRawJSON.last!.utf8))
+        #expect(first.id == .int(2))
+        #expect(first.result?["r"] == .int(2))
+
+        // 遅い方(id=1)を後で開放。
+        await proxy.open("slow", result: .object(["r": .int(1)]))
+        await waitUntil { transport.sentRawJSON.count >= beforeCount + 2 }
+        let second = try JSONDecoder().decode(
+            JSONRPCResponse.self, from: Data(transport.sentRawJSON.last!.utf8))
+        #expect(second.id == .int(1))
+        #expect(second.result?["r"] == .int(1))
+
+        await session.close()
+    }
+
+    @Test("HOLB③(S2): ゲート停止中に close → 開放後も応答は配送されない")
+    func closedSessionDropsInflightResponse() async throws {
+        let transport = MockTransport()
+        let proxy = GatedMockProxy()
+        let session = await makeReadySession(transport: transport, proxy: proxy)
+
+        transport.push(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"k":"slow"}}}"#)
+        await waitUntil { await proxy.isWaiting("slow") }
+
+        // ゲート閉のまま close(webView 破棄相当)。
+        await session.close()
+        let afterClose = transport.sentRawJSON.count
+
+        // 開放しても、proxyRequest の closed ガードで応答は握り潰される。
+        await proxy.open("slow", result: .object(["ok": .bool(true)]))
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(transport.sentRawJSON.count == afterClose)
     }
 }
