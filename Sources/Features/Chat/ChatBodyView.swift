@@ -452,25 +452,9 @@ private struct JSONCodeBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                // コピーボタン: prettyJSON(整形後)をペーストボードへ。押下で ✓ に一時切替。
-                Button {
-                    UIPasteboard.general.string = prettyJSON(raw)
-                    copied = true
-                    // 1.2s 後に元アイコンへ戻す(短い視覚フィードバック)。
-                    Task { try? await Task.sleep(for: .seconds(1.2)); copied = false }
-                } label: {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.caption2)
-                        .foregroundStyle(copied ? Color.green : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(title)をコピー")
-            }
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
             ScrollView {
                 Text(prettyJSON(raw))
                     .font(.caption2.monospaced())
@@ -480,7 +464,29 @@ private struct JSONCodeBlock: View {
             }
             .frame(maxHeight: 240)  // 長い結果に備えて内部スクロール(全体レイアウトを圧迫させない)。
             .background(RoundedRectangle(cornerRadius: 6).fill(Color(.secondarySystemBackground)))
+            // コピーボタンはグレーブロックの**内部右上**にオーバーレイする(ユーザー要望 2026-07-17:
+            // タイトル行でなくコード塊の右上が自然)。iOS は hover が無いので常時表示だが、
+            // 半透明 material の小さな丸背景で JSON テキストの上でも視認でき、かつ主張しすぎない。
+            .overlay(alignment: .topTrailing) { copyButton }
         }
+    }
+
+    /// prettyJSON(整形後)をペーストボードへコピーする小ボタン。押下で 1.2s だけ ✓ に切替。
+    private var copyButton: some View {
+        Button {
+            UIPasteboard.general.string = prettyJSON(raw)
+            copied = true
+            Task { try? await Task.sleep(for: .seconds(1.2)); copied = false }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption2)
+                .foregroundStyle(copied ? Color.green : Color.secondary)
+                .padding(5)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .padding(4)  // ブロック角から少し離す。
+        .accessibilityLabel("\(title)をコピー")
     }
 }
 
