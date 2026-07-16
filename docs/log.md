@@ -313,3 +313,25 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - ☰ を toggle 化(ユーザー指摘・再押しで畳む)。
 - 将来: サイドバーのハブ化(上部に接続先サーバー切替/追加・アカウント・設定)を next-directions P4(c) に記録。
 - make app BUILD SUCCEEDED / swift test 93 件 green。実機ビジュアル最終確認は継続。
+
+## 2026-07-16 UI ポリッシュ(サイドバー) + 掃除
+
+- サイドバー redesign(fable モック sidebar-v2.html 合意)→ 手本 Claude iOS 準拠に全面刷新。
+  - 「コンテンツ右スライド式」: 下層=サイドバー、上層=角丸カードのメインが右へ退く(手本 image14/15)。
+    ZStack ごと .ignoresSafeArea() でカードを物理端まで bleed(退いても縦エッジのみ・上下は出ない)、
+    サイドバー内容だけ safe area inset で寄せる。navbar は NavigationStack が自前で safe area 確保。
+  - 横ドラッグで指追従。@GestureState は終了時 0 リセットで committed 反映との隙間 → ちらつき →
+    @State(dragTranslation)にして snap と reset を同一 withAnimation 内で(隙間ゼロ)。
+  - snap 閾値: 「全開幅 40% 位置」の単一閾値だと閉じるのに 60% 動かす必要 → 現在状態基準 22%+速度
+    (predictedEndTranslation-translation>100pt)の対称・軽量判定に。
+  - 暗幕: progress(0..1)駆動で完全展開まで薄暗く・開ききると 0(手本・opacity 0 で hit-test も外れる)。
+  - ハプティクス: .sensoryFeedback(.impact(.medium), trigger: showingSidebar)(iOS 17+ 推奨・snap 時発火)。
+  - ベスプラ調査: useyourloaf/hackingwithswift(sensoryFeedback)・itwenty(fraction 駆動・
+    predictedEndTranslation スナップ・エッジ閾値)。
+- インラインカード: 600 キャップで todos 9件が切れて + ボタン到達不能 → **内容に応じて高さ追従**
+  (キャップ 4000 安全網・ネスト内スクロールは不採用=チャット全体でスクロール)。
+- キーボード出っぱなし修正: @FocusState + scrollDismissesKeyboard(.interactively) + タップ外し
+  (simultaneousGesture TapGesture)+ 送信時 dismiss。
+- model chip 2段化(接続先+モデル名・タップで設定)。デバッグフック MCPHOST_SIDEBAR_OPEN 追加
+  (agent が open 状態をスクショ検証するため)。実機(iPhone 12 mini)で全確認。
+- 次: T7 コスト表示(litellm pricing JSON から取得・未知は "—")。

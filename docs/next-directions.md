@@ -145,7 +145,7 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > F1/F2 適用後、実機で「todoを見せて」が1回成功・初回から実データ・追加演出なしを確認(判断ゲート通過)。
      > swift test 76 件 green。残: カード内 complete の write 往復目視 / モデルが list-calendars を
      > 先呼びする癖(system prompt 誘導候補)。
-   - ~~T6: 履歴永続化 + サイドバー(+ F3 TraceSink)~~ ✅(実装・実機目視は継続)
+   - ~~T6: 履歴永続化 + サイドバー(+ F3 TraceSink)~~ ✅(実機目視・UI ポリッシュまで完了)
      > **2026-07-16 更新(T6 前半 = 観測 + 永続化 write):** `Sources/Kernel/Tracing/ChatTraceEvent.swift`
      > + `Sources/Services/Chat/TraceSink.swift`(TraceSink protocol + OSLogTraceSink・category
      > `chat-trace`)+ `Sources/Services/Chat/ChatStore.swift`(1 ChatSession=1 JSON + index.json・
@@ -163,8 +163,21 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > snapshotHTML を静的表示 or プレースホルダ・**副作用ゼロ**)。make app BUILD SUCCEEDED・
      > swift test 93 件 green。**実機目視(サイドバー操作+スナップショット再訪)は継続中**。
      > 履歴 continue(過去からライブ再開)は設計 §5「再実行しない」に沿い非対応(将来は明示再実行導線)。
-     > 軽微: ChatHistorySidebar の削除失敗ログが print(Features に Logger 未整備)。
-   - T7: コスト表示(usage×単価テーブル・未知モデルは "—")← 次はここ
+     > 軽微: ChatHistorySidebar の削除失敗ログが print(Features に Logger 未整備)→ 後に Logger 化済み。
+     > **2026-07-16 更新(UI ポリッシュ・実機検証済み):** サイドバーを手本(Claude iOS)準拠に
+     > 全面刷新 → 「コンテンツ右スライド式」(下層=サイドバー・上層=角丸カードのメインが右へ退く・
+     > カードは物理端まで bleed で上下エッジを出さない)。横ドラッグで指追従(@State dragTranslation・
+     > @GestureState のリセット隙間によるちらつきを解消)、snap は現在状態基準 22%+速度で軽く、
+     > 開度 progress 駆動の暗幕(完全展開で 0)、`.sensoryFeedback` ハプティクス(iOS 17+)。
+     > インラインカードは内容に応じて高さ追従(600 キャップ撤回・スクロールしない)。キーボード
+     > dismiss(@FocusState + scrollDismissesKeyboard + タップ外し + 送信時)。モデル chip 2段化。
+     > デバッグフック **MCPHOST_SIDEBAR_OPEN=1**(起動時にサイドバーを開く・agent の open 状態
+     > スクショ検証用・MCPHOST_AUTOCONNECT と同流儀)。sidebar-v2.html(合意モック)。
+   - T7: コスト表示 ← **次はここ** — **litellm の pricing データから取得**(ユーザー方針)。
+     > litellm `model_prices_and_context_window.json`(raw.githubusercontent.com/BerriAI/litellm/main/…)は
+     > model→`input_cost_per_token`/`output_cost_per_token`(USD/token)の定番ソース(~2968 モデル・
+     > `gpt-5.4-mini` 含む・`sample_spec` はスキップ)。fetch+キャッシュして usage×単価で「≈$X」表示、
+     > **未知モデルは "—"**(設計 §6・嘘の金額を出さない)。ハードコード単価は持たない(陳腐化回避)。
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。
