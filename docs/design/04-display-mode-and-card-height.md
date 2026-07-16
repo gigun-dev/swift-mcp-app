@@ -267,6 +267,20 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
 ただし H1(maxHeight 実制約化)と C1〜C3(sticky・畳み)は独立に先行でき、それだけでも
 「収まらないカードが暴れる」問題は解消する(畳んだ状態で完結)。
 
+> **2026-07-16 更新(H2+H3 完了後の推奨実装順を確定 — fable):**
+> `[H4 モック合意ゲートを即時並行で発火]` → **① C1+C2**(caldav・統合)→ **② H1**(ホスト)→
+> **③ H4**(モック合意後)→ **④ C3**(caldav・full ループ完成)。
+> 根拠: H1 を先にやると C2 の受け皿が無く 65% でクリップして悪化するので、カード側の畳み(C1+C2)が先。
+> C1 は「読むだけ」で単独観測不能なので C2 と同一ブロックに統合。各ステップは独立コミット可能で
+> どこで止まっても退行ゼロ。中間観測: ①claude.ai で sticky/畳みが見える・本アプリ(maxHeight=4000)は
+> 無風、②本アプリで 9 件 todos が可視高 65% に畳まれ sticky で「完了」常時可視、③reparent 器単体で動く、
+> ④full ループ(「すべて表示」→ 最大化 → 操作 → dismiss で状態保持)。
+> **「すべて表示」ボタンは C2 → C3 へ移動**(C2 は受動的「残り n 件」表示まで。requestDisplayMode 発火と
+> 不可分なので、押しても何も起きないボタンを中間状態に作らない)。
+> **H3 追補**: availableDisplayModes の **fullscreen 広告は onDisplayModeRequested ハンドラ注入時のみ**に
+> する(既定拒否のまま fullscreen を広告する中間状態=「押すと必ず拒否される死にボタン」を構造的に排除)。
+> H4 実装時に AppsBridgeSession の広告ロジックを「ハンドラ有無で分岐」に 1 行追補する。
+
 ### ホスト側(swift-mcp-app)
 
 - **H1: inline maxHeight の実制約化**
@@ -300,8 +314,11 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   > Services 内 struct(Kernel の wire 型と分離)。テスト: 昇格受理(応答→通知の順)・既定拒否(通知なし)・
   > notifyDisplayModeChanged の3本 + Kernel classify/Codable 4本。
 - **H4: Features の fullscreen 器**(**モック/プレビューでユーザー合意してから実装** —
-  「UI はモックで合意してから実装」の規律。sheet の見た目・閉じ方・戻り遷移を SwiftUI プレビュー
-  or HTML モックで先に見せる)
+  「UI はモックで合意してから実装」の規律)
+  > **2026-07-16 モック合意済み:** 器は「**カードが sheet 全面・ホストはグラバー(チキ)のみ・
+  > カード自前の sticky ヘッダ(tasks/完了)がそのまま上端に出る・内部スクロール・下スワイプ or
+  > 『完了』で inline に戻る**」。ホストのナビバー(タイトル+閉じるボタン)は重ねない案は却下
+  > (カードの『完了』と二重になる)。= ホスト/カードの役割が重ならず中立(ビジョン2)。
   - **InlineCardHost に `displayMode`(@Observable)を新設** = 単一の真実(§3 責務表)。Session は状態を持たない。
   - **AppCardView を container 再アダプト方式へ全面変更**(inline-only 経路含む):makeUIView は空の
     container UIView を返し、updateUIView が **displayMode ガード付きで** adopt する(inline 側 container は
@@ -310,6 +327,12 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   - sheet(large detent)に host.webView を reparent、`scrollView.isScrollEnabled` を true へ切替、
     sheet 実寸を session へ渡す(host-context-changed の材料)。**dismiss の順序は rehome → scrollEnabled=false →
     host-context-changed(inline)で固定**。fullscreen 中は onSizeChanged の `.frame` 追従を停止。
+  - **受理時(onDisplayModeRequested)が返す resolution 寸法は画面 bounds からの推定値**(large detent ≒
+    可視高 − トップインセット)にする。sheet の実寸は提示アニメーション完了まで確定しないため、提示完了後に
+    実寸が有意にズレたら setContainerWidth と同型の追加 host-context-changed で補正する(fullscreen は
+    カード内部スクロールなので高さ誤差の実害は小さく、幅が合っていれば足りる・2026-07-16 fable 指摘)。
+  - **availableDisplayModes の fullscreen 広告はこのハンドラを注入したときだけ**にする(H3 の広告ロジックを
+    「onDisplayModeRequested 注入の有無で分岐」に 1 行追補)。既定拒否のまま広告する死にボタン中間状態を排除。
   - **rehomeToken は displayMode 観測での再評価が効かない場合の保険**として持つ(スパイクでは View 側
     @State の rehomeToken bump で inline 復帰を確認済み。displayMode を @Observable にすれば bump 不要に
     なる可能性が高い — §6 の検証項目で確定する)。
@@ -321,14 +344,18 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
 
 ### caldav 側
 
-- **C1: hostContext 読み口**: todos-entry.ts に `app.getHostContext()` から
-  containerDimensions.maxHeight / displayMode / availableDisplayModes を読むユーティリティ +
-  host-context-changed の購読。出典コメント(apps.mdx:687-711)。
-- **C2: sticky ヘッダ + inline 畳み**: todos-app.ts の `.bar` に sticky、行リストの N 件畳みと
-  「すべて表示 (全n件)」ボタン(availableDisplayModes に fullscreen が無いホストでは非表示 or
-  開閉フォールバック)。
-- **C3: 昇格**: `appCapabilities.availableDisplayModes: ["inline","fullscreen"]` 宣言
-  (todos-entry.ts:2781 の `new App`)+ 「すべて表示」→ `app.requestDisplayMode({mode:"fullscreen"})`
+- **C1+C2(統合ブロック・最初に着手): hostContext 読み口 + sticky/畳み**
+  - C1: todos-entry.ts に `app.getHostContext()`(app.ts:739)から containerDimensions.maxHeight /
+    displayMode / availableDisplayModes を読み `--host-max-height` CSS 変数に反映するユーティリティ +
+    host-context-changed の購読(SDK フックの有無は app.d.ts で確認・§6)。出典コメント(apps.mdx:687-711)。
+  - C2: todos-app.ts の `.bar`(:1151)に `position:sticky;top:0`、行リストの N 件畳み(初期 6)と
+    **受動的な「残り n 件」表示**(ボタンではない)。maxHeight が有限 **かつ displayMode==="inline"** の
+    ときだけ発火 — maxHeight 情報が無いホスト(現本アプリ=4000・未送信)では全件のまま**不活性が既定**。
+    畳みは renderAll 最終段の「表示切り」だけで行い、vm/セクショニング/楽観適用(todos-entry.ts:404-425)を汚さない。
+  - **「すべて表示」ボタンは C2 には置かない**(C3 へ移動 — requestDisplayMode 発火と不可分)。
+- **C3: 昇格(full ループの最後)**: `appCapabilities.availableDisplayModes: ["inline","fullscreen"]` 宣言
+  (todos-entry.ts:2781 の `new App`)+ C2 の「残り n 件」表示を **「すべて表示 (全n件)」ボタンに置換** →
+  `app.requestDisplayMode({mode:"fullscreen"})`(fullscreen が広告されているホストのみ・無ければ受動表示のまま)
   + fullscreen 時 `overflow-y:auto`。
 - caldav 側の検証は既存の実機 + D1 生 ICS 裏取りの流儀に従う。claude.ai(fullscreen 対応ホスト)でも
   退行しないこと(availableDisplayModes 分岐が正しく効くこと)を確認。
@@ -367,6 +394,12 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
    往復では露見しなかった本番シナリオ(fable 指摘)。
 7. **【新】displayMode(@Observable)の変化観測だけで inline 側 updateUIView が再評価されるか** —
    されれば rehomeToken は不要(保険として削除可)。されなければ rehomeToken bump を正式採用。
+8. ~~**【新】ext-apps App SDK に host-context-changed の購読フックが公開されているか**~~ ✅ **確認済み**
+   > 2026-07-16(C1 実装時): `app.addEventListener("hostcontextchanged", handler)` が公開されている
+   > (app.d.ts:178,219,239,567-582,715-745。非推奨版 `onhostcontextchanged` も同義)。SDK は受信時に
+   > 内部 `_hostContext` へ merge した後ハンドラを呼ぶ(app.d.ts:723-727)ので、ハンドラ内で
+   > `getHostContext()` を読み直すだけで追従できる。polling ワークアラウンド不要。caldav-feedback.md への
+   > 起票も不要(フックが「在る」ことが判明したため)。
 3. **sheet detent と containerDimensions 再通知のタイミング** — sheet 提示アニメーション中に
    size を送ると中間値を掴む可能性。提示完了(onAppear + レイアウト確定)後に送る。要実機。
 4. **claude.ai が todos カードに実際どの availableDisplayModes を広告しているか** — C2 の
