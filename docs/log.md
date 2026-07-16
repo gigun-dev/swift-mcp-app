@@ -150,3 +150,23 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
     仕様違反データは既定 ["model","app"] へフェイルセーフ)。
   - ChatModel: ChatSession/ChatTurn/ToolCallStep/CardEmbed(永続化 DTO 兼用・JSONValue 再利用)。
   - swift test 41 件 green(Kernel 30 + Services 11)。コミット済み。次は T2(Services/LLM)。
+
+## 2026-07-16 P3 T2: Services/LLM(SSE アダプタ)+ bytes.lines 空行バグ
+
+- 実装(artisan 委譲・中断→ main 引き継ぎ・main レビュー): Sources/Services/LLM/ 4ファイル。
+  - LLMClient(中立 protocol・LLMEvent{textDelta, completed(FinishReason,[ToolCall],Usage?)})。
+  - OpenAICompatClient(URLSession.bytes の SSE 翻訳・stream_options include_usage 強制・
+    400 で stream_options 外し1回リトライ・非2xx はボディ込み httpError)。
+  - SSELineParser(SSE 行→data 抽出の純関数: 空行境界・data: 剥がし・複数行 \n 連結・コメント無視)。
+  - ToolConversion(MCP tools/list → OpenAI ToolDefinition・visibility 除外 apps.mdx:400)。
+  - AppsServerProxy に setTools()+ app 発 tools/call 拒否(apps.mdx:401・後方互換: 一覧未注入=全許可)。
+- テスト(implementer 委譲): Tests/ServicesTests/LLMTests.swift。SSELineParser/ToolConversion/
+  拒否/OpenAICompatClient(URLProtocol スタブ)。@Suite(.serialized) でスタブ handler 競合回避。
+- **実バグ発見→修正**: `URLSession.AsyncBytes.lines`(Swift 6.3/macOS 26)が「本当に空の行」を
+  yield しない("a\n\nb"→["a","b"])。SSE 境界=空行が来ず全 data 連結 → DecodingError。
+  最小 AsyncSequence + 本番 OpenAI/gpt-5.4-mini ライブで二重再現。→ consumeSSE を .lines 非経由の
+  自前 \n 分割(空行を "" で保持・末尾 \r 除去)に置換。SSELineParser は無変更(元から正しい)。
+  ⚠️ iOS 実機ランタイムでの同挙動は未確認 → T5 実機検証で SSE が流れることを併せて確認する。
+- ライブ検証(本番 OpenAI gpt-5.4-mini・キーは .env/git 管理外): 単発補完 reason=stop・usage(17/4/21)、
+  tool_calls reason=toolCalls・get_weather arguments={"city":"東京"} 有効 JSON・usage(144/17/161)。
+- swift test 60 件 green(既存 41 + LLM 19)。次は T3(ChatViewModel の tool-use ループ)。

@@ -10,3 +10,7 @@ xcuserdata/
 # XML/plist の巨大ファイルを git 管理下に置くと差分レビューが困難になるため除外する
 # (Makefile / project.yml のコメント参照)。
 *.xcodeproj
+
+# BYOK/検証用の API キー(OpenAI 等)。絶対にコミットしない。
+# 中身は Services/LLM のライブ検証時にだけ読む(コード/ログには残さない)。
+.env

@@ -39,8 +39,30 @@ public actor AppsServerProxy {
     // 2枚目以降のカードは resources/read を省ける。無効化はプロキシ破棄(=接続破棄)時のみ。
     private var htmlCache: [String: (html: String, uiMeta: JSONValue?)] = [:]
 
+    // app 発 tools/call の許可判定(apps.mdx:401 MUST・設計 §7)に使うツール一覧。
+    //
+    // nil = 「一覧が未注入」= 後方互換のため全許可(既存の init 単体・スパイクの呼び出し側を
+    // 壊さないため。従来コードは tools を渡さずに callTool を直接使っていた)。設計 §7-D の
+    // 「一覧未設定 = 全許可で後方互換」を採る。tools を注入すると、その時点から
+    // 「"app" を含まないツールへの app 発 tools/call」を拒否する防御が有効になる。
+    //
+    // 実データ(caldav)では全ツールが visibility 省略(既定に "app" を含む)か ["app"] 明示で、
+    // "app" を含まないツールが無いため、この拒否は実際には発火しない。あくまで MUST を
+    // 満たすための防御(prod で app が model 専用ツールを叩こうとする不正フローへの門)。
+    private var toolsForVisibility: [Tool]?
+
     public init(client: Client) {
         self.client = client
+    }
+
+    /// visibility 判定用のツール一覧を注入する(接続直後に一度呼ぶ想定・設計 §7-D)。
+    ///
+    /// init 引数でなくセッターにした理由: 既存の `AppsServerProxy(client:)` 生成箇所
+    /// (スパイク・テスト)を1つも壊さずに機能を足すため(§7-D「影響が小さい方を選ぶ」)。
+    /// tools は接続後の tools/list(`MCPConnectionResult.tools`)で得るので、生成と
+    /// 別タイミングで渡せるこの形が配線上も自然。
+    public func setTools(_ tools: [Tool]) {
+        self.toolsForVisibility = tools
     }
 
     // MARK: - 発見: tools/list から ui:// URI を解決
@@ -143,6 +165,22 @@ public actor AppsServerProxy {
         guard let name = params?["name"]?.stringValue else {
             throw AppsServerProxyError.missingField("tools/call params.name")
         }
+
+        // apps.mdx:401 MUST(設計 §7-D): app(カード内 UI)発の tools/call は、対象ツールの
+        // visibility に "app" を含む場合だけ許す。一覧が注入済み(toolsForVisibility != nil)で、
+        // その名前のツールが見つかり、かつ isAppCallable が false のときだけ拒否する。
+        // - 一覧未注入 → 全許可(後方互換。上のプロパティコメント参照)。
+        // - 名前が一覧に無い → ここでは拒否しない。未知ツールはサーバー側の判断に委ねる
+        //   (素通しし、存在しなければサーバーが JSON-RPC error を返す)。visibility を
+        //   根拠にした拒否は「一覧に載っていて "app" を含まないと確定した」場合に限定する。
+        if let tools = toolsForVisibility,
+           let tool = tools.first(where: { $0.name == name }) {
+            let meta = try uiMeta(from: tool)
+            guard isAppCallable(uiMeta: meta) else {
+                throw AppsServerProxyError.toolNotAppCallable(name: name)
+            }
+        }
+
         return try await callTool(name: name, arguments: params?["arguments"])
     }
 
@@ -181,6 +219,9 @@ public actor AppsServerProxy {
 public enum AppsServerProxyError: Error, CustomStringConvertible {
     case invalidAppMimeType(uri: String, found: String)
     case missingField(String)
+    /// app 発の tools/call が、visibility に "app" を含まないツールを対象にした(apps.mdx:401 MUST 違反)。
+    /// このツールはカード内 UI からは呼べない(モデル専用 or 非公開)。
+    case toolNotAppCallable(name: String)
 
     public var description: String {
         switch self {
@@ -188,6 +229,8 @@ public enum AppsServerProxyError: Error, CustomStringConvertible {
             return "ui:// リソース \(uri) が MCP App の mimeType(\(AppsServerProxy.appHTMLMimeType))を持たない(found=\(found))"
         case let .missingField(field):
             return "必須フィールド欠落: \(field)"
+        case let .toolNotAppCallable(name):
+            return "ツール \(name) は visibility に \"app\" を含まないため app からの tools/call を拒否した(apps.mdx:401)"
         }
     }
 }

@@ -96,9 +96,18 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > 設計に無く実装で決めた点(レビュー済み): FinishReason はカスタム Codable(.other 連想値)/
      > visibility 仕様違反データは既定 `["model","app"]` へフェイルセーフ(ツールが理由不明に
      > 消えるより残す)/ ToolCallAccumulator は index 昇順整列・id/name 後勝ち・欠落は空文字で可視化。
-   - T2: Services/LLM(LLMClient + OpenAICompatClient SSE + MCP→OpenAI ツール変換 +
-     AppsServerProxy の app 発 tools/call 拒否 = apps.mdx:401 MUST)← 次はここ
-   - T3: Services/Chat/ChatViewModel(tool-use ループ)/ T4: Features/Chat + Settings /
+   - ~~T2: Services/LLM(LLMClient + OpenAICompatClient SSE + MCP→OpenAI ツール変換 +
+     AppsServerProxy の app 発 tools/call 拒否 = apps.mdx:401 MUST)~~ ✅
+     > **2026-07-16 更新:** T2 完了。`Sources/Services/LLM/`(LLMClient・OpenAICompatClient・
+     > SSELineParser・ToolConversion)+ AppsServerProxy に setTools/拒否を追加。swift test 60 件 green。
+     > **本番 OpenAI(gpt-5.4-mini)ライブ検証済み**: 単発補完(reason=stop・usage 取得)+
+     > tool_calls(get_weather の arguments が有効 JSON・usage 取得)が end-to-end で通った。
+     > **発見した実バグ(修正済み)**: `URLSession.AsyncBytes.lines`(Swift 6.3/macOS 26)が
+     > **本当に空の行を yield しない** → SSE のイベント境界(空行)が検出できず全 data が連結され
+     > DecodingError。→ consumeSSE を `.lines` 非経由の自前 \n 分割(空行保持・末尾 \r 除去)に置換。
+     > ⚠️ iOS 実機/シミュレータの実行時でも同挙動かは未確認(macOS の swift test 上での発見)。
+     > T5 の実機カード検証時に SSE が実機で流れることを併せて確認する。BYOK キーは `.env`(git 管理外)。
+   - T3: Services/Chat/ChatViewModel(tool-use ループ)← 次はここ / T4: Features/Chat + Settings /
      T5: インラインカード / T6: 履歴永続化 + サイドバー / T7: コスト表示
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
