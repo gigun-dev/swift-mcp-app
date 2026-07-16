@@ -211,6 +211,9 @@ struct ChatBodyView: View {
 
     /// コスト表示行。lastUsage(このターン)と cumulativeUsage(累計)を控えめに出す。
     /// 未計上(まだ1ターンも走っていない)なら何も出さない(嘘の 0 を見せない)。
+    /// T7: 分かるときだけ ≈ $X を続けて出す(chatVM.lastCostUSD/cumulativeCostUSD が nil =
+    /// 未知モデル or pricing 未ロードのときはコストを一切出さない——トークン数のみ表示は従来どおり。
+    /// 設計 §6「嘘の金額を出さない」を厳守。"—" のような偽の埋め草も出さない=単に無い)。
     @ViewBuilder
     private var costHint: some View {
         if let usage = chatVM.lastUsage {
@@ -220,14 +223,30 @@ struct ChatBodyView: View {
                 ?? cumulative.map { $0.promptTokens + $0.completionTokens }
             HStack(spacing: 8) {
                 Text("このターン ≈ \(total.formatted()) tok")
+                if let lastCost = chatVM.lastCostUSD {
+                    Text(Self.formatUSD(lastCost))
+                }
                 if let cumulativeTotal {
                     Text("· 累計 \(cumulativeTotal.formatted()) tok")
+                }
+                if let cumulativeCost = chatVM.cumulativeCostUSD {
+                    Text(Self.formatUSD(cumulativeCost))
                 }
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 4)
         }
+    }
+
+    /// 小額($0.0000 まで見える程度)を出すためのフォーマット。トークン単価は $0.000001/token 級が
+    /// 普通(例 gpt-4o-mini 出力 6e-7)なので、NumberFormatter の通貨書式(小数2桁止め)では
+    /// ほぼ常に "$0.00" に潰れて情報にならない。`String(format:)` で小数4桁固定にする
+    /// (タスク指示「4〜5桁」・4桁を採用: gpt-4o-mini 級の1ターン数百〜数千トークンなら
+    /// $0.0001 オーダーまで見えれば十分実用。5桁だと末尾が常に丸めノイズになりやすいため4桁で妥協
+    /// ——設計に桁数の明記は無いのでこう解釈)。
+    private static func formatUSD(_ value: Double) -> String {
+        String(format: "≈ $%.4f", value)
     }
 
     /// 送信可能条件: 実行中でなく、下書きが空白でない。

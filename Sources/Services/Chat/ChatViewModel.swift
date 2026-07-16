@@ -51,6 +51,25 @@ public final class ChatViewModel {
     /// ユーザーに見せるエラー(最大反復超過・ストリーム失敗など)。次の send で消える。
     public private(set) var errorMessage: String?
 
+    /// モデルの単価(設計 §6・T7)。**settable・既定 nil**。pricing(litellm データ)は
+    /// PricingStore が async で後から取得するため、ChatViewModel の構築時点では未確定なことが
+    /// 普通にある(§6「不明なら非表示」と同じ姿勢で、届くまでは lastCostUSD/cumulativeCostUSD が
+    /// nil になるだけで壊れない)。ChatHomeViewModel が接続時・モデル変更時に代入する。
+    public var modelPrice: ModelPrice?
+
+    /// このターンの概算コスト(USD)。modelPrice か lastUsage のどちらかが nil なら nil
+    /// (**未知モデル/pricing 未ロードなら nil のまま**——設計 §6「嘘の金額を出さない」)。
+    public var lastCostUSD: Double? {
+        guard let usage = lastUsage, let modelPrice else { return nil }
+        return estimatedCostUSD(usage: usage, price: modelPrice)
+    }
+
+    /// セッション累計の概算コスト(USD)。lastCostUSD と同じく nil 伝播。
+    public var cumulativeCostUSD: Double? {
+        guard let usage = cumulativeUsage, let modelPrice else { return nil }
+        return estimatedCostUSD(usage: usage, price: modelPrice)
+    }
+
     // MARK: - 依存(注入)
 
     private let llm: any LLMClient

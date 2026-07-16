@@ -103,8 +103,29 @@ public final class ChatHomeViewModel {
     /// 責務を持たない薄い表示なので、VM に読み書きの薄いラッパを重ねるより素直(こう解釈)。
     public let chatStore = ChatStore(baseDirectory: ChatHomeViewModel.defaultChatsDirectory())
 
+    /// モデル単価テーブル(T7・設計 §6)。litellm pricing データを保持する。
+    /// `Application Support/pricing/` に本番キャッシュを置く(ChatStore と対称のディレクトリ設計)。
+    private let pricingStore = PricingStore(baseDirectory: ChatHomeViewModel.defaultPricingDirectory())
+
     public init(settings: LLMSettingsStore) {
         self.settings = settings
+        // pricing ロードは接続をブロックしない(タスク指示「ロードは接続をブロックしない・
+        // 失敗してもチャットは動く」)。init 時点で1回 fire-and-forget で走らせておき、
+        // 完了時に「今 .ready なら」その chatVM へ反映する(接続前に終われば connect() 側の
+        // applyPricing がキャッシュ済み prices をそのまま拾える)。
+        Task { [weak self] in
+            guard let self else { return }
+            await self.pricingStore.load()
+            self.applyPricingToCurrentChatVM()
+        }
+    }
+
+    /// settings.model の単価を pricingStore から引いて、現在 .ready な ChatViewModel(あれば)へ反映する。
+    /// 未知モデルは pricingStore.price が nil を返すので modelPrice も nil のまま
+    /// (ChatViewModel 側で lastCostUSD/cumulativeCostUSD が nil に伝播し、UI が "—" を出す・設計 §6)。
+    private func applyPricingToCurrentChatVM() {
+        guard case .ready(let chatVM) = state else { return }
+        chatVM.modelPrice = pricingStore.price(for: settings.model)
     }
 
     /// 本番の保存先ディレクトリ。取得に失敗する理論上のケース(サンドボックス外実行等)に備え、
@@ -114,6 +135,15 @@ public final class ChatHomeViewModel {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("chats", isDirectory: true)
+    }
+
+    /// pricing キャッシュの本番保存先(T7)。chats と同じ Application Support 直下・別サブディレクトリ
+    /// (履歴と単価キャッシュは寿命・書き込み主体が違うので分けておく——履歴は ChatStore、
+    /// 単価は PricingStore がそれぞれ排他的に読み書きする)。
+    private static func defaultPricingDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("pricing", isDirectory: true)
     }
 
     /// デバッグ用自動接続(MCPHOST_AUTOCONNECT=1)。ConnectionViewModel と同流儀で、
@@ -208,6 +238,7 @@ public final class ChatHomeViewModel {
         let chatVM = try makeChatViewModel(using: context)
         state = .ready(chatVM)
         displayMode = .live  // 接続直後は必ずライブ表示から始める(履歴閲覧中に再接続した場合の保険)。
+        applyPricingToCurrentChatVM()  // T7: pricing が既にロード済みなら即反映(未ロードなら init の Task が後で反映)。
         logger.notice("チャット準備完了 model=\(self.settings.model, privacy: .public)")
     }
 
@@ -307,6 +338,7 @@ public final class ChatHomeViewModel {
         do {
             let chatVM = try makeChatViewModel(using: context)
             state = .ready(chatVM)
+            applyPricingToCurrentChatVM()  // T7: 新規チャットでもモデル単価を引き直す(モデル変更後の新規チャットに追従)。
             logger.notice("新規チャットを開始(接続再利用・新 sessionId)")
         } catch {
             logger.error("新規チャットの構築に失敗: \(String(reflecting: error), privacy: .public)")

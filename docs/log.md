@@ -335,3 +335,20 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - model chip 2段化(接続先+モデル名・タップで設定)。デバッグフック MCPHOST_SIDEBAR_OPEN 追加
   (agent が open 状態をスクショ検証するため)。実機(iPhone 12 mini)で全確認。
 - 次: T7 コスト表示(litellm pricing JSON から取得・未知は "—")。
+
+## 2026-07-16 P3 T7: コスト表示(litellm pricing)
+
+- 実装(implementer 委譲): Kernel/Pricing/ModelPrice(純データ)+ estimatedCostUSD(純計算)。
+  Services/Chat/PricingStore(@MainActor・litellm model_prices_and_context_window.json を fetch →
+  [modelId:ModelPrice] にパース(sample_spec 除外・input/output 両数値のみ)→ Application Support/
+  pricing/ にディスクキャッシュ(TTL 7日)・fetch 失敗は stale cache fallback・失敗はログ(category pricing)。
+  parse は static でネット非依存=フィクスチャでテスト可)。
+- ChatViewModel に modelPrice(後入れ・既定 nil)+ lastCostUSD/cumulativeCostUSD(usage×price・
+  どちらか nil なら nil)。ChatHomeViewModel が init で fire-and-forget load・接続後/新規チャット後に
+  chatVM.modelPrice を設定(接続をブロックしない)。
+- UI costHint: トークンは常に表示、既知時のみ「≈ $%.4f」を追記。未知/未ロードは $ を省略
+  (設計 §6「嘘の金額を出さない」・"—" の埋め草も出さない解釈)。gpt-5.4-mini は litellm 収録済みで実額が出る。
+- テスト: Kernel(コスト計算・round-trip)、Services(litellm 抜粋フィクスチャのパース・cache round-trip・
+  未知→nil・sample_spec/欠損除外)、ChatViewModel(@Suite(.serialized)・modelPrice 有無でコスト計算)。
+  swift test 103 件 green(3x 安定)。make app BUILD SUCCEEDED。
+- これで P3(T1〜T7)完了。実チャットでの ≈$ 表示目視は実機/シミュレータで確認。
