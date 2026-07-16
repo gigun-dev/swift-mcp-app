@@ -432,19 +432,45 @@ struct ToolStepRow: View {
     private var detail: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let args = step.argumentsJSON {
-                jsonSection(title: "リクエスト", raw: args)
+                JSONCodeBlock(title: "リクエスト", raw: args)
             }
             if let result = step.resultJSON {
-                jsonSection(title: "レスポンス", raw: result)
+                JSONCodeBlock(title: "レスポンス", raw: result)
             }
         }
     }
+}
 
-    private func jsonSection(title: String, raw: String) -> some View {
+/// リク/レスの JSON を等幅表示するコードブロック(1つ = リクエスト or レスポンス)。右上に
+/// コピーボタンを持つ(ユーザー要望・2026-07-17)。コピー押下で一時的に ✓ に切り替えて
+/// フィードバックする(押したことが分かるように・@State copied を各ブロックが個別に持つため
+/// ToolStepRow から独立した小ビューに切り出した)。
+private struct JSONCodeBlock: View {
+    let title: String
+    let raw: String
+    @State private var copied = false
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+            HStack {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                // コピーボタン: prettyJSON(整形後)をペーストボードへ。押下で ✓ に一時切替。
+                Button {
+                    UIPasteboard.general.string = prettyJSON(raw)
+                    copied = true
+                    // 1.2s 後に元アイコンへ戻す(短い視覚フィードバック)。
+                    Task { try? await Task.sleep(for: .seconds(1.2)); copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.caption2)
+                        .foregroundStyle(copied ? Color.green : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(title)をコピー")
+            }
             ScrollView {
                 Text(prettyJSON(raw))
                     .font(.caption2.monospaced())
@@ -456,7 +482,6 @@ struct ToolStepRow: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(Color(.secondarySystemBackground)))
         }
     }
-
 }
 
 /// サーバー URL の host 先頭ラベル(例: caldav.gigun-dev.workers.dev → "caldav")を attribution 用に
