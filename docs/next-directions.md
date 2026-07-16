@@ -86,6 +86,20 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      スキーマ(caldav ≈18 ツール)を送るのでトークン費が乗る → system prompt を痩せさせる・
      必要ならツール絞り込み、(c) トークン/コストの可視化(使用量表示)を検討。
      ※ 具体的なモデル ID・料金は実装時に claude-api スキルで裏取りする(記憶で書かない)。
+
+   **実装ステップ(設計 docs/design/02-chat-llm.md §8。T1〜T7)**:
+   - ~~T1: Kernel/LLMProtocol + ChatModel(OpenAI 互換ワイヤ型・ToolCallAccumulator・
+     ToolVisibility 純関数・チャットドメイン型 + swift-testing)~~ ✅
+     > **2026-07-16 更新:** T1 完了。`Sources/Kernel/LLMProtocol/`(ChatCompletion・
+     > ChatCompletionChunk・ToolCallAccumulator・ToolVisibility)+ `Sources/Kernel/ChatModel/`。
+     > Kernel 依存ゼロ厳守(import Foundation のみ)。swift test 41 件 green。
+     > 設計に無く実装で決めた点(レビュー済み): FinishReason はカスタム Codable(.other 連想値)/
+     > visibility 仕様違反データは既定 `["model","app"]` へフェイルセーフ(ツールが理由不明に
+     > 消えるより残す)/ ToolCallAccumulator は index 昇順整列・id/name 後勝ち・欠落は空文字で可視化。
+   - T2: Services/LLM(LLMClient + OpenAICompatClient SSE + MCP→OpenAI ツール変換 +
+     AppsServerProxy の app 発 tools/call 拒否 = apps.mdx:401 MUST)← 次はここ
+   - T3: Services/Chat/ChatViewModel(tool-use ループ)/ T4: Features/Chat + Settings /
+     T5: インラインカード / T6: 履歴永続化 + サイドバー / T7: コスト表示
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。

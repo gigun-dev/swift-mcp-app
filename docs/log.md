@@ -133,3 +133,20 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   iOS focus zoom を踏む(.d-title は 16px で OK)。入力欄を 16px 以上にするのが正しい対処。
   claude.ai は iframe 外側で viewport を持つため隠れていた、ネイティブ WKWebView ホストで表面化。
 - complete の視覚フィードバックの乏しさも caldav-feedback に記載(ホストは 1タップ=1往復で正常)。
+
+## 2026-07-16 P3 T1: Kernel/LLMProtocol + ChatModel
+
+- P3 設計(docs/design/02-chat-llm.md)を fable architect がレビュー・改稿(ドラフト起こしは main)。
+  訂正6点の要: (1)LLMEvent 終端は `completed(FinishReason,[ToolCall],Usage?)` 1つに統合 —
+  usage は finish_reason チャンクの後 `choices:[]` の追加チャンクで届くため 2終端だと取り逃す・
+  パーサは choices[0] を仮定禁止、(2)apps.mdx:401 の app 発 tools/call 拒否 MUST が抜けていた
+  (T2 で AppsServerProxy に追加)、(3)_meta は MCP.Metadata → Value→JSONValue 変換後 Kernel 純関数へ、
+  (4)tools/call は既存 AppsServerProxy.callTool で足りる=新 API 不要、(5)スナップショット再訪は
+  allowsContentJavaScript=false で JS 無効・ライブ WKWebView は上限付き降格。
+- T1 実装(implementer 委譲・main レビュー): Kernel のみ・依存ゼロ(import Foundation)。
+  - LLMProtocol: ChatCompletion(Request/Message/ToolDefinition/ToolCall/Usage/FinishReason)・
+    ChatCompletionChunk(choices 空を許容=usage チャンク対応)・ToolCallAccumulator(index 昇順・
+    id/name 後勝ち・欠落は空文字で可視化)・ToolVisibility(isModelVisible/isAppCallable、
+    仕様違反データは既定 ["model","app"] へフェイルセーフ)。
+  - ChatModel: ChatSession/ChatTurn/ToolCallStep/CardEmbed(永続化 DTO 兼用・JSONValue 再利用)。
+  - swift test 41 件 green(Kernel 30 + Services 11)。コミット済み。次は T2(Services/LLM)。
