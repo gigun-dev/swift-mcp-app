@@ -48,6 +48,16 @@ final class InlineCardHost: Identifiable {
     /// 準備済み WKWebView。構築完了で publish され、InlineCardView がこれを載せる。未構築は nil。
     private(set) var webView: WKWebView?
 
+    /// 【fable #3 で見つかったバグの経緯】旧実装は build() の catch で logger.error するだけで
+    /// この状態を持たず、View 側は「webView == nil ならローディング」の2値分岐だった。結果、
+    /// HTML 取得失敗などで構築が catch に落ちても webView は永遠に nil のままなので、
+    /// InlineCardView はスピナーを**無限に**回し続けていた(構築失敗なのにローディング表示・実質バグ)。
+    /// この bool を @Observable の一員として追加し、View 側を3分岐(成功/失敗/構築中)にすることで
+    /// 「ローディングとエラーの区別は基本作法」(fable ベスプラ調査 #3/#7)に合わせる。
+    /// enum LoadState { loading, ready, failed } も検討したが、ready は webView != nil で兼ねられるので
+    /// 別属性を増やさず bool 1個に留めた(webView と合わせて実質3状態になる)。
+    private(set) var buildFailed: Bool = false
+
     /// displayMode の**単一の真実**(P4-DM・設計 04 §3 責務表・§5 H4-A)。@Observable なので、これを
     /// body で読む View(InlineCardView / FullscreenCardView)は変化で再評価され、AppCardView の
     /// 再アダプト(webView の inline↔sheet 載せ替え)が発火する。Session の currentDisplayMode は
@@ -202,9 +212,13 @@ final class InlineCardHost: Identifiable {
             await session.sendToolResult(card.structuredContent ?? .null)
             logger.notice("インラインカード構築完了 uri=\(card.resourceUri, privacy: .public)")
         } catch {
-            // 構築失敗(HTML 取得失敗・mimeType 不一致など)。webView は nil のままなので
-            // View はプレースホルダを出し続ける。チャット全体は壊さない(1カードの失敗に閉じる)。
+            // 構築失敗(HTML 取得失敗・mimeType 不一致など)。webView は nil のままだが、buildFailed を
+            // 立てることで View 側がローディングとエラーを区別できるようにする(fable #3・上のコメント参照)。
+            // チャット全体は壊さない(1カードの失敗に閉じる)。
+            // 【リトライは今回スコープ外】もし将来 retry ボタンを足すなら、buildTask を nil に戻して
+            // buildFailed も false に戻す必要がある(buildIfNeeded の guard buildTask == nil に依存するため)。
             logger.error("インラインカード構築失敗 uri=\(card.resourceUri, privacy: .public): \(String(reflecting: error), privacy: .public)")
+            self.buildFailed = true
         }
     }
 
@@ -378,13 +392,58 @@ struct InlineCardView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 // 角丸+枠(TodosCardSpike の見た目を踏襲)。
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
-        } else {
-            // ローディング中のプレースホルダ(HTML 取得〜握手までの数百 ms)。
+        } else if host.buildFailed {
+            // 【fable #3: 構築失敗のエラー表示】旧実装はこの分岐が無く、失敗時も下のローディングに
+            // 落ちてスピナーが回り続けていた(ファイル冒頭 buildFailed 宣言のコメント参照)。
+            // プレースホルダと同じ角丸+枠のトーンを踏襲しつつ、エラーだと分かる見た目(warning 色の
+            // 三角アイコン+文言+ツール名)にする。リトライは今回のスコープ外(上の build() コメント参照)。
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(white: 0.96))
                 .frame(height: 120)
-                .overlay(ProgressView())
+                .overlay(
+                    VStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.title3)
+                            .foregroundStyle(.orange)
+                        Text("カードを読み込めませんでした")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text(card.toolName)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                )
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
+                // #8 随伴: エラーの意味をまとめて1つのアクセシビリティ要素として読み上げる。
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("カードを読み込めませんでした: \(card.toolName)")
+        } else {
+            // 【fable #7: ローディング改善】旧実装は無地の ProgressView(無名スピナー)だけで、
+            // 何を読み込んでいるか分からなかった。ツール名ラベル + skeleton 風の薄いバー2本を添える
+            // ことで「何を待っているか」を示す(caldav カード側の skeleton に寄せる必要はなく、
+            // ホスト側は素朴な表現で良い・タスク指示)。HTML 取得〜握手までの数百 ms の間だけ見える。
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(white: 0.96))
+                .frame(height: 120)
+                .overlay(
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        Text("\(card.toolName) を読み込み中…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        // skeleton 風の薄いバー(内容が来る前の骨格を示唆する程度。派手にしない)。
+                        VStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color(white: 0.88))
+                                .frame(width: 120, height: 6)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color(white: 0.88))
+                                .frame(width: 80, height: 6)
+                        }
+                    }
+                )
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
+                .accessibilityLabel("\(card.toolName) を読み込み中")
         }
     }
 }
