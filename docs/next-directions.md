@@ -199,6 +199,15 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
    > caldav C1(hostContext 読み口)/C2(sticky+畳み)/C3(appCapabilities 宣言+昇格)。
    > 順序制約: caldav C3 とホスト H2〜H3 が揃って昇格が通る。H1+C2 の「畳みで暴れ止め」は先行可。
    > スパイクコード(ReparentSpikeView.swift)は H4 完了まで財産として残す。
+   > **2026-07-17 更新: P4-DM フルループ実機検証成功 ✅** — caldav 本番デプロイ済み。実機で
+   > 「todos 11件 → 先頭6件に畳み +『すべて表示 (全11件)』→ タップで fullscreen sheet に全件+内部
+   > スクロール(reparent・調停・sticky・ネゴシエーション動作)」を確認。ログで availableDisplayModes=
+   > [inline,fullscreen] 広告・size-changed・host-context-changed を裏取り。**H1〜H4 + C1〜C3 完了・
+   > コミット済み**(host: a195587/cd8be4b、caldav: 07874c3/eb8178f)。HOLB は別コミット 91f801b。
+   > **次は UX 改善フェーズ**(fable でベスプラ調査中): (a) 最大化を右上のホストクローム ⤢ アイコンへ
+   > (claude.ai 準拠・ホスト発 fullscreen)、(b) tool-calling デバッグパネル展開を `</>` アイコンへ、
+   > (c) カードの + FAB 楽観追加後に畳みが再走しない(caldav 側 applyInlineFold 再走の取りこぼし)、
+   > (d) その他カードクローム/ローディング/エラー表示の作法。
 6. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。
