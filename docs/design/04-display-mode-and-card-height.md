@@ -319,6 +319,26 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   > カード自前の sticky ヘッダ(tasks/完了)がそのまま上端に出る・内部スクロール・下スワイプ or
   > 『完了』で inline に戻る**」。ホストのナビバー(タイトル+閉じるボタン)は重ねない案は却下
   > (カードの『完了』と二重になる)。= ホスト/カードの役割が重ならず中立(ビジョン2)。
+  > **2026-07-17 更新(実機でユーザー却下 → `.fullScreenCover` へ変更):** sheet(.large)の提示方式を
+  > 却下(①上余白タップで閉じない dead 領域、②⤢=拡大メタファとボトムシートの不整合、③内部スクロール
+  > 前提なら全画面が素直)。**器を `.fullScreenCover`(真の全画面)に変更**。spec の fullscreen 定義
+  > 「View takes over the full screen/window」(apps.mdx:744)とも一致。グラバー廃止。閉じるアフォーダンスは
+  > **上端の最小ホストストリップ**(タイトル無し・境界線無し・右端に ⤡ アイコン1個 — inline のカード枠右上
+  > ⤢ と同位置で対称=拡大↔復元)。カード右上への ⤡ オーバーレイはボツ(caldav sticky ヘッダの「完了」
+  > todos-app.ts:1173 と衝突)。「ナビバーを重ねない」合意は「テキストボタンの二重化禁止」の趣旨として維持
+  > (⤡ は空間操作の別語彙)。fullScreenCover もスワイプ dismiss は無く ⤡ が唯一の出口(対称性優先・経路一本)。
+  > reparent は無影響(container 再アダプト方式は presented 階層一般に効く)。onDismiss は同シグネチャで
+  > restoreInline 呼び口不変。真のズーム展開遷移(iOS 18+ zoom transition)は将来改善として遅延。
+  > **2026-07-17 追更新(遷移アニメ却下 → overlay 提示へ):** fullScreenCover の既定遷移(下からのカバー
+  > アップ)を「⤢=その場から拡大のメタファと不整合」でユーザー却下。iOS 17 は fullScreenCover の遷移
+  > 差し替えが公開 API 上不可なため、**提示機構を ChatBodyView 直下の全画面 ZStack overlay(自前提示)に
+  > 変更**。遷移=「カード rect → 全画面 rect のスナップショット・ズーム(`webView.snapshotView` を
+  > フレーム補間・150〜250ms・背景フェード)→ 着地後に実 WKWebView を reparent しスナップショットを
+  > クロスフェードで剥がす」。⤡ は逆再生(全画面→カード rect へ縮小)で対称に。WKWebView 自体の連続
+  > リサイズ飛行・matchedGeometryEffect は Web プロセス再レイアウトのコストからボツ(財産)。不安定時の
+  > フォールバックは `scale(anchor:カード中心)+opacity`。overlay 化の自前責務: safe area 確保・キーボード
+  > フォーカス解除・「overlay 中は他 sheet を出さない」不変条件・zIndex/ステータスバー配色の実機確認。
+  > 最小ストリップ+⤡・restore シーケンスは上記のまま(onDismiss は ⤡ ハンドラに一本化)。
   - **InlineCardHost に `displayMode`(@Observable)を新設** = 単一の真実(§3 責務表)。Session は状態を持たない。
   - **AppCardView を container 再アダプト方式へ全面変更**(inline-only 経路含む):makeUIView は空の
     container UIView を返し、updateUIView が **displayMode ガード付きで** adopt する(inline 側 container は
@@ -353,6 +373,17 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
     ときだけ発火 — maxHeight 情報が無いホスト(現本アプリ=4000・未送信)では全件のまま**不活性が既定**。
     畳みは renderAll 最終段の「表示切り」だけで行い、vm/セクショニング/楽観適用(todos-entry.ts:404-425)を汚さない。
   - **「すべて表示」ボタンは C2 には置かない**(C3 へ移動 — requestDisplayMode 発火と不可分)。
+  > **2026-07-17 更新(固定 N=6 破綻 → 動的フィットへ改訂):** 固定 N=6 の畳みは実機で破綻(6件ちょうど
+  > +FAB が maxHeight を超え **+ FAB がクリップされて隠れる**再発バグ)。「件数閾値」は行高可変・maxHeight
+  > 端末依存の下で高さを保証できない(ボツ・経緯は財産)。**動的フィットへ改訂**: フル描画(畳みなし・FAB あり)
+  > 直後に、行の累積下端(`li.offsetTop+offsetHeight`)・全高(`root.scrollHeight`・FAB込み)・「すべて表示」
+  > ボタン高(下余白込みで hidden 実測 = `buttonBlock`)を1回実測(todos-entry.ts・imperative)。純関数
+  > `computeInlineFit(rowBottoms, fullHeight, maxHeight, buttonBlock)`(todos-fold.ts・テスト境界)が返す:
+  > `fullHeight ≤ maxHeight` → `full`(畳まない・FAB 表示)/ 溢れ → `folded(visibleCount = budget(=maxHeight
+  > −buttonBlock) に収まる最大行数・最低1)`。**folded では FAB を非表示**(クリップ源)にし追加は fullscreen の
+  > FAB に集約、ボタン高+下余白を budget から先引きするので「畳み決定後に append してボタン高が計算外」だった
+  > 現行欠陥と「すべて表示の下余白不足」を同時に根治。N を1ずつ減らす反復案は却下(累積 offsetTop で1回測定
+  > すれば閉じる)。host 変更不要(クランプは安全網のまま=§3 責務分担)。
 - **C3: 昇格(full ループの最後)**: `appCapabilities.availableDisplayModes: ["inline","fullscreen"]` 宣言
   (todos-entry.ts:2781 の `new App`)+ C2 の「残り n 件」表示を **「すべて表示 (全n件)」ボタンに置換** →
   `app.requestDisplayMode({mode:"fullscreen"})`(fullscreen が広告されているホストのみ・無ければ受動表示のまま)

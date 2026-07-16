@@ -71,9 +71,11 @@ struct ChatBodyView: View {
         .simultaneousGesture(
             TapGesture().onEnded { inputFocused = false }
         )
-        // fullscreen カードの sheet(P4-DM・設計 04 §5 H4-E)。item に activeHost をラップした Binding を
-        // 渡し、下スワイプ dismiss(item→nil)で coordinator.dismiss()(= host.restoreInline の順序復帰)を呼ぶ。
-        .sheet(item: activeHostBinding) { host in
+        // fullscreen カードの器(P4-DM・設計 04 §5 決定2・2026-07-17 更新: sheet→fullScreenCover)。
+        // item に activeHost をラップした Binding を渡し、⤡ による dismiss(item→nil)で
+        // coordinator.dismiss()(= host.restoreInline の順序復帰)を呼ぶ。sheet(.large)は「上余白 dead 領域・
+        // ⤢ 拡大メタファとボトムシートの不整合・スクロール前提なら全画面が素直」でユーザー却下 → 全画面に。
+        .fullScreenCover(item: activeHostBinding) { host in
             FullscreenCardView(host: host)
         }
     }

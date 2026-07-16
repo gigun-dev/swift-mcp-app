@@ -53,28 +53,52 @@ final class FullscreenCoordinator {
 /// (カードの sticky ヘッダ『完了』と役割が重ならない中立設計・ビジョン2)。
 struct FullscreenCardView: View {
     let host: InlineCardHost
+    // fullScreenCover の閉じ口(§5 決定2 更新 2026-07-17)。⤡ ボタンがこれを呼ぶと、ChatBodyView の
+    // activeHostBinding.set(nil) 経路が走り coordinator.dismiss()(= restoreInline の固定順序復帰)に繋がる
+    // ——⤡ は環境 dismiss を叩くだけで、復帰処理を二重に持たない(単一経路)。
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Group {
-            if let webView = host.webView {
-                // role:.fullscreen + host.displayMode を渡す。sheet が出ている間 host.displayMode==.fullscreen
-                // なので、この AppCardView が webView を adopt する(inline 側は displayMode ガードで奪わない)。
-                AppCardView(webView: webView, role: .fullscreen, activeDisplayMode: host.displayMode)
-            } else {
-                // 通常来ない(昇格は webView 構築後にしか起きない)が、防御的にプレースホルダ。
-                ProgressView()
+        VStack(spacing: 0) {
+            // 上端の最小ホストストリップ(§5 決定2 更新): タイトル無し・境界線無し・右端に ⤡ のみ。
+            // inline のカード枠右上 ⤢ と同位置(右上)で拡大↔復元が対称になる。ホストの UINavigationBar
+            // (タイトル+テキストボタン)は置かない合意を維持(⤡ はアイコン=空間操作の別語彙で、
+            // カード自前ヘッダの「完了」= 編集確定 とは役割が違うので二重感が出ない)。
+            HStack {
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")   // ⤡ = 縮小(⤢ と対称)。
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("元のサイズに戻す")
             }
+            .padding(.horizontal, 8)
+            .frame(height: 44)   // 極薄ストリップ。safe area(上)はこの外側で確保される。
+
+            // カード本体(全面・内部スクロール)。
+            Group {
+                if let webView = host.webView {
+                    // role:.fullscreen + host.displayMode を渡す。fullscreen 中は host.displayMode==.fullscreen
+                    // なので、この AppCardView が webView を adopt する(inline 側は displayMode ガードで奪わない)。
+                    AppCardView(webView: webView, role: .fullscreen, activeDisplayMode: host.displayMode)
+                } else {
+                    // 通常来ない(昇格は webView 構築後にしか起きない)が、防御的にプレースホルダ。
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // カードが全面(§5 H4 合意)。下端の safe area まで使う(グラバー分の上端は sheet が確保する)。
+        // 下端の safe area までカードを広げる(ストリップは上端 safe area の内側)。
         .ignoresSafeArea(edges: .bottom)
-        .presentationDetents([.large])          // large detent(§5 決定2: fullScreenCover でなく sheet)。
-        .presentationDragIndicator(.visible)    // グラバー(チキ)だけ出す。
         .onAppear {
             // fullscreen はカード内部スクロール(§5 H4-E・§6-2)。生成時 false だったのをここで true に。
             host.setWebViewScrollEnabled(true)
             // 実寸ズレの補正(§5 H4-E)は任意。fullscreen はカード内部スクロールで高さ誤差の実害が小さく、
-            // 幅は推定(画面幅=sheet 全幅)と一致するので、初期の推定寸法のままで足りると判断し送らない
+            // 幅は推定(画面幅=全幅)と一致するので、初期の推定寸法のままで足りると判断し送らない
             // (必要になれば host.setWebViewScrollEnabled と同型の補正通知をここに足す)。
         }
     }
