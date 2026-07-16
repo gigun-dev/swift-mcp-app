@@ -35,12 +35,22 @@ struct ChatBodyView: View {
     // InlineCardView の containerWidth に渡す。0 の間はカード構築を保留する(InlineCardView 側で guard)。
     @State private var columnWidth: CGFloat = 0
 
+    // 入力欄のフォーカス。キーボードを明示的に閉じる(スクロール dismiss・送信時・タップ外し)ために持つ
+    // (ユーザー指摘: TextField から focus を外してもキーボードが出っぱなしだった。@FocusState を
+    //  介して inputFocused=false で resignFirstResponder 相当になる)。
+    @FocusState private var inputFocused: Bool
+
     var body: some View {
         VStack(spacing: 0) {
             messages
             Divider()
             composer
         }
+        // メッセージ領域をタップしたらキーボードを閉じる(タップ外しでの dismiss・ユーザー指摘)。
+        // contentShape で余白タップも拾うが、simultaneousGesture にしてカード/ボタンのタップは妨げない。
+        .simultaneousGesture(
+            TapGesture().onEnded { inputFocused = false }
+        )
     }
 
     // MARK: - メッセージ列
@@ -64,6 +74,9 @@ struct ChatBodyView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 14)
             }
+            // チャットのメッセージをスワイプしたらキーボードを対話的に閉じる(iMessage 等の標準挙動・
+            // ユーザー指摘のキーボード出っぱなし対策)。
+            .scrollDismissesKeyboard(.interactively)
             .onPreferenceChange(ColumnWidthKey.self) { columnWidth = $0 }
             // 末尾ターンの text が伸びる(ストリーミング)たびに最下部へ追従する。
             // turns.count だけでなく末尾 text の長さも監視して、ストリーミング中の追従を効かせる。
@@ -176,6 +189,7 @@ struct ChatBodyView: View {
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("メッセージを入力…", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
+                    .focused($inputFocused)  // キーボード dismiss を制御するため focus を束ねる。
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(RoundedRectangle(cornerRadius: 18).fill(Color(.secondarySystemBackground)))
@@ -225,6 +239,7 @@ struct ChatBodyView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
+        inputFocused = false  // 送信したらキーボードを閉じる(応答を見やすく・出っぱなし対策)。
         // ChatViewModel.send は throw しない(内部で errorMessage に載せる)。
         Task { await chatVM.send(text) }
     }
