@@ -170,3 +170,21 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - ライブ検証(本番 OpenAI gpt-5.4-mini・キーは .env/git 管理外): 単発補完 reason=stop・usage(17/4/21)、
   tool_calls reason=toolCalls・get_weather arguments={"city":"東京"} 有効 JSON・usage(144/17/161)。
 - swift test 60 件 green(既存 41 + LLM 19)。次は T3(ChatViewModel の tool-use ループ)。
+
+## 2026-07-16 P3 T3: ChatViewModel tool-use ループ
+
+- 実装(artisan 委譲・main レビュー): Sources/Services/Chat/。
+  - MCPToolExecuting: ツール実行の最小抽象(callTool(name:arguments:JSONValue?)->JSONValue)。
+    AppsServerProxy が同シグネチャを既に持つため extension で本体追加なし conformance。
+    テストはスタブ executor に差し替え(ネットワーク/OAuth/swift-sdk なしでループ検証)。
+  - ChatViewModel(@MainActor @Observable): tool-use ループ本体。
+    - 表示 turns([ChatTurn]・UI 粒度)と wire messages([ChatMessage]・LLM へ毎回送る厳密系列)を分離。
+    - textDelta 逐次反映 → completed で確定 → .toolCalls && !empty なら TaskGroup 並行実行 →
+      role:tool を tool_call_id 昇順で安定積み戻し → 次周。.stop 等で settle。最大反復8で打ち切り。
+    - usage 毎ターン計上(lastUsage/cumulativeUsage)。ツール失敗はステップ failed + role:tool に
+      エラー文言でループ継続(1本の失敗で全体を殺さない)。ストリーム自体の失敗は継続不能→即エラー。
+    - arguments(JSON 文字列)の空/"{}"/壊れは nil に寄せる(AppsServerProxy が nil=引数なし)。
+- テスト: ChatViewModelTests(6件)。テキストのみ/単一/複数 tool_call/最大反復/失敗継続/system 注入。
+- ライブ検証(本番 gpt-5.4-mini + フェイク get_weather executor・キー .env): 自走成功。
+  turn1 .toolCalls(city=東京)→ turn2 .stop(最終テキスト)。usage cumulative 394/45/439。
+- swift test 66 件 green(既存 60 + ChatViewModel 6)。次は T4(Features/Chat + Settings・UI 実装)。

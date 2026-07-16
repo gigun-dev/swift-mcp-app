@@ -107,7 +107,15 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > DecodingError。→ consumeSSE を `.lines` 非経由の自前 \n 分割(空行保持・末尾 \r 除去)に置換。
      > ⚠️ iOS 実機/シミュレータの実行時でも同挙動かは未確認(macOS の swift test 上での発見)。
      > T5 の実機カード検証時に SSE が実機で流れることを併せて確認する。BYOK キーは `.env`(git 管理外)。
-   - T3: Services/Chat/ChatViewModel(tool-use ループ)← 次はここ / T4: Features/Chat + Settings /
+   - ~~T3: Services/Chat/ChatViewModel(tool-use ループ)~~ ✅
+     > **2026-07-16 更新:** T3 完了。`Sources/Services/Chat/`(MCPToolExecuting 抽象 +
+     > `extension AppsServerProxy: MCPToolExecuting {}` 本体追加なし・ChatViewModel の
+     > tool-use ループ)。swift test 66 件 green。**本番 gpt-5.4-mini + フェイク executor で
+     > 自走確認**: 1周目 .toolCalls(get_weather 呼出)→ 2周目 .stop(最終テキスト)。
+     > 表示 turns と wire messages を分離・複数 tool_call は TaskGroup 並行・role:tool は
+     > tool_call_id 昇順で安定・ツール失敗はステップ failed + role:tool にエラーで**ループ継続**・
+     > 最大反復8で打ち切り。caldav 実接続(OAuth)は Features 未実装のため T5 送り。
+   - T4: Features/Chat + Settings ← 次はここ /
      T5: インラインカード / T6: 履歴永続化 + サイドバー / T7: コスト表示
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
