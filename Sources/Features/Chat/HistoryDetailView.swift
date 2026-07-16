@@ -48,7 +48,7 @@ struct HistoryDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 // ツールステップ(req/res 展開)。ライブと同じ ToolStepRow を再利用(タスク指示 C-3)。
                 ForEach(Array(turn.toolSteps.enumerated()), id: \.offset) { _, step in
-                    ToolStepRow(step: step)
+                    ToolStepRow(step: step, serverName: serverShortName(from: session.serverURL))
                 }
                 if !turn.text.isEmpty {
                     HStack {

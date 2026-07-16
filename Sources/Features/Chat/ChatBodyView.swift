@@ -215,7 +215,7 @@ struct ChatBodyView: View {
     // 切り出すのが素直」に従う)。見た目・配置(HStack + アイコン + 🔧 + ツール名 + ラベル)は
     // 折りたたみ時そのまま踏襲する。
     private func toolStepRow(_ step: ToolCallStep) -> some View {
-        ToolStepRow(step: step)
+        ToolStepRow(step: step, serverName: serverShortName(from: chatVM.currentSession.serverURL))
     }
 
     // MARK: - 入力バー(モックの .composer)
@@ -316,8 +316,18 @@ struct ChatBodyView: View {
 /// (struct View で開閉状態を持てない)から切り出した独立行 View。
 // internal(private でない)にしているのは、読み取り専用の履歴ビュー(HistoryDetailView)が
 // 同じツール req/res 展開行を再利用するため(タスク指示 C-view「ToolStepRow 再利用」)。
+//
+// UX 改善 #2+#4(fable ベスプラ調査・ChatGPT Apps 公式ガイドライン/claude.ai 準拠・ユーザー参照画像):
+// 従来は「先頭 chevron で行全体トグル」だったが、ChatGPT/claude.ai は tool-calling 行を
+// 「attribution(サーバー・ツールの出自を示す控えめなクローム)+ 右端 `</>` で req/res を開く」
+// という形にしている。先頭 chevron は廃止し、開閉の合図を右端の `</>` アイコン一本に統一した
+// (合図が2箇所にあると視線が迷う・ユーザー要望「</> を押すと開く」に直結)。
 struct ToolStepRow: View {
     let step: ToolCallStep
+    /// attribution に出すサーバー短縮名(例 "caldav")。呼び出し側(ChatBodyView/HistoryDetailView)が
+    /// それぞれの接続先(ライブ chatVM / 履歴 ChatSession)から導出して渡す(このビュー自身は
+    /// 接続情報を持たない=汎用ホストとしての中立性を保つ・CLAUDE.md ビジョン2)。
+    let serverName: String
     @State private var isExpanded = false
 
     var body: some View {
@@ -332,40 +342,88 @@ struct ToolStepRow: View {
     }
 
     private var header: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.12)) { isExpanded.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                // 展開できる合図(chevron)。折りたたみ時は右向き、展開時は下向き。
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                // 状態アイコン: running=スピナー / done=チェック / failed=× / pending=時計。
-                switch step.state {
-                case .running:
-                    ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
-                case .done:
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                case .failed:
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-                case .pending:
-                    Image(systemName: "clock").foregroundStyle(.secondary)
-                }
-                // 🔧 <toolName>(モックは code タグでツール名を強調)。等幅 + 薄い accent 背景。
-                Text("🔧")
-                Text(step.toolName)
-                    .font(.caption.monospaced())
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.14)))
-                    .foregroundStyle(Color.accentColor)
-                Text(stepStatusLabel(step.state))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 6) {
+            // 状態アイコン: running=スピナー / done=チェック / failed=× / pending=時計。
+            // attribution の直前に置き、開閉トリガ(右端 `</>`)とは独立して常に見える位置にする。
+            switch step.state {
+            case .running:
+                ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
+            case .done:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed:
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+            case .pending:
+                Image(systemName: "clock").foregroundStyle(.secondary)
             }
+
+            // attribution: モノグラムバッジ + サーバー短縮名 + "·" + ツール名(claude.ai/ChatGPT の
+            // tool-calling 行の見た目に合わせる・ユーザー参照画像)。トーンは secondary 寄りで控えめ。
+            attribution
+
+            Spacer(minLength: 4)
+
+            // 右端 `</>`: リク/レス JSON パネルの開閉トリガ(このビュー唯一の開閉合図)。
+            codeToggleButton
+        }
+        .padding(.leading, 2)
+        // 行全体タップでも開閉できるようにする(ChatGPT の作法・タスク指示「両方可なら両方」)。
+        // contentShape で余白部分もタップ対象にし、Spacer 上のタップも拾う。
+        .contentShape(Rectangle())
+        .onTapGesture { toggle() }
+    }
+
+    /// モノグラムバッジ(角丸四角 + serverName 先頭1字)+ サーバー短縮名 + "·" + ツール名。
+    private var attribution: some View {
+        HStack(spacing: 5) {
+            // モノグラムバッジは装飾(サーバー短縮名テキストと情報が重複する)なので読み上げ対象外にする。
+            Text(monogram)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 14, height: 14)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary))
+                .accessibilityHidden(true)
+            Text(serverName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("·")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            // ツール名(モックは code タグで強調していた等幅 + 薄い accent 背景をそのまま踏襲)。
+            Text(step.toolName)
+                .font(.caption.monospaced())
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.14)))
+                .foregroundStyle(Color.accentColor)
+        }
+    }
+
+    /// serverName の先頭1字(例 "caldav" → "c")。空文字なら "?" にフォールバック(壊れた
+    /// 入力でもバッジが空白にならないように)。
+    private var monogram: String {
+        guard let first = serverName.first else { return "?" }
+        return String(first).uppercased()
+    }
+
+    /// 右端の `</>` 開閉トリガ。展開時は accentColor で塗って「開いている」ことを示し、
+    /// 折りたたみ時は secondary の控えめな色にする(タスク指示の色/塗りでの状態表現)。
+    private var codeToggleButton: some View {
+        Button { toggle() } label: {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .font(.caption)
+                .foregroundStyle(isExpanded ? Color.accentColor : Color.secondary)
         }
         .buttonStyle(.plain)
-        .padding(.leading, 2)
+        // 行全体タップの onTapGesture と重複してトグルしないよう、ボタン自身のタップは
+        // simultaneousGesture ではなく通常の Button アクションのまま(SwiftUI がボタン領域の
+        // タップを優先して親の onTapGesture に伝播させないため、二重トグルは起きない)。
+        .accessibilityLabel("リクエスト/レスポンスを表示")
+        .accessibilityValue(isExpanded ? "展開中" : "折りたたみ")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private func toggle() {
+        withAnimation(.easeOut(duration: 0.12)) { isExpanded.toggle() }
     }
 
     /// 展開時の中身。argumentsJSON(リクエスト)/ resultJSON(レスポンス)が nil のセクションは
@@ -399,14 +457,16 @@ struct ToolStepRow: View {
         }
     }
 
-    private func stepStatusLabel(_ state: ToolCallStep.State) -> String {
-        switch state {
-        case .pending: return "待機中"
-        case .running: return "を呼び出し中…"
-        case .done: return "完了"
-        case .failed: return "失敗"
-        }
-    }
+}
+
+/// サーバー URL の host 先頭ラベル(例: caldav.gigun-dev.workers.dev → "caldav")を attribution 用に
+/// 導出する共有ヘルパ(タスク指示: 導出ロジックは1箇所にまとめて ChatBodyView/HistoryDetailView の
+/// 両方から使う)。ロジック自体は ChatHomeView.serverShortName / ChatHistorySidebar.serverShortName と
+/// 同一だが、それらは画面固有の入力(serverURLString / ChatHistorySummary)から呼ばれる別関数のため
+/// 統合はしていない(過剰共通化を避ける・ここは ToolStepRow 系のみの共有先)。
+func serverShortName(from url: URL) -> String {
+    guard let host = url.host else { return "MCP" }
+    return host.split(separator: ".").first.map(String.init) ?? host
 }
 
 /// JSON 文字列 → pretty print(等幅表示用)。tool_call の引数・結果はどちらも compact JSON
