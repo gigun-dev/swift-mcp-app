@@ -188,3 +188,22 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - ライブ検証(本番 gpt-5.4-mini + フェイク get_weather executor・キー .env): 自走成功。
   turn1 .toolCalls(city=東京)→ turn2 .stop(最終テキスト)。usage cumulative 394/45/439。
 - swift test 66 件 green(既存 60 + ChatViewModel 6)。次は T4(Features/Chat + Settings・UI 実装)。
+
+## 2026-07-16 P3 T4: Features チャット主画面 + BYOK 設定 + OAuth 実接続配線
+
+- 実装(artisan 委譲・main レビュー): Sources/Features/。
+  - Settings/LLMSettingsStore: キー=Keychain(service dev.gigun.mcphost.llm・SecItem upsert 流儀)、
+    baseURL/model=UserDefaults。env オーバーライド MCPHOST_LLM_KEY/_BASEURL/_MODEL(自走検証用)。
+    既定 baseURL=OpenAI 公式・model=gpt-5.4-mini。
+  - Settings/SettingsSheet: プリセット chips(OpenAI/OpenRouter/Groq/Together/Ollama/カスタム)で
+    base URL 差し替え + 接続/モデルセクション。※各プリセット base URL の実在裏取りは未実施。
+  - Chat/ChatHomeViewModel: 接続オーケストレータ(.needsSetup/.connecting/.ready(ChatViewModel)/.failed)。
+    OAuth 接続(ConnectionVM/Spike 踏襲)→ AppsServerProxy.setTools → toolDefinitions(visibility 除外)
+    → OpenAICompatClient → ChatViewModel 組み立て。痩せた systemPrompt(コスト)。MCPHOST_AUTOCONNECT 対応。
+  - Chat/ChatBodyView + ChatHomeView: モック chat-v1.html 準拠(吹き出し・ツールステップ可視化・
+    コスト表示=トークン数のみ・model chip・設定ボタン)。カードは非表示(T5)。
+  - MCPHostApp: 通常起動の else を ChatHomeView に差し替え(SPIKE/AUTOCONNECT 温存)。
+- 検証: make app BUILD SUCCEEDED / make check 66 件 green / シミュレータ install・launch 非クラッシュ。
+- **未実施(人手 E2E・T4 の残作業)**: 実機/シミュレータで OAuth 対話(caldav changeme)+ 実 LLM
+  チャット往復の目視。OAuth ブラウザシート操作は人手が要る。次はこれ → その後 T5(インラインカード)。
+- モック逸脱(レビュー保留): 設定 chips に OpenAI 追加/接続前ゲート画面はモック外で新設。

@@ -26,9 +26,10 @@ struct MCPHostApp: App {
             // OAuth 対話(changeme 入力→許可)は人手が要るため、起動後にシートが出る。
             TodosCardSpikeView()
         } else {
-            // P0 の ContentView(プレースホルダ)は P1 で ConnectionView に置き換えた
-            // (docs/next-directions.md P1: 「接続(OAuth+tools/list)」)。
-            ConnectionView()
+            // 通常起動は P3-T4 のチャット主画面。P1 の ConnectionView(OAuth デバッグ画面)は
+            // 残す(型は生きているので参照は切れない)が、既定導線はチャットにする
+            // (docs/design/02-chat-llm.md §8 T4「MCPHOST_SPIKE でなく通常起動の主画面にする」)。
+            ChatHomeView()
         }
     }
 }

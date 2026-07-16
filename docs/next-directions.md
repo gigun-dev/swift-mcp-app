@@ -115,8 +115,20 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > 表示 turns と wire messages を分離・複数 tool_call は TaskGroup 並行・role:tool は
      > tool_call_id 昇順で安定・ツール失敗はステップ failed + role:tool にエラーで**ループ継続**・
      > 最大反復8で打ち切り。caldav 実接続(OAuth)は Features 未実装のため T5 送り。
-   - T4: Features/Chat + Settings ← 次はここ /
-     T5: インラインカード / T6: 履歴永続化 + サイドバー / T7: コスト表示
+   - ~~T4: Features/Chat + Settings(チャット主画面・BYOK 設定・OAuth 実接続配線)~~ ✅（実装）
+     > **2026-07-16 更新:** T4 実装完了・`make app` BUILD SUCCEEDED・`make check` 66 件維持・
+     > シミュレータ起動非クラッシュ。`Sources/Features/Settings/`(LLMSettingsStore=キーは
+     > Keychain・baseURL/model は Defaults・env 注入 MCPHOST_LLM_KEY/_BASEURL/_MODEL・既定
+     > model=gpt-5.4-mini / SettingsSheet=プリセット chips)+ `Sources/Features/Chat/`
+     > (ChatHomeViewModel=OAuth→setTools→toolDefinitions→OpenAICompatClient→ChatViewModel /
+     > ChatHomeView / ChatBodyView=吹き出し・ツールステップ・コスト表示)。通常起動を
+     > ChatHomeView に差し替え(SPIKE/AUTOCONNECT 温存)。カードは非表示(T5)。
+     > **⚠️ 未実施(人手 E2E)**: 実機/シミュレータでの OAuth 対話(caldav パスワード changeme)+
+     > 実 LLM チャット往復の目視確認。MCPHOST_AUTOCONNECT=1 + MCPHOST_LLM_KEY で自走配線済みだが
+     > OAuth のブラウザシート操作は人手が要る。**ここが T4 の残作業**。
+     > レビュー保留点(モック逸脱): 設定 chips に OpenAI を追加/接続前ゲート画面はモック外で新設。
+   - T5: インラインカード ← 次はここ(T4 の人手 E2E 確認後)/ T6: 履歴永続化 + サイドバー /
+     T7: コスト表示
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。
