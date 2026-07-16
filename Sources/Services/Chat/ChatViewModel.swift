@@ -231,9 +231,12 @@ public final class ChatViewModel {
             return collected
         }
 
-        // 表示ステップの状態を確定(index で対応づけ)。
+        // 表示ステップの状態を確定(index で対応づけ)。r.content は role:"tool" に積み戻すのと
+        // 同じ文字列(成功時は結果 JSON、失敗時はエラー文言)なので、そのまま resultJSON に転記して
+        // 「リクエスト/レスポンス」展開 UI(ChatBodyView.ToolStepRow)の元データにする。
         for r in results {
             turns[assistantIndex].toolSteps[r.index].state = r.failed ? .failed : .done
+            turns[assistantIndex].toolSteps[r.index].resultJSON = r.content
         }
 
         // カードの記録(設計 §3-4・§4「二重配布の (b)」)。

@@ -246,3 +246,17 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   caldav 実状態3件(追加へ1/テスト/test・新規はテスト操作中に削除・追加へ1 の優先度/繰り返しも
   テスト中の write で変化)とアプリ表示が一致 = write 往復も実働。swift test 76 件 green。
 - 残: カード内 complete の write 往復の明示目視 / モデルが list-calendars を先呼ぶ癖(system prompt 誘導)。
+
+## 2026-07-16 ツールステップ展開表示 + テスト teardown crash 修正
+
+- 機能(implementer 委譲): ツール呼び出しステップをタップで展開し「リクエスト(引数)/
+  レスポンス(結果)」を pretty JSON・等幅・最大高さ+内部スクロール・コピー可で表示。
+  ToolCallStep に resultJSON 追加(argumentsJSON と対・永続化 DTO 兼用 = T6 履歴/観測に乗る)。
+  ChatViewModel が結果を step に転記。ChatBodyView の toolStepRow を ToolStepRow(private struct・
+  @State 開閉)に切り出し。
+- **回帰の発見と修正(main)**: subagent が「flaky」と流した swift test の signal 11 は決定的回帰だった。
+  切り分け: b597f6c は 5/5 安定 → ToolCallStep に resultJSON を足すと ChatViewModelTests(@MainActor
+  @Observable な ChatViewModel を回す suite)の**並列 teardown で SIGSEGV**(Swift 6.3/macOS 26 の
+  ツールチェーン脆弱性・テスト自体は全 pass)。field 有無/Kernel 単独/suite 単位で crash が入れ替わる
+  ことを確認。→ ChatViewModelTests を @Suite(.serialized) 化(理由コメント付き)。swift test 76 件 4/4 安定回復。
+- 実機で展開 UI 動作確認。リクエスト {} は F1 修正後の正常状態(絞り込み不要な list-todos)。

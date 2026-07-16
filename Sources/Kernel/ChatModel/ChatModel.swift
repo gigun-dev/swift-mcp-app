@@ -69,11 +69,19 @@ public struct ToolCallStep: Codable, Equatable, Sendable {
     /// tool_call の引数(JSON 文字列。ToolCall.function.arguments と同じ形)。
     /// 表示用途(デバッグ・「こういう引数で呼んだ」の可視化)なので optional。
     public var argumentsJSON: String?
+    /// tool_call の結果(role:"tool" に積み戻す文字列と同じもの。成功時は結果 JSON 文字列、
+    /// 失敗時はエラー文言)。argumentsJSON と対で「リクエスト/レスポンス」を成す表示用途フィールド。
+    /// pending/running 中はまだ確定していないので nil のまま(ChatViewModel.runToolCalls が
+    /// 状態確定と同時に埋める)。永続化 DTO 兼用(T6 履歴・観測)なので、ここに残せば履歴再訪でも
+    /// 「何を渡して何が返ったか」が追える。デフォルト nil で既存の round-trip テスト・
+    /// argumentsJSON のみの既存データとの後方互換を保つ。
+    public var resultJSON: String?
 
-    public init(toolName: String, state: State, argumentsJSON: String? = nil) {
+    public init(toolName: String, state: State, argumentsJSON: String? = nil, resultJSON: String? = nil) {
         self.toolName = toolName
         self.state = state
         self.argumentsJSON = argumentsJSON
+        self.resultJSON = resultJSON
     }
 
     public enum State: String, Codable, Equatable, Sendable {

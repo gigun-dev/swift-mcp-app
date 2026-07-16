@@ -78,8 +78,16 @@ actor StubToolExecutor: MCPToolExecuting {
 
 // MARK: - テスト
 
+// .serialized の理由(2026-07-16): このスイートを並列実行すると、全テスト pass 後の
+// **プロセス teardown で swift-testing ランナーが signal 11(SIGSEGV)**する現象が出た
+// (Swift 6.3 / macOS 26)。ChatModel の ToolCallStep に resultJSON フィールドを足した
+// タイミングで決定的に再現するようになった(バイナリのレイアウト変化が並列 teardown の
+// 競合を顕在化させたと見られる — テスト自体はすべて成功しており、我々のロジックの不具合
+// ではない。切り分け: field 有無で crash が入れ替わる/Kernel 単独は無事/このスイートを
+// .serialized にすると消える、を確認済み)。並列にする利得より make check の安定を優先し、
+// このスイートは直列実行にする(ChatViewModel は元々 @MainActor で直列に叩く前提でもある)。
 @MainActor
-@Suite struct ChatViewModelTests {
+@Suite(.serialized) struct ChatViewModelTests {
     // 共通の tool_call 生成ヘルパ(arguments は JSON 文字列)。
     private func toolCall(id: String, name: String, arguments: String) -> ToolCall {
         ToolCall(id: id, function: .init(name: name, arguments: arguments))
