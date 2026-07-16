@@ -115,6 +115,13 @@ enum AppCardWebViewFactory {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
+        // 【DEBUG: Safari Web Inspector アタッチ許可(iOS 16.4+)】カード iframe(サンドボックス
+        // WKWebView)を Simulator/実機からデスクトップ Safari の「開発」メニューで検証できるように
+        // する。これが false だと開発メニューに WKWebView が現れない。本番配布(Release)では
+        // アタッチ不可のままにするため DEBUG 限定(カード内 JS を第三者に覗かせない)。
+        #if DEBUG
+        if #available(iOS 16.4, *) { webView.isInspectable = true }
+        #endif
         // 内部スクロール可否(引数)。インラインカードは高さ追従で不要、スパイクは可(上記)。
         webView.scrollView.isScrollEnabled = scrollEnabled
 
@@ -171,6 +178,10 @@ enum AppCardWebViewFactory {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
+        // 【DEBUG: Safari Web Inspector アタッチ許可(iOS 16.4+)】理由は make(...) の同節参照。
+        #if DEBUG
+        if #available(iOS 16.4, *) { webView.isInspectable = true }
+        #endif
         // 静的カードは size-changed 追従が無い(ブリッジ無し)ので、maxHeight 内に収めて
         // **内部スクロールを許す**(StaticCardView 側でクランプ・高さの判断はそちらのコメント)。
         webView.scrollView.isScrollEnabled = true
