@@ -277,3 +277,22 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - テスト: ChatStore round-trip/降順/delete/破損耐性、ChatViewModel の trace 順序(SpyTraceSink)、
   ChatTraceEvent Codable。新スイートは @Suite(.serialized)(teardown crash 回避)。swift test 93 件 green・3x 安定。
 - T6 後半(次): サイドバー UI + 過去セッション復元 + カードスナップショット。
+
+## 2026-07-16 P3 T6 後半 B/C: 履歴サイドバー + 復元ビュー
+
+- D/E(前コミット 1dc4239): スナップショット取得+書き戻し・静的カードビュー。
+- B/C(artisan 委譲・中断→再開・main レビュー):
+  - ChatHistorySidebar: loadIndex を日付グループ(今日/昨日/今週/それ以前)+ 検索(title/preview 部分一致)
+    + 新規チャット + 行スワイプ削除。引き出しは ZStack + 暗幕 + move(.leading) の overlay drawer
+    (モック準拠・.sheet でなく)。空状態メッセージ。
+  - ChatHomeView: ☰(leading)/ compose(trailing)追加。drawer 提示・履歴ルーティング・load 失敗アラート。
+  - ChatHomeViewModel: DisplayMode(.live / .viewingHistory(ChatSession))を state と直交で新設
+    (接続 connecting/failed でも履歴は読める)。openHistory/returnToLive/newChat/clearHistoryLoadError。
+    新規チャットは ConnectionContext(proxy/toolDefs/uiResourceURIs/serverURL を保持)を再利用して
+    OAuth 再対話ゼロで新 sessionId の空 ChatViewModel を組む。makeChatViewModel 抽出。chatStore 公開。
+  - HistoryDetailView: 読み取り専用(composer 無し・proxy/ChatViewModel/LLM に触れない=副作用ゼロ)。
+    ToolStepRow 再利用で req/res 展開。カードは snapshotHTML→StaticCardView / 無ければプレースホルダ
+    (structuredContent 折りたたみ閲覧付き)。
+- 判断: 履歴 continue 非対応(設計 §5「再実行しない」)。日付グループは月ラベルでなく 4段(可逆)。
+- make app BUILD SUCCEEDED / swift test 93 件 green(複数回・teardown crash 無し)。
+- 実機目視(サイドバー操作 + スナップショット再訪)は継続。軽微: サイドバー削除失敗ログが print。
