@@ -30,10 +30,14 @@ struct ChatHomeView: View {
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("caldav")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) { modelChip }
+                    // タイトル領域(中央)に「接続先 + モデル名」を縦2段でまとめる。
+                    // 【経緯】当初は model chip を topBarLeading に置いたが、中央タイトルと
+                    // 幅を取り合ってモデル名が1文字("g")まで潰れた(2026-07-16 指摘)。
+                    // principal に寄せると横幅を確保でき、モデル名がフル表示できる。
+                    // タップで設定(= モデル変更)を開けるようにして、chip の意味を持たせる。
+                    ToolbarItem(placement: .principal) { titleAndModel }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             showingSettings = true
@@ -129,22 +133,43 @@ struct ChatHomeView: View {
         .padding()
     }
 
-    // MARK: - model chip(モックの .model-chip)
+    // MARK: - タイトル + model chip(モックの h1 + .model-chip を縦に合成)
 
-    private var modelChip: some View {
-        HStack(spacing: 5) {
-            // 接続状態を色で示す(ready=緑・それ以外=グレー)。モックの緑ドットに対応。
-            Circle()
-                .fill(isReady ? Color.green : Color.gray)
-                .frame(width: 6, height: 6)
-            Text(settings.model)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+    /// 中央タイトル領域。上段=接続先(サーバー短縮名)、下段=接続状態ドット + モデル名の chip。
+    /// 全体を Button にして、タップで設定(モデル変更含む)を開く(chip に機能を持たせる)。
+    private var titleAndModel: some View {
+        Button {
+            showingSettings = true
+        } label: {
+            VStack(spacing: 1) {
+                // 上段: 接続先の短縮名(サーバー URL の host 先頭ラベル。今は caldav)。
+                Text(serverShortName)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                // 下段: 状態ドット + モデル名(フル表示・potato にならないよう十分な幅の principal に置く)。
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(isReady ? Color.green : Color.gray)
+                        .frame(width: 6, height: 6)
+                    Text(settings.model)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    // タップできる合図(モデル切替への導線)。
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 3)
-        .overlay(Capsule().strokeBorder(Color(.separator), lineWidth: 1))
+        .buttonStyle(.plain)
+    }
+
+    /// 接続先サーバー URL の host 先頭ラベル(例: caldav.gigun-dev.workers.dev → "caldav")。
+    /// 解析できないときは素の文字列を短く出す(汎用ホストなので任意 URL を許す)。
+    private var serverShortName: String {
+        guard let host = URL(string: home.serverURLString)?.host else { return "MCP" }
+        return host.split(separator: ".").first.map(String.init) ?? host
     }
 
     private var isReady: Bool {
