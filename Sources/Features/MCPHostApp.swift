@@ -25,6 +25,10 @@ struct MCPHostApp: App {
             // P2 スパイク S4/S5: caldav に OAuth 接続して list-todos カードを1枚描画する。
             // OAuth 対話(changeme 入力→許可)は人手が要るため、起動後にシートが出る。
             TodosCardSpikeView()
+        } else if ProcessInfo.processInfo.environment["MCPHOST_SPIKE"] == "reparent" {
+            // P4 スパイク(設計 04 §6-1): WKWebView を inline↔sheet で reparent したとき
+            // JS 状態が保たれるかを実測する自己完結ハーネス(MCP 接続不要)。
+            ReparentSpikeView()
         } else {
             // 通常起動は P3-T4 のチャット主画面。P1 の ConnectionView(OAuth デバッグ画面)は
             // 残す(型は生きているので参照は切れない)が、既定導線はチャットにする

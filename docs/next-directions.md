@@ -9,7 +9,11 @@
 **P0〜P2 完了 ✅ — 路線B は技術的に確立した。** caldav 本番の todos カードを
 WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 complete → tools/call →
 再描画の往復まで実機/シミュレータで実証済み(判断ゲート全項目 YES)。
-**次は P3(チャット + LLM tool-use ループ)**。
+~~**次は P3(チャット + LLM tool-use ループ)**。~~
+> **2026-07-16 更新:** **P3 完了 ✅**(T1〜T7 実機 E2E 検証済み — OAuth→LLM tool-use→caldav
+> tools→インラインカード往復→履歴永続→コスト表示)。**次は P4-DM(displayMode ネゴシエーション=
+> MCP アプリ画面の最大化)**。設計は docs/design/04 に確定・最大リスクは reparent スパイクで
+> 実測クリア済み。着手は下記「優先順位」5 の実装ステップから(H1+C2 先行 → H2〜H4 + C1〜C3)。
 
 転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
 caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI
@@ -173,12 +177,29 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > dismiss(@FocusState + scrollDismissesKeyboard + タップ外し + 送信時)。モデル chip 2段化。
      > デバッグフック **MCPHOST_SIDEBAR_OPEN=1**(起動時にサイドバーを開く・agent の open 状態
      > スクショ検証用・MCPHOST_AUTOCONNECT と同流儀)。sidebar-v2.html(合意モック)。
-   - T7: コスト表示 ← **次はここ** — **litellm の pricing データから取得**(ユーザー方針)。
+   - ~~T7: コスト表示 — **litellm の pricing データから取得**(ユーザー方針)。~~ ✅
      > litellm `model_prices_and_context_window.json`(raw.githubusercontent.com/BerriAI/litellm/main/…)は
      > model→`input_cost_per_token`/`output_cost_per_token`(USD/token)の定番ソース(~2968 モデル・
      > `gpt-5.4-mini` 含む・`sample_spec` はスキップ)。fetch+キャッシュして usage×単価で「≈$X」表示、
-     > **未知モデルは "—"**(設計 §6・嘘の金額を出さない)。ハードコード単価は持たない(陳腐化回避)。
-5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
+     > 未知モデルは金額を省いて tokens だけ出す(嘘の金額を出さない)。ハードコード単価は持たない。
+     > **2026-07-16 更新:** 実装完了・実機 E2E 検証済み(「このターン ≈N tok ≈$X ・累計 …」表示)。
+5. **P4-DM(displayMode ネゴシエーション = MCP アプリ画面の最大化)← P4 の筆頭・設計完了** —
+   背の高い todos カードが inline 高さ上限を超えると上端『完了』/下端『+』に同時到達できない
+   (2026-07-16 実機で表面化)。SEP-1865 の displayMode 3 モード(inline/fullscreen/pip)のうち
+   **inline↔fullscreen** を実装し、カード発 `ui/request-display-mode` で全画面 sheet に昇格。
+   **設計は `docs/design/04-display-mode-and-card-height.md` に確定**(ホスト/caldav 二層)。
+   > **2026-07-16 更新:** 最大リスク(WKWebView を inline↔sheet で reparent したとき JS 状態が
+   > 保たれるか)を **reparent スパイクで実測クリア**(Sources/Features/Spike/ReparentSpikeView.swift・
+   > MCPHOST_SPIKE=reparent)。(a) 同一 webView 載せ替えで JS 状態は完全保持(tick 単調増加・
+   > 編集途中値維持)、(b) 素朴実装は dismiss 後 orphan 化→inline 空白になるので **container 再アダプト +
+   > displayMode ガード方式**(inline 側は .inline 時・sheet 側は .fullscreen 時だけ adopt =
+   > スクロール中の奪い合い防止)で実装、と設計 04 §6-1/決定2 に反映済み。
+   > 実装ステップ: ホスト H1(maxHeight 実制約化)/H2(Kernel 型+typed レーン・swift-testing)/
+   > H3(Session ネゴシエーション)/H4(Features の sheet 器・**UI はモック合意してから**)、
+   > caldav C1(hostContext 読み口)/C2(sticky+畳み)/C3(appCapabilities 宣言+昇格)。
+   > 順序制約: caldav C3 とホスト H2〜H3 が揃って昇格が通る。H1+C2 の「畳みで暴れ止め」は先行可。
+   > スパイクコード(ReparentSpikeView.swift)は H4 完了まで財産として残す。
+6. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。
    - **(c) サイドバーをハブ化(将来・2026-07-16 ユーザー着想)**: 手本の Claude iOS ドロワーは
