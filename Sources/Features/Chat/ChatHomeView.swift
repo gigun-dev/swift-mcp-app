@@ -76,7 +76,8 @@ struct ChatHomeView: View {
                 }
             } else {
                 Button {
-                    withAnimation(.easeOut(duration: 0.22)) { showingSidebar = true }
+                    // トグル: 開いていれば畳む(ユーザー指摘「もう一度押したら畳まれるべき」)。
+                    withAnimation(.easeOut(duration: 0.22)) { showingSidebar.toggle() }
                 } label: {
                     Image(systemName: "line.3.horizontal")
                 }
@@ -137,31 +138,39 @@ struct ChatHomeView: View {
     private var drawer: some View {
         if showingSidebar {
             // 暗幕(タップで閉じる)。ZStack 全面を覆う。
-            Color.black.opacity(0.25)
+            // sidebar-v2 実装メモ9: 暗幕は black.opacity(0.3)(前版の 0.25 から微調整・モック --dim 準拠)。
+            Color.black.opacity(0.3)
                 .ignoresSafeArea()
                 .onTapGesture { closeSidebar() }
                 .transition(.opacity)
 
-            ChatHistorySidebar(
-                store: home.chatStore,
-                activeSessionID: activeSessionID,
-                onSelect: { id in home.openHistory(id: id) },
-                onNewChat: { home.newChat() },
-                onClose: { closeSidebar() }
-            )
-            .frame(maxWidth: 320)
-            .frame(maxHeight: .infinity)
-            .background(Color(.systemBackground))
-            .shadow(color: .black.opacity(0.15), radius: 8, x: 2, y: 0)
-            .ignoresSafeArea(edges: .bottom)
-            .transition(.move(edge: .leading))
-            // 左スワイプで閉じる(引き出しを押し戻す自然な操作)。閾値を超えたら dismiss。
-            .gesture(
-                DragGesture()
-                    .onEnded { value in
-                        if value.translation.width < -40 { closeSidebar() }
-                    }
-            )
+            GeometryReader { proxy in
+                // sidebar-v2 実装メモ9: 幅 min(width*0.82, 320)。前版は固定 320pt のみだったが、
+                // モックの drawer chrome(width:316px ≒ 82%)に合わせ画面幅追従の上限付きに変更。
+                ChatHistorySidebar(
+                    store: home.chatStore,
+                    activeSessionID: activeSessionID,
+                    onSelect: { id in home.openHistory(id: id) },
+                    onNewChat: { home.newChat() },
+                    onClose: { closeSidebar() }
+                )
+                .frame(width: min(proxy.size.width * 0.82, 320))
+                .frame(maxHeight: .infinity)
+                // sidebar-v2 実装メモ9: 右端のみ角丸(UnevenRoundedRectangle・topTrailing/bottomTrailing
+                // = 20)。前版は矩形のままだったが、モックの drawer chrome(border-radius:0 20px 20px 0)
+                // に合わせて右端だけ丸める(左端は画面端に接するので角丸不要)。
+                .clipShape(UnevenRoundedRectangle(bottomTrailingRadius: 20, topTrailingRadius: 20))
+                .shadow(color: .black.opacity(0.18), radius: 16, x: 8, y: 0)
+                .ignoresSafeArea(edges: .bottom)
+                .transition(.move(edge: .leading))
+                // 左スワイプで閉じる(引き出しを押し戻す自然な操作)。閾値を超えたら dismiss。
+                .gesture(
+                    DragGesture()
+                        .onEnded { value in
+                            if value.translation.width < -40 { closeSidebar() }
+                        }
+                )
+            }
         }
     }
 

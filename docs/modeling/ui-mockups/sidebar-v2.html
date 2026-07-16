@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>swift-mcp-app — チャット履歴サイドバー v2(Claude iOS 準拠・修正版)</title>
+<style>
+/* ============================================================
+   sidebar-v2(修正版)— Claude iOS の実機文法に準拠
+   ------------------------------------------------------------
+   初版(このファイルの前身)は「insetGrouped カード + 右肩時刻 +
+   preview + 左3pxアクセントバー」だったが、手本(Claude iOS 実機
+   スクショ)の所見を受けて全面改訂。手本から写した文法:
+
+   1. edge-to-edge + ヘアライン区切り(inset カードは撤回)。
+      高級感はカード枠ではなく「大きな太字タイトル・たっぷりの
+      行高・相対時刻・フローティング新規ボタン・温かいパレット」
+      から来る(screenshot3 の履歴リスト)。
+   2. 行 = 太字タイトル + 相対時刻(「6分前」「2時間前」「1日前」)
+      の2行。preview 文は出さない(手本準拠)。「18:32 · caldav」
+      形式は廃止。
+   3. サーバー識別 chip は**複数サーバー接続時のみ**相対時刻の隣に
+      極小表示(単一サーバー運用=授業フェーズの caldav のみ、では
+      非表示)。汎用 MCP ホストとしての必要最小限の逸脱。
+   4. 新規チャット = 下部フローティングの黒ピル(手本の署名
+      パターン。screenshot1/3 両方に出る)。上部の行/ボタンは廃止。
+   5. アクティブ行 = 柔らかい薄グレーの角丸ピル塗り(screenshot1 の
+      ドロワー)。初版の左3pxアクセントバー+accent 塗りは撤回
+      — 手本は accent を使わずニュートラルで示す。
+   6. 日付セクション見出しは廃止(手本の履歴リストはヘッダ無しの
+      平坦リスト。相対時刻自体が時間の手掛かりになるので二重表示)。
+      ※撤退先: 履歴が数百件に育ったら「今日/昨日」ヘッダ復活を
+      再検討(可逆)。
+   7. パレット: 温かいオフホワイト(paper)。chat-v1 の --accent
+      (#2f6fed)は検索フォーカスなど機能色として温存するが、
+      サイドバー面では accent をほぼ使わない(手本のニュートラル
+      トーン)。
+
+   検索位置: 手本 screenshot3 は最下部だが、drawer 内では
+   フローティングピルと競合する + 上端の方が「開いてすぐ絞る」
+   導線に素直なので**上部**に置く(逸脱理由を明記の上での判断)。
+   ============================================================ */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, system-ui, "Hiragino Sans", sans-serif;
+  --fs-section: 11px;
+  --card-radius: 14px;
+}
+/* 温かい paper パレット(手本の cream トーン)。ダークは warm gray 反転 */
+.theme-light {
+  --bg:#faf9f5; --bg-subtle:#f1efe9; --bg-canvas:#eceae3;
+  --border-hair:#e8e6de;
+  --text:#26241f; --text-2:#8a877d; --text-3:#b8b5aa;
+  --accent:#2f6fed;
+  --pill-active:#e9e6dd;          /* アクティブ行の柔らかいピル塗り */
+  --fab-bg:#26241f; --fab-fg:#faf9f5;  /* フローティング黒ピル */
+  --dim:rgba(0,0,0,.30);
+}
+.theme-dark {
+  --bg:#211f1c; --bg-subtle:#2c2a26; --bg-canvas:#000;
+  --border-hair:#33312c;
+  --text:#f0eee8; --text-2:#98958b; --text-3:#5c5a52;
+  --accent:#5b8def;
+  --pill-active:#33312b;
+  --fab-bg:#f0eee8; --fab-fg:#211f1c;  /* ダークでは反転(白ピル) */
+  --dim:rgba(0,0,0,.45);
+}
+*{box-sizing:border-box;margin:0}
+body{font-family:var(--font);background:#d7dbe0;padding:24px 12px;
+     display:flex;flex-wrap:wrap;gap:28px;justify-content:center;align-items:flex-start}
+.mock-label{font-size:11px;color:#6a6a70;margin-bottom:6px;font-weight:600;letter-spacing:.04em;max-width:390px}
+.mock-note{font-size:11px;color:#8a8a90;margin-top:8px;max-width:390px;line-height:1.6}
+
+/* ---- 端末フレーム: 背後のチャット + 暗幕 + drawer ---- */
+.stage{position:relative;width:100%;min-width:320px;max-width:390px;height:720px;
+       border:1px solid #e0ded6;border-radius:var(--card-radius);overflow:hidden;
+       background:var(--bg-canvas);color:var(--text);line-height:1.4;
+       box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.behind{position:absolute;inset:0;padding:14px;filter:blur(1px);opacity:.9}
+.behind .fake-nav{height:40px;background:var(--bg);border-radius:10px;margin-bottom:10px}
+.behind .fake-bubble{border-radius:16px;margin:8px 0}
+.behind .fake-bubble.u{height:36px;width:60%;margin-left:40%;background:var(--accent);opacity:.4}
+.behind .fake-bubble.a{height:52px;width:72%;background:var(--bg)}
+.dim{position:absolute;inset:0;background:var(--dim)}
+
+/* ---- drawer chrome(前版から維持: 右端角丸20 + 影 + 幅≈82%) ---- */
+.drawer{position:absolute;top:0;bottom:0;left:0;width:316px;background:var(--bg);
+        border-radius:0 20px 20px 0;display:flex;flex-direction:column;
+        box-shadow:8px 0 32px rgba(0,0,0,.18)}
+
+/* ---- ヘッダ: 小さなワードマーク + 検索 ----
+   手本 screenshot1 は serif ワードマークだが、本アプリに serif ブランドは
+   無いので system の小見出しで代替(格下げしたトーンは踏襲)。 */
+.side-head{padding:18px 16px 10px;flex:none}
+.side-head .brand{font-size:14px;font-weight:650;letter-spacing:-.01em;margin-bottom:12px;
+        color:var(--text)}
+.search-field{display:flex;align-items:center;gap:8px;background:var(--bg-subtle);
+        border-radius:12px;padding:9px 12px;font-size:14px;color:var(--text-3)}
+.search-field .icon{font-size:13px;color:var(--text-2)}
+
+/* ---- 一覧: ヘッダ無し・edge-to-edge・ヘアライン・ゆったり行高 ----
+   「最近の項目」の小さなグレー見出しだけ手本(screenshot1)から採用。
+   日付グループ見出しは置かない(相対時刻と二重になる)。 */
+.recent-label{padding:14px 16px 4px;font-size:var(--fs-section);font-weight:600;
+        letter-spacing:.06em;color:var(--text-3)}
+.side-list{flex:1;overflow-y:auto;padding-bottom:96px} /* フローティングピルの逃げ */
+.hrow{position:relative;padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:10px}
+.hrow + .hrow::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1px;
+        background:var(--border-hair)}
+.hrow .body{flex:1;min-width:0}
+.hrow .title{font-size:16px;font-weight:600;letter-spacing:-.01em;color:var(--text);
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrow .sub{margin-top:3px;display:flex;align-items:center;gap:7px}
+.hrow .rel{font-size:12.5px;color:var(--text-2)}
+/* サーバー chip: 複数サーバー接続時のみ出す極小識別子 */
+.srv-chip{font-size:10px;font-weight:600;color:var(--text-2);
+        background:var(--bg-subtle);border-radius:8px;padding:1.5px 7px}
+.hrow .chev{flex:none;color:var(--text-3);font-size:13px}
+/* アクティブ = 柔らかい角丸ピル塗り(手本 screenshot1 の文法)。
+   行の内側に inset(上下3px/左右8px)でピルを塗り、accent は使わない。
+   隣接するヘアラインはピルと衝突しないよう消す(モックでは近似)。 */
+.hrow.active::after{content:"";position:absolute;inset:3px 8px;background:var(--pill-active);
+        border-radius:14px;z-index:0}
+.hrow.active::before{display:none}
+.hrow.active > *{position:relative;z-index:1}
+.hrow.active + .hrow::before{display:none}
+
+/* スワイプ削除(開いた状態の静的表現) */
+.hrow.swiped{padding:0;overflow:hidden}
+.hrow.swiped .swipe-content{flex:1;display:flex;align-items:center;gap:10px;
+        padding:14px 16px;transform:translateX(-72px);background:var(--bg)}
+.hrow.swiped .swipe-del{flex:none;width:72px;margin-right:-72px;align-self:stretch;
+        background:#e5484d;color:#fff;display:flex;flex-direction:column;align-items:center;
+        justify-content:center;gap:2px;font-size:11px;font-weight:600}
+.hrow.swiped .swipe-del .tr{font-size:16px}
+
+/* ---- 下部フローティング黒ピル「＋ 新規チャット」(手本の署名) ---- */
+.fab{position:absolute;left:0;right:0;bottom:20px;display:flex;justify-content:center;
+     pointer-events:none}
+.fab .pill{pointer-events:auto;display:flex;align-items:center;gap:8px;
+     background:var(--fab-bg);color:var(--fab-fg);border-radius:26px;padding:13px 22px;
+     font-size:14.5px;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.22);cursor:pointer}
+.fab .plus{font-size:16px;font-weight:700}
+
+/* ---- 空状態 ---- */
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+       gap:10px;color:var(--text-3);padding-bottom:80px}
+.empty .glyph{width:56px;height:56px;border-radius:18px;background:var(--bg-subtle);
+       display:flex;align-items:center;justify-content:center;font-size:24px}
+.empty .t1{font-size:14px;font-weight:600;color:var(--text-2)}
+.empty .t2{font-size:12px;color:var(--text-3)}
+</style>
+</head>
+<body>
+
+<!-- ================= 推し案(ライト) ================= -->
+<div>
+  <div class="mock-label">推し案 — Claude iOS 準拠: edge-to-edge + 太字タイトル + 相対時刻 + フローティング黒ピル(ライト)</div>
+  <div class="stage theme-light">
+    <div class="behind">
+      <div class="fake-nav"></div>
+      <div class="fake-bubble u"></div>
+      <div class="fake-bubble a"></div>
+      <div class="fake-bubble u"></div>
+      <div class="fake-bubble a"></div>
+    </div>
+    <div class="dim"></div>
+    <div class="drawer">
+      <div class="side-head">
+        <div class="brand">swift-mcp-app</div>
+        <div class="search-field"><span class="icon">🔍</span>検索</div>
+      </div>
+
+      <div class="recent-label">最近の項目</div>
+      <div class="side-list">
+        <div class="hrow active">
+          <div class="body">
+            <div class="title">今週末までのリマインダー</div>
+            <div class="sub"><span class="rel">6分前</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+        <div class="hrow">
+          <div class="body">
+            <div class="title">来月の予定を整理したい</div>
+            <div class="sub"><span class="rel">3時間前</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+        <!-- スワイプ削除が開いた状態(アフォーダンス確認用) -->
+        <div class="hrow swiped">
+          <div class="swipe-content">
+            <div class="body">
+              <div class="title">買い物リストのタスク化</div>
+              <div class="sub"><span class="rel">昨日</span></div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+          <div class="swipe-del"><span class="tr">🗑</span>削除</div>
+        </div>
+        <div class="hrow">
+          <div class="body">
+            <div class="title">会議メモから TODO 起こし</div>
+            <div class="sub"><span class="rel">2日前</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+        <!-- 複数サーバー接続歴があるときだけ chip を全行に出す(下記メモ参照)。
+             このモックでは「複数サーバー時代」の見え方を下2行で例示 -->
+        <div class="hrow">
+          <div class="body">
+            <div class="title">MCP 接続テスト</div>
+            <div class="sub"><span class="rel">13日前</span><span class="srv-chip">everything</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+        <div class="hrow">
+          <div class="body">
+            <div class="title">カレンダーの重複イベント掃除</div>
+            <div class="sub"><span class="rel">13日前</span><span class="srv-chip">caldav</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+      </div>
+
+      <div class="fab"><div class="pill"><span class="plus">＋</span>新規チャット</div></div>
+    </div>
+  </div>
+  <div class="mock-note">
+    <b>手本(Claude iOS)から写した点</b><br>
+    ・行 = 大きな太字タイトル(16px semibold)+ 相対時刻の2行。preview 文と
+      「18:32 · caldav」形式は廃止(screenshot3: タイトル+「6分前」だけの平坦リスト)。<br>
+    ・edge-to-edge + 左右 inset のヘアライン区切り。inset カードは撤回 — 高級感は
+      枠ではなく行高(縦14px)・タイトルの大きさ・温かい paper 背景から。<br>
+    ・下部フローティング黒ピル「＋ 新規チャット」(screenshot1/3 の署名パターン)。
+      上部の新規チャット行は廃止。リスト下端には 96px の逃げ余白。<br>
+    ・アクティブ行 = 柔らかい薄グレーの角丸ピル塗り(screenshot1)。左3pxバー・
+      accent 塗りは撤回 — 手本はニュートラル色で「いまここ」を示す。<br>
+    ・「最近の項目」の小さなグレー見出しのみ採用。日付グループ見出しは廃止
+      (相対時刻自体が時間の手掛かり。二重表示になる)。<br>
+    <b>手本から意図的に逸脱した点</b><br>
+    ・サーバー chip: 汎用 MCP ホストなので「どのサーバーの会話か」は捨てられない。
+      ただし**複数サーバーに接続歴があるときだけ**極小 chip を相対時刻の隣に出す
+      (単一サーバー=授業フェーズでは手本どおりタイトル+時刻のみ)。<br>
+    ・検索は上部(手本 screenshot3 は最下部だが、drawer 内ではフローティングピルと
+      競合し、開いてすぐ絞る導線は上端が素直)。<br>
+    ・serif ワードマーク → system 小見出し「swift-mcp-app」(serif ブランドを持たないため)。
+  </div>
+</div>
+
+<!-- ================= 推し案(ダーク) ================= -->
+<div>
+  <div class="mock-label">推し案 — ダークモード(warm gray 反転・黒ピルは白ピルに反転)</div>
+  <div class="stage theme-dark">
+    <div class="behind">
+      <div class="fake-nav"></div>
+      <div class="fake-bubble u"></div>
+      <div class="fake-bubble a"></div>
+      <div class="fake-bubble u"></div>
+    </div>
+    <div class="dim"></div>
+    <div class="drawer">
+      <div class="side-head">
+        <div class="brand">swift-mcp-app</div>
+        <div class="search-field"><span class="icon">🔍</span>検索</div>
+      </div>
+      <div class="recent-label">最近の項目</div>
+      <div class="side-list">
+        <div class="hrow active">
+          <div class="body">
+            <div class="title">今週末までのリマインダー</div>
+            <div class="sub"><span class="rel">6分前</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+        <div class="hrow">
+          <div class="body">
+            <div class="title">来月の予定を整理したい</div>
+            <div class="sub"><span class="rel">3時間前</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+        <div class="hrow">
+          <div class="body">
+            <div class="title">買い物リストのタスク化</div>
+            <div class="sub"><span class="rel">昨日</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+        <div class="hrow">
+          <div class="body">
+            <div class="title">MCP 接続テスト</div>
+            <div class="sub"><span class="rel">13日前</span><span class="srv-chip">everything</span></div>
+          </div>
+          <span class="chev">›</span>
+        </div>
+      </div>
+      <div class="fab"><div class="pill"><span class="plus">＋</span>新規チャット</div></div>
+    </div>
+  </div>
+  <div class="mock-note">
+    ダークは warm gray(#211f1c 系)への反転で成立。黒ピルはダークでは白ピルに反転
+    (Claude iOS と同じ挙動)。アクティブピル塗りは一段明るい warm gray。
+    SwiftUI ではカスタムカラーを Assets に light/dark ペアで定義(paper トーンは
+    semantic color では出せないため — 数少ない自前カラー)。
+  </div>
+</div>
+
+<!-- ================= 空状態 ================= -->
+<div>
+  <div class="mock-label">推し案 — 空状態(履歴ゼロ。フローティングピルが唯一の導線として際立つ)</div>
+  <div class="stage theme-light" style="height:560px">
+    <div class="behind"><div class="fake-nav"></div></div>
+    <div class="dim"></div>
+    <div class="drawer">
+      <div class="side-head">
+        <div class="brand">swift-mcp-app</div>
+        <div class="search-field"><span class="icon">🔍</span>検索</div>
+      </div>
+      <div class="empty">
+        <div class="glyph">💬</div>
+        <div class="t1">まだ履歴がありません</div>
+        <div class="t2">下のボタンから会話を始めましょう</div>
+      </div>
+      <div class="fab"><div class="pill"><span class="plus">＋</span>新規チャット</div></div>
+    </div>
+  </div>
+  <div class="mock-note">
+    空状態でもフローティングピルは常在 — 「次に何をすべきか」がピル自体で示せるので
+    空状態の文言はそこへ誘導するだけでよい。検索0件時はグリフ 🔍 +
+    「一致する履歴がありません」に差し替え(既存実装の分岐を踏襲)。
+  </div>
+</div>
+
+<!-- ================= SwiftUI 実装メモ ================= -->
+<div style="max-width:800px;font-size:12.5px;line-height:1.75;color:#3a3a40;background:#fff;
+            border:1px solid #e4e4e7;border-radius:14px;padding:20px 24px">
+  <b style="font-size:13.5px">SwiftUI 実装メモ(ChatHistorySidebar.swift 置き換えの要点)</b>
+  <ol style="padding-left:1.4em;margin-top:8px">
+    <li><b>骨格は現状維持</b>: 表示専用・store 直読み・onSelect/onNewChat/onClose の
+        コールバック契約・reload/検索フィルタは不変。<b>日付グループ関数
+        (groupedSummaries)は削除</b>(平坦リスト化)。loadIndex() が updatedAt 降順を
+        保証するのでソートも不要。</li>
+    <li><b>List は .plain のまま edge-to-edge</b>: セクション無しの単一 ForEach。
+        先頭に「最近の項目」ラベル(Text(.caption).fontWeight(.semibold)
+        .foregroundStyle(.tertiary))を listRowSeparator(.hidden) 付きの行として置く。
+        区切りは List 既定 separator を <code>.listRowSeparatorTint(...)</code> で
+        paper トーンのヘアライン色に。行のゆとりは
+        <code>.listRowInsets(EdgeInsets(top:14, leading:16, bottom:14, trailing:16))</code>。</li>
+    <li><b>行レイアウト</b>: HStack { VStack(alignment:.leading, spacing:3) {
+        title(.body.weight(.semibold), lineLimit(1)) /
+        HStack(spacing:7){ 相対時刻(.caption, .secondary) + (複数サーバー時のみ)chip } }
+        + Spacer + Image(systemName:"chevron.right")(.caption2, .tertiary) }。
+        preview は表示しない(DTO からは消さない — 検索フィルタでは引き続き preview も
+        部分一致対象。表示だけやめる)。</li>
+    <li><b>相対時刻ヘルパ</b>: metaLine() を <code>RelativeDateTimeFormatter</code>
+        (dateTimeStyle = .named で「昨日」「たった今」が出る・locale 追従で
+        「6分前/2時間前/13日前」)に置き換え。formatter は static let でキャッシュ
+        (生成コストが高い)。serverShortName() は chip 用に残す。</li>
+    <li><b>サーバー chip の出し分け</b>: 表示条件 =
+        <code>Set(summaries.map { serverShortName($0.serverURL) }).count > 1</code> を
+        computed で持ち、真のときだけ**全行に** chip を出す(行ごとの出し分けだと
+        一部だけ chip 無しが欠落に見えるため一覧単位で切り替える)。chip =
+        Text(.caption2.weight(.semibold)).padding(.horizontal,7).padding(.vertical,1.5)
+        .background(Capsule().fill(Color("PaperSubtle"))).foregroundStyle(.secondary)。</li>
+    <li><b>アクティブ行 = 角丸ピル塗り</b>:
+        <code>.listRowBackground(isActive ? AnyView(RoundedRectangle(cornerRadius:14)
+        .fill(Color("PillActive")).padding(.horizontal,8).padding(.vertical,3)) : nil)</code>
+        — 背景 View は行サイズに引き伸ばされるので padding で内側に寄せるとピルになる。
+        accent 色は使わない(手本準拠)。active 行は
+        <code>.listRowSeparator(.hidden)</code> でヘアライン衝突を回避。</li>
+    <li><b>フローティング黒ピル</b>: List に <code>.overlay(alignment:.bottom)</code> +
+        下 padding 20 で重ねる(safeAreaInset だとリスト末尾がピルの上で止まり
+        「後ろを流れる」抜け感が出ない)。List 末尾に
+        Color.clear.frame(height:96).listRowSeparator(.hidden) のフッタ行で逃げを作る。
+        ピル = Button { onNewChat(); onClose() } label: {
+        Label("新規チャット", systemImage:"plus") }
+        .fontWeight(.semibold).padding(.horizontal,22).padding(.vertical,13)
+        .background(Capsule().fill(Color("FabBG"))).foregroundStyle(Color("FabFG"))
+        .shadow(color:.black.opacity(0.22), radius:10, y:6)。
+        FabBG/FabFG は light=黒/白・dark=白/黒 の Assets ペア。</li>
+    <li><b>パレット</b>: paper トーンは semantic color で出せないため Assets に自前定義:
+        Paper(#faf9f5 / #211f1c)・PaperSubtle(#f1efe9 / #2c2a26)・
+        PillActive(#e9e6dd / #33312b)・FabBG/FabFG。drawer 背景 =
+        Color("Paper")、List は <code>.scrollContentBackground(.hidden)</code> +
+        同色 background。<b>drawer chrome は前版のまま</b>(親 ChatHomeView 側):
+        UnevenRoundedRectangle(topTrailingRadius:20, bottomTrailingRadius:20) で clip +
+        shadow(black 18%, radius 16, x:8) + 幅 min(width*0.82, 320) +
+        暗幕 black.opacity(0.3)。</li>
+    <li><b>検索・その他</b>: 検索は上部据え置き(手本の最下部はピルと競合するため逸脱)。
+        TextField 箱は PaperSubtle 塗り・cornerRadius 12。swipeActions・
+        空状態分岐(検索0件/履歴ゼロ)は既存踏襲。行は Button のままで VoiceOver 既定
+        対応。フォントはセマンティック(body/caption)で Dynamic Type 追従。
+        相対時刻+chip は <code>.accessibilityElement(children:.combine)</code>。</li>
+  </ol>
+  <div style="margin-top:6px;color:#6a6a70">
+    ボツ案メモ: (a) 初版の insetGrouped カード+左3pxアクセントバー+preview 表示 —
+    Claude iOS 実機スクショの所見を受けて撤回。高級感の源泉を「カード枠」と誤診していた。
+    (b) 日付セクション見出し — 相対時刻と二重。履歴が数百件規模に育ったら復活を再検討
+    (可逆)。(c) 検索の最下部配置(手本準拠)— フローティングピルと競合。
+    (d) preview のデータ削除 — 表示はやめるが検索対象としては残す。
+  </div>
+</div>
+
+</body>
+</html>

@@ -296,3 +296,20 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 判断: 履歴 continue 非対応(設計 §5「再実行しない」)。日付グループは月ラベルでなく 4段(可逆)。
 - make app BUILD SUCCEEDED / swift test 93 件 green(複数回・teardown crash 無し)。
 - 実機目視(サイドバー操作 + スナップショット再訪)は継続。軽微: サイドバー削除失敗ログが print。
+
+## 2026-07-16 サイドバー redesign(Claude iOS 準拠)
+
+- ユーザーが「素の List でダサい」→ fable に redesign 依頼。初版(inset カード案)を出したが、
+  ユーザーが実機 Claude iOS のスクショ3枚を参考提示 → 手本に寄せて修正(docs/modeling/ui-mockups/sidebar-v2.html)。
+  手本の要点: edge-to-edge + ヘアライン(inset カードでない)・行=太字タイトル+相対時刻・preview 非表示・
+  下部フローティング黒ピル新規チャット・アクティブ角丸ピル塗り・日付グループ見出し廃止・温かい paper。
+- 実装(implementer 委譲): ChatHistorySidebar 全面書き換え + ChatHomeView の drawer chrome 調整。
+  - 相対時刻 RelativeDateTimeFormatter(.named)。preview は表示から外すが検索対象には残す。
+  - サーバー chip は Set(serverShortName).count>1 の一覧単位判定(単一サーバー時は非表示・汎用ホスト布石)。
+  - 下部フローティング FAB(overlay・ダークで黒→白反転)。アクティブ行は listRowBackground の角丸ピル。
+  - Asset catalog 無しのため SidebarPalette(動的 Color・sidebar-v2 の Hex 写経)で light/dark 定義。
+  - 削除失敗ログを print→Logger(category sidebar)。コールバック契約・store 直読み・削除冪等は不変。
+  - drawer: 幅 min(width*0.82,320)・右端のみ角丸20・影・暗幕0.3・左スワイプ閉じ・☰ トグル。
+- ☰ を toggle 化(ユーザー指摘・再押しで畳む)。
+- 将来: サイドバーのハブ化(上部に接続先サーバー切替/追加・アカウント・設定)を next-directions P4(c) に記録。
+- make app BUILD SUCCEEDED / swift test 93 件 green。実機ビジュアル最終確認は継続。
