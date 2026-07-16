@@ -375,4 +375,192 @@ actor StubToolExecutor: MCPToolExecuting {
         #expect(msgs.first?.role == .system)
         #expect(msgs.first?.content == "あなたは助手")
     }
+
+    // MARK: - T6 前半: TraceSink 注入 + currentSession(設計 03 §3・02 §5)
+
+    // テキストのみのターン: turnStarted → llmCompleted → turnSettled の順で1回ずつ出る
+    // (toolCallStarted/Finished は無し)。
+    @Test func traceSink_テキストのみのターンでturnStarted_llmCompleted_turnSettledが順に出る() async {
+        let llm = ScriptedLLMClient(scripts: [[.completed(.stop, [], usage(10, 5))]])
+        let sink = SpyTraceSink()
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "m", systemPrompt: nil,
+            traceSink: sink)
+
+        await vm.send("やあ")
+
+        let kinds = sink.kinds()
+        #expect(kinds == ["turnStarted", "llmCompleted", "turnSettled"])
+    }
+
+    // tool_call ありのターン: turnStarted → llmCompleted(1周目) → toolCallStarted →
+    // toolCallFinished → llmCompleted(2周目) → turnSettled の順で出る(設計 03 §3 の5注入点)。
+    @Test func traceSink_toolCallありのターンで注入点5箇所が正しい順序で出る() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "get_weather", arguments: "{\"city\":\"Tokyo\"}")], usage(20, 3))],
+            [.textDelta("東京は晴れ"), .completed(.stop, [], usage(30, 8))],
+        ])
+        let executor = StubToolExecutor(results: ["get_weather": .object(["temp": .int(30)])])
+        let sink = SpyTraceSink()
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            traceSink: sink)
+
+        await vm.send("東京の天気は?")
+
+        let kinds = sink.kinds()
+        #expect(kinds == [
+            "turnStarted", "llmCompleted", "toolCallStarted", "toolCallFinished",
+            "llmCompleted", "turnSettled",
+        ])
+
+        // turnId は5イベントすべて同一(1ユーザー発話に対する一連の反復)。
+        let turnIds = sink.turnIds()
+        #expect(Set(turnIds).count == 1)
+
+        // toolCallFinished の resultBytes は空でない(結果 JSON のバイト数)・isError は false。
+        let events = sink.eventsSnapshot
+        guard case .toolCallFinished(_, _, let isError, let resultBytes, _) = events[3] else {
+            Issue.record("3番目のイベントが toolCallFinished ではない")
+            return
+        }
+        #expect(isError == false)
+        #expect(resultBytes > 0)
+    }
+
+    // 壊れた JSON 引数(ツール未実行)では toolCallStarted/Finished は出ない
+    // (設計に明記なし・こう解釈: 実行しなかったものを実行1回として数えない・execute のコメント参照)。
+    @Test func traceSink_壊れJSON引数はtoolCallイベントを出さない() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "bad", name: "broken", arguments: "{not json")], usage(1, 1))],
+            [.textDelta("エラーでした"), .completed(.stop, [], usage(2, 1))],
+        ])
+        let sink = SpyTraceSink()
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "m", systemPrompt: nil,
+            traceSink: sink)
+
+        await vm.send("壊れた引数のテスト")
+
+        let kinds = sink.kinds()
+        #expect(!kinds.contains("toolCallStarted"))
+        #expect(!kinds.contains("toolCallFinished"))
+    }
+
+    // traceSink を渡さない(既定 nil)場合でも既存どおり動作する(後方互換)。
+    @Test func traceSink未指定でも既存どおり動作する() async {
+        let llm = ScriptedLLMClient(scripts: [[.completed(.stop, [], usage(1, 1))]])
+        let vm = ChatViewModel(llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "m", systemPrompt: nil)
+
+        await vm.send("互換性テスト")
+
+        #expect(vm.errorMessage == nil)
+    }
+
+    // currentSession: turns を含み、title は最初の user 発話の先頭から導出される。
+    @Test func currentSessionはturnsを含みtitleを最初のuser発話から導出する() async {
+        let llm = ScriptedLLMClient(scripts: [[.textDelta("こんにちは"), .completed(.stop, [], usage(1, 1))]])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "gpt-5-mini", systemPrompt: nil,
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            serverURL: URL(string: "https://caldav.gigun-dev.workers.dev/mcp")!)
+
+        await vm.send("今日の予定を教えて")
+
+        let session = vm.currentSession
+        #expect(session.id.uuidString.lowercased() == "11111111-1111-1111-1111-111111111111")
+        #expect(session.title == "今日の予定を教えて")
+        #expect(session.model == "gpt-5-mini")
+        #expect(session.serverURL == URL(string: "https://caldav.gigun-dev.workers.dev/mcp")!)
+        #expect(session.turns.count == 2)
+    }
+
+    // onTurnSettled: send() が返る直前に必ず1回呼ばれる(ストリーム失敗による早期 return でも)。
+    @Test func onTurnSettledはstream成功でも失敗でも呼ばれる() async {
+        let ok = ScriptedLLMClient(scripts: [[.completed(.stop, [], nil)]])
+        var callCount = 0
+        let vm = ChatViewModel(
+            llm: ok, toolExecutor: StubToolExecutor(), tools: [], model: "m", systemPrompt: nil,
+            onTurnSettled: { callCount += 1 })
+        await vm.send("成功ケース")
+        #expect(callCount == 1)
+
+        let failing = ScriptedLLMClient(scripts: [[]]) // 何も yield せず finish するとイベントが
+        // 空になり、accumulatedText 空・finishReason .other のまま実質「completed 無し」になる
+        // ——これはストリーム自体の throw ではないが「continuation.finish() のみ」で
+        // AsyncThrowingStream が正常終了する経路なので、真の throw を再現するため
+        // ThrowingLLMClient を別途使う(下記)。
+        _ = failing
+        var throwCallCount = 0
+        let throwingVM = ChatViewModel(
+            llm: ThrowingLLMClient(), toolExecutor: StubToolExecutor(), tools: [], model: "m", systemPrompt: nil,
+            onTurnSettled: { throwCallCount += 1 })
+        await throwingVM.send("失敗ケース")
+        #expect(throwCallCount == 1)
+        #expect(throwingVM.errorMessage != nil)
+    }
+}
+
+/// 常に stream 開始直後に throw するスタブ LLMClient(onTurnSettled のストリーム失敗経路テスト用)。
+private final class ThrowingLLMClient: LLMClient, @unchecked Sendable {
+    func stream(_ request: ChatCompletionRequest) -> AsyncThrowingStream<LLMEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish(throwing: ThrowingLLMClientError.boom)
+        }
+    }
+    enum ThrowingLLMClientError: Error { case boom }
+}
+
+/// emit された ChatTraceEvent を記録するスタブ TraceSink。
+///
+/// **actor でなく NSLock で直列化する判断(設計に無い・こう解釈)**: TraceSink.emit は
+/// プロトコル定義上「同期メソッド」(fire-and-forget の契約)。actor にすると emit 内部で
+/// `Task { await ... }` を挟むことになり、テスト側の `await vm.send(...)` 完了時点で
+/// 記録がすべて反映されている保証が無くなる(Task のスケジューリング次第で flaky になりうる)。
+/// NSLock なら emit 呼び出しの中で同期的に配列へ追記できるので、send() が返った時点で
+/// 記録は必ず確定している——tool 呼び出しは TaskGroup で並行実行される(ChatViewModel.runToolCalls)
+/// ため、複数スレッドからの同時 emit に対する排他が必要でここで担保する。
+final class SpyTraceSink: TraceSink, @unchecked Sendable {
+    private var events: [ChatTraceEvent] = []
+    private let lock = NSLock()
+
+    func emit(_ event: ChatTraceEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func kinds() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events.map { event in
+            switch event {
+            case .turnStarted: return "turnStarted"
+            case .llmCompleted: return "llmCompleted"
+            case .toolCallStarted: return "toolCallStarted"
+            case .toolCallFinished: return "toolCallFinished"
+            case .turnSettled: return "turnSettled"
+            }
+        }
+    }
+
+    func turnIds() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events.map { event in
+            switch event {
+            case .turnStarted(_, let turnId, _): return turnId
+            case .llmCompleted(let turnId, _, _): return turnId
+            case .toolCallStarted(let turnId, _, _, _): return turnId
+            case .toolCallFinished(let turnId, _, _, _, _): return turnId
+            case .turnSettled(let turnId, _, _): return turnId
+            }
+        }
+    }
+
+    var eventsSnapshot: [ChatTraceEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
 }

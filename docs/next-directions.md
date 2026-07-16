@@ -145,7 +145,18 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > F1/F2 適用後、実機で「todoを見せて」が1回成功・初回から実データ・追加演出なしを確認(判断ゲート通過)。
      > swift test 76 件 green。残: カード内 complete の write 往復目視 / モデルが list-calendars を
      > 先呼びする癖(system prompt 誘導候補)。
-   - T6: 履歴永続化 + サイドバー(+ F3 TraceSink)← 次はここ / T7: コスト表示
+   - T6: 履歴永続化 + サイドバー(+ F3 TraceSink)← **前半 ✅ / 後半(UI)が次**
+     > **2026-07-16 更新(T6 前半 = 観測 + 永続化 write):** `Sources/Kernel/Tracing/ChatTraceEvent.swift`
+     > + `Sources/Services/Chat/TraceSink.swift`(TraceSink protocol + OSLogTraceSink・category
+     > `chat-trace`)+ `Sources/Services/Chat/ChatStore.swift`(1 ChatSession=1 JSON + index.json・
+     > 保存先注入・atomic・破損 index 耐性)。ChatViewModel に traceSink/sessionId/serverURL/
+     > onTurnSettled 注入(5注入点で emit・後方互換 default)+ currentSession。ChatHomeViewModel が
+     > 接続時に OSLogTraceSink 注入 + 各ターン確定で store.save。ChatSession に model 追加・
+     > ChatSessionSummary(Kernel)追加。swift test 93 件 green。**これで開発時は log show
+     > (category chat-trace)で1ターンの流れが追え、会話は JSON 永続化される = 「取得できる」達成**。
+     > **T6 後半(次)**: ChatHistorySidebar(引き出し・検索・日付グループ・新規)+ 過去セッション
+     > 復元(loadIndex/load 済み)+ カードのスナップショット保存/静的再訪(outerHTML・JS 無効)。
+   - T7: コスト表示(usage×単価テーブル・未知モデルは "—")
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。

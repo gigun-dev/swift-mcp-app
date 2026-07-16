@@ -52,8 +52,22 @@ public final class ChatHomeViewModel {
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-home")
 
+    /// チャット履歴の永続化(T6 前半・設計 02 §5)。本番ディレクトリは
+    /// `Application Support/chats/`(iOS では FileManager.urls(for: .applicationSupportDirectory)
+    /// がアプリのサンドボックス内 Application Support を返す)。
+    private let chatStore = ChatStore(baseDirectory: ChatHomeViewModel.defaultChatsDirectory())
+
     public init(settings: LLMSettingsStore) {
         self.settings = settings
+    }
+
+    /// 本番の保存先ディレクトリ。取得に失敗する理論上のケース(サンドボックス外実行等)に備え、
+    /// 一時ディレクトリへフォールバックする(履歴保存が失敗してもチャット自体は継続できる方針
+    /// ——ChatStore.save の失敗はチャットを止めない、A5 の方針と一貫させる)。
+    private static func defaultChatsDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("chats", isDirectory: true)
     }
 
     /// デバッグ用自動接続(MCPHOST_AUTOCONNECT=1)。ConnectionViewModel と同流儀で、
@@ -138,13 +152,35 @@ public final class ChatHomeViewModel {
         let llm = OpenAICompatClient(baseURL: baseURL, apiKey: settings.apiKey)
 
         // --- 5. ChatViewModel(tool-use ループ)を組んで .ready へ ----------------------
-        let chatVM = ChatViewModel(
+        // sessionId は接続1回につき新規発番(T6 前半のスコープは「書き込み」まで ——
+        // 過去セッションの読み込み/復元はサイドバー実装と一緒の T6 後半送り・指示どおり)。
+        let sessionId = UUID().uuidString
+        let store = chatStore
+        let sessionLogger = logger
+        var chatVM: ChatViewModel!
+        chatVM = ChatViewModel(
             llm: llm,
             toolExecutor: proxy,
             tools: toolDefs,
             model: settings.model,
             systemPrompt: Self.systemPrompt,
-            uiResourceURIs: uiResourceURIs
+            uiResourceURIs: uiResourceURIs,
+            traceSink: OSLogTraceSink(),
+            sessionId: sessionId,
+            serverURL: url,
+            onTurnSettled: {
+                // A5: 各ターン確定時に保存。ChatViewModel は MainActor なのでこのクロージャも
+                // MainActor 文脈で呼ばれる(ChatViewModel.send の defer から同期呼び出し)。
+                // 保存自体は同期 I/O(ChatStore.save)なので Task に逃がさずそのまま呼ぶ ——
+                // JSON ファイル1個分の書き込みは軽量で、チャット UI をブロックするほどではない
+                // という判断(設計に明記なし・こう解釈。重くなるようなら後で Task { } に切り出す)。
+                do {
+                    try store.save(chatVM.currentSession)
+                } catch {
+                    // 保存失敗はチャットを止めない(A5)。原因追跡のためログだけ残す。
+                    sessionLogger.error("チャット履歴の保存に失敗: \(String(reflecting: error), privacy: .public)")
+                }
+            }
         )
         state = .ready(chatVM)
         logger.notice("チャット準備完了 model=\(self.settings.model, privacy: .public)")

@@ -74,6 +74,30 @@ public final class ChatViewModel {
     /// 方針と対称)。空マップ = カードを持たないホスト(テキスト往復のみ)で後方互換。
     private let uiResourceURIs: [String: String]
 
+    /// 観測 sink(設計 03 §3・T6 前半)。既定 nil で T3/T5 の既存呼び出し・テストを壊さない
+    /// (fire-and-forget: nil なら emit 自体を呼ばずスキップする=コストゼロ)。
+    private let traceSink: (any TraceSink)?
+
+    /// このチャットセッションの識別子(ChatTraceEvent.chatId・ChatSession.id の元)。
+    /// 文字列で受け取る理由は「呼び出し側(ChatHomeViewModel)がどんな ID 生成方式を選んでも
+    /// 素通しできるようにする」(設計に型の指定は無い・こう解釈)。ChatSession.id は UUID 型なので、
+    /// 有効な UUID 文字列でなければランダム UUID にフォールバックする(壊れた文字列で
+    /// currentSession の構築自体が失敗しないように)。
+    private let sessionId: String
+    private let sessionUUID: UUID
+    /// currentSession に積む接続先(設計 §5 ChatSession.serverURL)。既定は placeholder
+    /// (T3/T5 の既存呼び出し・テストが serverURL を渡さなくても initializer が壊れないように)。
+    /// 実運用(ChatHomeViewModel)は必ず実サーバー URL を渡す。
+    private let sessionServerURL: URL
+    private let sessionCreatedAt = Date()
+
+    /// 1ユーザーターン(send 呼び出し)が確定(.stop 到達 or 最大反復打ち切り)したときに呼ばれる。
+    /// **ストリーム失敗による早期 return を含め、send() が返る直前に必ず呼ぶ**(defer)。
+    /// 置き場の判断(設計に明記なし・こう解釈): ChatHomeViewModel が ChatStore.save を
+    /// ここから呼ぶ想定(A5)。保存の成否はこのコールバック内で ChatViewModel の外側が扱う
+    /// (ループを保存の成否でブロックしない・TraceSink と同じ fire-and-forget の思想)。
+    private let onTurnSettled: (() -> Void)?
+
     // MARK: - 内部状態
 
     /// LLM へ送る厳密な履歴(上のクラスコメント参照)。system をあれば先頭に据える。
@@ -90,6 +114,11 @@ public final class ChatViewModel {
     ///   - maxIterations: tool-use の最大反復。既定 8(設計 §3・暴走とコスト暴発の防止)。
     ///   - uiResourceURIs: toolName → ui:// URI の事前計算マップ(設計 §4)。UI 資源を持つツールが
     ///     成功したとき、そのターンの cards に CardEmbed を積む。既定 [:]（カード無し・T3 互換）。
+    ///   - traceSink: 観測 sink(設計 03 §3)。既定 nil(観測なし・既存呼び出しを壊さない)。
+    ///   - sessionId: このチャットの識別子。既定は新規 UUID 文字列(呼び出し側が省略しても
+    ///     currentSession が破綻しない)。
+    ///   - serverURL: currentSession.serverURL に積む接続先。既定 placeholder(T3/T5 互換)。
+    ///   - onTurnSettled: 1ユーザーターン確定時のコールバック(A5・永続化のトリガ)。既定 nil。
     public init(
         llm: any LLMClient,
         toolExecutor: any MCPToolExecuting,
@@ -97,7 +126,11 @@ public final class ChatViewModel {
         model: String,
         systemPrompt: String?,
         maxIterations: Int = 8,
-        uiResourceURIs: [String: String] = [:]
+        uiResourceURIs: [String: String] = [:],
+        traceSink: (any TraceSink)? = nil,
+        sessionId: String = UUID().uuidString,
+        serverURL: URL = ChatViewModel.placeholderServerURL,
+        onTurnSettled: (() -> Void)? = nil
     ) {
         self.llm = llm
         self.toolExecutor = toolExecutor
@@ -105,12 +138,48 @@ public final class ChatViewModel {
         self.model = model
         self.maxIterations = maxIterations
         self.uiResourceURIs = uiResourceURIs
+        self.traceSink = traceSink
+        self.sessionId = sessionId
+        self.sessionUUID = UUID(uuidString: sessionId) ?? UUID()
+        self.sessionServerURL = serverURL
+        self.onTurnSettled = onTurnSettled
 
         if let systemPrompt {
             // system は履歴の不変の先頭。毎リクエストで送られる(設計に system の扱いの
             // 明示は無いが、OpenAI 標準どおり履歴先頭に固定するのが自然 — こう解釈)。
             wireMessages.append(ChatMessage(role: .system, content: systemPrompt))
         }
+    }
+
+    /// serverURL 省略時の既定値。"about:blank" は実在のスキームを持つ有効な URL でありながら
+    /// 「未設定」を明示できる値として選んだ(nil を許すと currentSession の型が Optional になり
+    /// 呼び出し側全体に伝播するため・設計に無い判断)。
+    public nonisolated static let placeholderServerURL = URL(string: "about:blank")!
+
+    /// 現在のチャット状態を ChatSession(永続化 DTO)として組み立てる(A3・設計 §5)。
+    /// title は最初の user ターンの text 先頭 40 文字(空文字なら "新規チャット")。
+    /// updatedAt はアクセス時点の Date(呼ぶたびに「今」を積む — 保存タイミング=各ターン確定時
+    /// に呼ばれる想定なので、その時刻が実質の updatedAt になる)。
+    public var currentSession: ChatSession {
+        ChatSession(
+            id: sessionUUID,
+            title: Self.deriveTitle(from: turns),
+            serverURL: sessionServerURL,
+            createdAt: sessionCreatedAt,
+            updatedAt: Date(),
+            turns: turns,
+            model: model
+        )
+    }
+
+    private static func deriveTitle(from turns: [ChatTurn]) -> String {
+        guard let firstUserText = turns.first(where: { $0.role == .user })?.text else {
+            return "新規チャット"
+        }
+        let trimmed = firstUserText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "新規チャット" }
+        // 40 文字はサイドバー1行に収まる程度の目安(設計にタイトル長の指定は無い・こう解釈)。
+        return String(trimmed.prefix(40))
     }
 
     // MARK: - ループのエントリ
@@ -124,13 +193,25 @@ public final class ChatViewModel {
         isRunning = true
         defer { isRunning = false }
 
+        // 観測(設計 03 §3 注入点1: send ループ開始)。turnId は「この1ユーザー発話に対する
+        // 一連の反復」全体を指す(反復1周ごとの ID ではない)。
+        let turnId = UUID().uuidString
+        traceSink?.emit(.turnStarted(chatId: sessionId, turnId: turnId, model: model))
+        // A5: 1ユーザーターンの処理が(成功でも失敗でも)終わったら必ず呼ぶ。ストリーム失敗による
+        // 早期 return を含めて確実に発火させたいので defer にする(「確定」の厳密な意味は
+        // tool-use ループの settled だが、ここでは「この send 呼び出しの処理が終わった」を指す
+        // ——設計に無い判断: 部分的な進捗も失わず保存できるほうが観測の目的に適う)。
+        defer { onTurnSettled?() }
+
         // 1) user を wire と表示の両方へ積む。
         wireMessages.append(ChatMessage(role: .user, content: userText))
         turns.append(ChatTurn(role: .user, text: userText))
 
         // 2) 反復。各周で assistant ターンを1つ起こし、そこへ text/toolSteps を書き込む。
         var settled = false
+        var iterations = 0
         for _ in 0..<maxIterations {
+            iterations += 1
             // 今周の assistant 表示ターンを起こす(空テキストで append し、以降 index で書き換える)。
             let assistantIndex = turns.count
             turns.append(ChatTurn(role: .assistant, text: ""))
@@ -160,6 +241,8 @@ public final class ChatViewModel {
                         finishReason = reason
                         calls = toolCalls
                         usage = turnUsage
+                        // 観測(設計 03 §3 注入点2: .completed 受領)。usage 計上(下)と同所。
+                        traceSink?.emit(.llmCompleted(turnId: turnId, finishReason: reason.wireValue, usage: turnUsage))
                     }
                 }
             } catch {
@@ -192,7 +275,7 @@ public final class ChatViewModel {
             }
 
             // 5) 各 tool_call を並行実行し、結果を role:"tool" として wire に積み戻して次周へ。
-            await runToolCalls(calls, assistantIndex: assistantIndex)
+            await runToolCalls(calls, assistantIndex: assistantIndex, turnId: turnId)
             // continue(次の反復へ) — モデルがツール結果を見て次を判断する(設計 §3-5)。
         }
 
@@ -201,6 +284,17 @@ public final class ChatViewModel {
         if !settled {
             errorMessage = "ツール呼び出しが最大反復(\(maxIterations)回)を超えたため打ち切りました。"
         }
+
+        // 観測(設計 03 §3 注入点5: settled)。ストリーム失敗による早期 return はここを通らない
+        // (「.stop 到達 or 最大反復打ち切り」のどちらでもない = 反復自体が完結していないため)。
+        // cumulativeUsage が一度も届いていない(usage 非対応プロバイダ等)場合は 0 埋めの Usage を積む
+        // — turnSettled.cumulativeUsage が非 optional(設計 03 §3 のコードブロックどおり)なので
+        // 欠損を「ゼロ」として表現する(設計に明記なし・こう解釈)。
+        traceSink?.emit(.turnSettled(
+            turnId: turnId,
+            iterations: iterations,
+            cumulativeUsage: cumulativeUsage ?? Usage(promptTokens: 0, completionTokens: 0)
+        ))
     }
 
     // MARK: - ツール実行(1ターンぶんの tool_calls をまとめて)
@@ -209,7 +303,7 @@ public final class ChatViewModel {
     /// - 表示: 各 tool_call を assistant ターンの toolSteps に pending→running→done/failed で反映。
     /// - wire: 結果を role:"tool"(tool_call_id 付き)として積む。**tool_call_id 順で安定化**
     ///   (設計 §3「messages には tool_call_id 順で積む」)。
-    private func runToolCalls(_ calls: [ToolCall], assistantIndex: Int) async {
+    private func runToolCalls(_ calls: [ToolCall], assistantIndex: Int, turnId: String) async {
         // 表示ステップを call 順で先に起こす(running まで進める)。UI に「今このツール群を
         // 呼んでいる」を即見せる。argumentsJSON は可視化用にそのまま持つ(設計 §3 の可視化)。
         turns[assistantIndex].toolSteps = calls.map {
@@ -220,10 +314,11 @@ public final class ChatViewModel {
         // 実行に要る値(executor・id・name・arguments)だけを渡す。結果は元の index を添えて返し、
         // 表示ステップとの対応を保つ。
         let executor = self.toolExecutor
+        let sink = self.traceSink
         let results: [ToolExecResult] = await withTaskGroup(of: ToolExecResult.self) { group in
             for (index, call) in calls.enumerated() {
                 group.addTask {
-                    await Self.execute(call: call, index: index, executor: executor)
+                    await Self.execute(call: call, index: index, executor: executor, traceSink: sink, turnId: turnId)
                 }
             }
             var collected: [ToolExecResult] = []
@@ -294,7 +389,13 @@ public final class ChatViewModel {
     /// 見せて回復(別ツール・別引数・ユーザーへの謝罪)を委ねる。ここで throw を上に伝播させると
     /// 1本のツール失敗でチャット全体が死ぬ — LLM エージェントの通常運用ではエラーもモデルへの
     /// 入力として扱うのが定石。該当ステップは failed 表示にする。
-    private static func execute(call: ToolCall, index: Int, executor: any MCPToolExecuting) async -> ToolExecResult {
+    private static func execute(
+        call: ToolCall,
+        index: Int,
+        executor: any MCPToolExecuting,
+        traceSink: (any TraceSink)?,
+        turnId: String
+    ) async -> ToolExecResult {
         // 【設計 03 §1 決定(c)】壊れた JSON はツールを呼ばずに失敗として返す。
         // 「パース不能→nil→引数なしで実行」は、モデルが意図した引数(例: 文字列が途中で
         // 切れた `{"calendarId": ...`)と**別の呼び出し**を誤って成功させてしまう
@@ -302,6 +403,10 @@ public final class ChatViewModel {
         // リトライを委ねる(execute の throw 経路と同じく、ここでも上位ループは止めない)。
         switch decodeArguments(call.function.arguments) {
         case .invalid(let message):
+            // 【観測の判断(設計に明記なし・こう解釈)】ツールは実際には呼ばれていないので
+            // toolCallStarted/Finished は emit しない — 「ツール呼び出しの観測」であって
+            // 「tool_call という LLM 出力自体の観測」ではないため(実行しなかったものを
+            // 実行1回として数えると resultBytes/durationMs が意味を持たない)。
             return ToolExecResult(
                 index: index,
                 toolCallId: call.id,
@@ -313,11 +418,25 @@ public final class ChatViewModel {
                 arguments: nil
             )
         case .value(let arguments):
+            // 観測(設計 03 §3 注入点3: execute の callTool 前)。
+            traceSink?.emit(.toolCallStarted(turnId: turnId, callId: call.id, name: call.function.name, arguments: arguments))
+            let startedAt = Date()
             do {
                 let result = try await executor.callTool(name: call.function.name, arguments: arguments)
                 // 結果 JSONValue を JSON 文字列に落として role:"tool" content にする(設計 §3-4a
                 //「structuredContent を要約 or JSON 文字列」の JSON 文字列側)。要約は T5 以降の課題。
                 let data = (try? JSONEncoder().encode(result)) ?? Data("null".utf8)
+                let isError = result["isError"]?.boolValue == true
+                // 観測(設計 03 §3 注入点4: callTool 後)。durationMs は実測(Date().timeIntervalSince)。
+                // resultBytes は role:"tool" に積む JSON 文字列そのものの UTF-8 バイト数
+                // (「結果 JSON の utf8 バイト数」の指示どおり)。
+                traceSink?.emit(.toolCallFinished(
+                    turnId: turnId,
+                    callId: call.id,
+                    isError: isError,
+                    resultBytes: data.count,
+                    durationMs: Int(Date().timeIntervalSince(startedAt) * 1000)
+                ))
                 return ToolExecResult(
                     index: index,
                     toolCallId: call.id,
@@ -329,6 +448,13 @@ public final class ChatViewModel {
                     arguments: arguments
                 )
             } catch {
+                traceSink?.emit(.toolCallFinished(
+                    turnId: turnId,
+                    callId: call.id,
+                    isError: true,
+                    resultBytes: 0,
+                    durationMs: Int(Date().timeIntervalSince(startedAt) * 1000)
+                ))
                 return ToolExecResult(
                     index: index,
                     toolCallId: call.id,

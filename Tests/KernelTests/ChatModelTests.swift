@@ -15,7 +15,8 @@ func chatSessionRoundTripEmpty() throws {
         title: "新しいチャット",
         serverURL: URL(string: "https://caldav.gigun-dev.workers.dev/mcp")!,
         createdAt: Date(timeIntervalSince1970: 0),
-        updatedAt: Date(timeIntervalSince1970: 0)
+        updatedAt: Date(timeIntervalSince1970: 0),
+        model: "gpt-5-mini"
     )
     #expect(try roundTrip(session) == session)
 }
@@ -45,7 +46,8 @@ func chatSessionRoundTripWithTurns() throws {
                 ],
                 usage: Usage(promptTokens: 200, completionTokens: 30, totalTokens: 230)
             ),
-        ]
+        ],
+        model: "gpt-5-mini"
     )
     #expect(try roundTrip(session) == session)
 }

@@ -260,3 +260,20 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   ツールチェーン脆弱性・テスト自体は全 pass)。field 有無/Kernel 単独/suite 単位で crash が入れ替わる
   ことを確認。→ ChatViewModelTests を @Suite(.serialized) 化(理由コメント付き)。swift test 76 件 4/4 安定回復。
 - 実機で展開 UI 動作確認。リクエスト {} は F1 修正後の正常状態(絞り込み不要な list-todos)。
+
+## 2026-07-16 P3 T6 前半: 観測(TraceSink)+ 履歴永続化(ChatStore write)
+
+- 目的: 「ユーザーのチャット + tool calling を後から取得・分析できる」状態にする(ユーザー要望・design 03 §3)。
+- F3 TraceSink(implementer 委譲): Kernel/Tracing/ChatTraceEvent(turnStarted/llmCompleted/
+  toolCallStarted/toolCallFinished/turnSettled・Codable)+ Services/Chat/TraceSink protocol +
+  OSLogTraceSink(category chat-trace・1行整形・引数本体はプライバシーで出さない)。ChatViewModel の
+  5注入点で fire-and-forget emit。durationMs は実測(Date)。壊れ JSON の tool_call は emit しない。
+- 永続化(design 02 §5): Services/Chat/ChatStore(1 ChatSession=1 JSON + index.json・baseDirectory 注入で
+  テスト可能・atomic 書き込み・NSLock 直列化・破損 index はログして空扱い)。save/loadIndex(updatedAt 降順)/
+  load/delete。ChatSession に model 追加、ChatSessionSummary(Kernel)追加。
+- 配線: ChatViewModel に traceSink/sessionId/serverURL/onTurnSettled(全 default nil で後方互換)+ currentSession
+  (title=最初の user 発話 40字)。ChatHomeViewModel が接続時に sessionId 発番 + OSLogTraceSink 注入、
+  onTurnSettled で store.save(失敗はログして続行)。保存先は Application Support/chats/(取れなければ temp)。
+- テスト: ChatStore round-trip/降順/delete/破損耐性、ChatViewModel の trace 順序(SpyTraceSink)、
+  ChatTraceEvent Codable。新スイートは @Suite(.serialized)(teardown crash 回避)。swift test 93 件 green・3x 安定。
+- T6 後半(次): サイドバー UI + 過去セッション復元 + カードスナップショット。
