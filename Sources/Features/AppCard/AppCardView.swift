@@ -140,6 +140,48 @@ enum AppCardWebViewFactory {
         return webView
     }
 
+    /// 履歴再訪用の**静的スナップショット表示**専用 WKWebView を生成する(T6・設計 §5)。
+    ///
+    /// ライブカード(make)との差:
+    ///  - **JS を実行しない**: `defaultWebpagePreferences.allowsContentJavaScript = false`。
+    ///    outerHTML に残ったインライン onclick / `<script>` は死んだボタン(ブリッジ無し)なので、
+    ///    JS を切って「死んだボタンが JS エラーを吐く」のを防ぎ、純粋な見た目だけを復元する
+    ///    (設計 §5「JS 実行自体を切ってロードする」)。
+    ///  - **transport/ブリッジ無し**: postMessage インターセプタ(WebViewTransport.makeConfiguration)を
+    ///    土台にしない。静的表示専用なので JSON-RPC 会話は一切しない(素の WKWebViewConfiguration から組む)。
+    ///  - ContentRuleList 全遮断・非永続ストア・navigation 封じは make と同じ(サンドボックスは緩めない)。
+    /// - Parameter coordinator: navigation/UI デリゲート。**呼び出し側が強参照で保持**すること
+    ///   (WKWebView の delegate は weak・make と同じ制約。StaticCardHost が保持する)。
+    static func makeStatic(html: String, coordinator: AppCardWebCoordinator) async -> WKWebView {
+        // 素の config(ブリッジ無し)。ライブと違い transport.makeConfiguration は使わない。
+        let configuration = WKWebViewConfiguration()
+        // JS 実行自体を切る(設計 §5)。死んだボタンのエラー抑止 + スナップショットの純表示。
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        // 非永続ストア(ライブと同じ・カード間で状態を残さない)。
+        configuration.websiteDataStore = .nonPersistent()
+
+        // 全遮断ルール(ライブと同じ・自己完結 HTML はネットワーク不要)。
+        if let ruleList = await compileBlockAllRuleList() {
+            configuration.userContentController.add(ruleList)
+            logger.notice("ContentRuleList(全遮断・静的カード)を適用")
+        } else {
+            logger.error("ContentRuleList のコンパイルに失敗(静的カード・遮断なしで続行)")
+        }
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
+        // 静的カードは size-changed 追従が無い(ブリッジ無し)ので、maxHeight 内に収めて
+        // **内部スクロールを許す**(StaticCardView 側でクランプ・高さの判断はそちらのコメント)。
+        webView.scrollView.isScrollEnabled = true
+        disableDoubleTapGestures(in: webView.scrollView)
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        // baseURL: nil = opaque origin(ライブと同じ)。ブリッジ無しなので transport.attach はしない。
+        webView.loadHTMLString(html, baseURL: nil)
+        return webView
+    }
+
     /// WKWebView(scrollView)に付いている「2回タップ要求」のジェスチャ認識器を無効化する。
     /// これがあると WebKit は単発タップの click 合成を遅延させる(上記コメント参照)。
     /// zoom を 1:1 固定にしても認識器自体は残ることがあるため、明示的に潰す。

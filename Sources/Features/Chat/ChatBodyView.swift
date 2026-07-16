@@ -114,7 +114,13 @@ struct ChatBodyView: View {
                             host: cardRegistry.host(for: "\(turnIndex)-\(cardIndex)"),
                             proxy: proxy,
                             card: card,
-                            containerWidth: columnWidth
+                            containerWidth: columnWidth,
+                            // スナップショット到達で永続モデルへ書き戻す(T6・設計 §5)。identity は
+                            // (turnIndex, cardIndex)。turns/cards は追記のみなのでこの index は安定
+                            // (ChatViewModel.setCardSnapshot 側でも範囲外を安全に無視する)。
+                            onSnapshot: { html in
+                                chatVM.setCardSnapshot(turnIndex: turnIndex, cardIndex: cardIndex, html: html)
+                            }
                         )
                     }
                 }
@@ -227,7 +233,9 @@ struct ChatBodyView: View {
 /// ツールステップ1行(モックの .tool-step)。タップで開閉し、開くと argumentsJSON(リクエスト)/
 /// resultJSON(レスポンス)を整形表示する。@State isExpanded を行ごとに持つため、ChatBodyView 本体
 /// (struct View で開閉状態を持てない)から切り出した独立行 View。
-private struct ToolStepRow: View {
+// internal(private でない)にしているのは、読み取り専用の履歴ビュー(HistoryDetailView)が
+// 同じツール req/res 展開行を再利用するため(タスク指示 C-view「ToolStepRow 再利用」)。
+struct ToolStepRow: View {
     let step: ToolCallStep
     @State private var isExpanded = false
 

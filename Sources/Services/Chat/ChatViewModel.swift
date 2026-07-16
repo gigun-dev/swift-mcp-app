@@ -172,6 +172,40 @@ public final class ChatViewModel {
         )
     }
 
+    // MARK: - カードスナップショットの書き戻し(T6 後半・設計 §5「カードの履歴再訪問題」)
+
+    /// ライブカード(WKWebView)から取得した outerHTML スナップショットを、対応する
+    /// CardEmbed へ書き戻して再保存をトリガする(設計 §5「最後のスナップショット HTML を保存」)。
+    ///
+    /// 呼び出し元は Features 側(InlineCardView → InlineCardHost が
+    /// `document.documentElement.outerHTML` を取得し、その identity=(turnIndex, cardIndex) を
+    /// 添えてここへ届ける)。スナップショットは **ターン確定後に非同期で届く**(size-changed
+    /// 到達やカード離脱を合図に取得されるため、send() の defer(onTurnSettled)よりあとに来うる)。
+    /// そこで、書き戻した直後に onTurnSettled を「汎用の永続トリガ」として叩き直し、
+    /// snapshotHTML を含んだ最新の currentSession を ChatStore.save させる。
+    ///
+    /// 【onPersistNeeded を新設せず onTurnSettled を転用した判断(タスク指示で裁量とされた点)】
+    /// onTurnSettled は既に「currentSession を保存する」以上の意味を持たない fire-and-forget の
+    /// 汎用フック(ChatHomeViewModel が store.save に落としている)。スナップショット到達も
+    /// 「保存すべき状態変化が起きた」という同じ事象なので、フックを増やさず再利用するのが素直
+    /// (フックが増えるほど呼び出し側の配線ミスの余地が増える)。名前が turn 由来なのは経緯だが、
+    /// 実体は「永続化が必要になった」通知として扱う(このコメントで意図を残す)。
+    ///
+    /// 範囲外 index は安全に無視する(ガード)。スナップショットは非同期で届くため、届いた時点で
+    /// 対象ターン/カードが(理論上)もう存在しない・作り替えられている可能性を型で否定できない
+    /// ——落とさず黙って捨てる(履歴の見た目が1枚欠けるだけで、チャットは壊れない)。
+    /// 同一 HTML の重複書き戻し(size-changed 到達時 + teardown 時の2回取得)は、値が同じなら
+    /// 実質 no-op だが save は走る(冪等・コストは JSON 1ファイル書き込みぶんで許容・設計 §5)。
+    public func setCardSnapshot(turnIndex: Int, cardIndex: Int, html: String) {
+        guard turns.indices.contains(turnIndex),
+              turns[turnIndex].cards.indices.contains(cardIndex)
+        else { return }
+        // 値が変わらないなら保存を走らせない(size-changed が複数回来ても DOM が同じなら無駄書きを避ける)。
+        guard turns[turnIndex].cards[cardIndex].snapshotHTML != html else { return }
+        turns[turnIndex].cards[cardIndex].snapshotHTML = html
+        onTurnSettled?()
+    }
+
     private static func deriveTitle(from turns: [ChatTurn]) -> String {
         guard let firstUserText = turns.first(where: { $0.role == .user })?.text else {
             return "新規チャット"

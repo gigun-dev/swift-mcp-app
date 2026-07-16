@@ -52,6 +52,16 @@ final class InlineCardHost {
     /// AppCardView/スパイクと共有の高さ状態型)なのでそのまま流用する。
     let cardState = AppCardState()
 
+    /// スナップショット(outerHTML)取得時に呼ばれるコールバック(T6・設計 §5)。
+    /// InlineCardView が build 前に host へ差し込む(identity=(turnIndex,cardIndex) を閉じ込めた
+    /// closure で、最終的に ChatViewModel.setCardSnapshot を叩く)。@MainActor: evaluateJavaScript の
+    /// 完了ハンドラはメインスレッドで呼ばれ、setCardSnapshot も @MainActor なので整合する。
+    var onSnapshot: (@MainActor (String) -> Void)?
+
+    /// size-changed 到達を合図に一度スナップショットを取ったか(設計 §5「第一候補」)。
+    /// teardown 時の取り直し(保険)は didCapture に関わらず毎回行う。
+    private var didCaptureOnSizeChanged = false
+
     // 生存させ続ける参照群(手放すと停止する。TodosCardSpikeViewModel のプロパティ群と同じ役割)。
     private var transport: WebViewTransport?
     private var coordinator: AppCardWebCoordinator?
@@ -94,11 +104,17 @@ final class InlineCardHost {
                 proxy: proxy,
                 containerWidth: Double(containerWidth),
                 maxHeight: 600,
-                onSizeChanged: { height in
+                onSizeChanged: { [weak self] height in
                     await MainActor.run {
                         withAnimation(.easeOut(duration: 0.3)) {
                             cardState.desiredHeight = min(CGFloat(height), 600)
                         }
+                        // スナップショット取得の第一候補(設計 §5): tool-result 配送後、カードが
+                        // 描画確定した合図として size-changed が到達した時点で outerHTML を取る。
+                        // 初回到達で1度だけ(以降の size-changed は同じ DOM の再計測が主で、
+                        // 取り直しは teardown 時にまとめて行う——毎 size-changed で JS 評価すると
+                        // スクロール中に無駄な評価が積み上がるため)。
+                        self?.captureSnapshotOnFirstSizeChanged()
                     }
                 })
             self.session = session
@@ -123,8 +139,39 @@ final class InlineCardHost {
 
     /// 明示破棄(チャット画面が閉じるとき registry から呼ばれる)。teardown を投げてから参照を手放す。
     func teardown() {
+        // 保険のスナップショット取り直し(設計 §5「保険としてターン確定時にも取り直す」)。
+        // カード離脱/画面クローズ時点の最終状態(size-changed 後に往復で内容が変わった等)を
+        // 取りこぼさないため、didCapture に関わらず最後に1度取る。webView 破棄前に評価する。
+        captureSnapshot()
         let session = self.session
         Task { await session?.teardown() }
+    }
+
+    // MARK: - スナップショット取得(設計 §5)
+
+    /// size-changed 初回到達時に1度だけ outerHTML を取る(第一候補のタイミング)。
+    private func captureSnapshotOnFirstSizeChanged() {
+        guard !didCaptureOnSizeChanged else { return }
+        didCaptureOnSizeChanged = true
+        captureSnapshot()
+    }
+
+    /// 現在の webView の DOM を `document.documentElement.outerHTML` でシリアライズし、
+    /// onSnapshot へ渡す(設計 §5)。webView 未構築や onSnapshot 未設定なら何もしない。
+    /// 【outerHTML の限界(設計 §5 記載)】input の入力途中値・canvas は落ちるが、caldav の
+    /// todos/agenda はリスト表示なので実害なし。再訪側は allowsContentJavaScript=false でロードする。
+    private func captureSnapshot() {
+        guard let webView, let onSnapshot else { return }
+        webView.evaluateJavaScript("document.documentElement.outerHTML") { result, error in
+            // 完了ハンドラはメインスレッド。MainActor 隔離をコンパイラに伝えるため Task で包む
+            // (evaluateJavaScript の completion は @Sendable 非分離クロージャなので、
+            //  @MainActor の onSnapshot を直接は呼べない)。
+            if let html = result as? String {
+                Task { @MainActor in onSnapshot(html) }
+            } else if let error {
+                self.logger.error("outerHTML 取得に失敗: \(String(reflecting: error), privacy: .public)")
+            }
+        }
     }
 }
 
@@ -158,16 +205,27 @@ struct InlineCardView: View {
     let proxy: AppsServerProxy
     let card: CardEmbed
     let containerWidth: CGFloat
+    /// スナップショット取得時に呼ばれる(T6・設計 §5)。ChatBodyView が identity=(turnIndex,cardIndex)
+    /// を閉じ込めて渡し、最終的に ChatViewModel.setCardSnapshot を叩く。既定 nil で T5 の既存呼び出し
+    /// (スナップショット不要のプレビュー等)を壊さない。
+    var onSnapshot: (@MainActor (String) -> Void)?
 
     // 高さ(desiredHeight)は AppCardState(ObservableObject)で観測する。@Observable の host とは
     // 別機構だが、既存の高さ状態型を作り替えない方針(ファイル冒頭 InlineCardHost.cardState 参照)。
     @ObservedObject private var cardState: AppCardState
 
-    init(host: InlineCardHost, proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat) {
+    init(
+        host: InlineCardHost,
+        proxy: AppsServerProxy,
+        card: CardEmbed,
+        containerWidth: CGFloat,
+        onSnapshot: (@MainActor (String) -> Void)? = nil
+    ) {
         self.host = host
         self.proxy = proxy
         self.card = card
         self.containerWidth = containerWidth
+        self.onSnapshot = onSnapshot
         // @ObservedObject を host の cardState に束ねる(init で _cardState を組む標準パターン)。
         self._cardState = ObservedObject(wrappedValue: host.cardState)
     }
@@ -178,6 +236,10 @@ struct InlineCardView: View {
             // 実測幅が来てから1度だけ構築する(狭すぎる幅でカードがレイアウトされるのを避ける)。
             .task(id: containerWidth > 0) {
                 guard containerWidth > 0 else { return }
+                // スナップショット取得口を host に差し込んでから構築する(build 中の size-changed で
+                // 取得が走るので、それより前に設定しておく)。host は生存し続けるが closure は
+                // View 再生成のたびに新しくなりうるので、毎回入れ替える(identity は同じなので実害なし)。
+                host.onSnapshot = onSnapshot
                 host.buildIfNeeded(proxy: proxy, card: card, containerWidth: containerWidth)
             }
         // onDisappear では teardown しない(設計 §4 の生存優先・ファイル冒頭の判断)。スクロールアウトは
