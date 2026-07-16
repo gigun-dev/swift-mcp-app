@@ -238,11 +238,26 @@ struct ChatHomeView: View {
             }
             .onEnded { value in
                 let horizontal = abs(value.translation.width) > abs(value.translation.height)
-                let base: CGFloat = showingSidebar ? revealWidth : 0
-                // predictedEndTranslation を少し加味して「勢いのあるフリック」でも自然に開閉する。
-                let projected = base + value.translation.width + value.predictedEndTranslation.width * 0.2
+                // 【閾値を下げ・速度も見る(2026-07-16・ユーザー指摘「少ない動きで閉じたい・勢いを
+                // つけるのは疲れる」)】以前は「全開幅の 40% 位置」を単一閾値にしていたため、閉じるには
+                // 60% ぶんも左へ動かす必要があり疲れた。→ **現在状態からの移動量**が reveal の 22% を
+                // 超える or その向きに勢い(現在速度ぶんの追加予測移動 > 100pt)があれば toggle する、
+                // 対称で軽い判定にする(少しの動き or 軽いフリックのどちらでも確定)。
+                let moved = value.translation.width
+                let velocity = value.predictedEndTranslation.width - moved  // 現在速度ぶんの追加予測移動。
+                let posThreshold = revealWidth * 0.22
+                let velThreshold: CGFloat = 100
+                let target: Bool
+                if showingSidebar {
+                    // 開いている → 左へ少し動かす or 左向きの勢いで閉じる。
+                    let closing = moved < -posThreshold || velocity < -velThreshold
+                    target = !closing
+                } else {
+                    // 閉じている → 右へ少し動かす or 右向きの勢いで開く。
+                    target = moved > posThreshold || velocity > velThreshold
+                }
                 withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
-                    if horizontal { showingSidebar = projected > revealWidth * 0.4 }
+                    if horizontal { showingSidebar = target }
                     dragTranslation = 0  // snap と同じアニメーション内でリセット(隙間=ちらつきを作らない)。
                 }
             }
