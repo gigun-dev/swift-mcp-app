@@ -130,7 +130,22 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
      > **観測されたコスト論点**: 毎ターン ≈17 ツールのスキーマ送信でトークンが乗る(設計 §6 の
      > 予期どおり)→ T7/最適化の対象。**軽微 UI**: model chip が小さく潰れて見える(後で詰める)。
      > レビュー保留(モック逸脱): 設定 chips に OpenAI 追加/接続前ゲート画面はモック外で新設。
-   - T5: インラインカード ← 次はここ / T6: 履歴永続化 + サイドバー / T7: コスト表示
+   - ~~T5: インラインカード(ツール結果の ui:// カードをチャット内描画 + 往復)~~ ✅
+     > **2026-07-16 更新:** T5 実装 + 実機 E2E 成功。`Sources/Features/Chat/InlineCardView.swift`
+     > (InlineCardHost/Registry = LazyVStack スクロール再生成に耐える生存管理)+ ChatViewModel の
+     > uiResourceURIs 注入で UI 資源ツール結果を turn.cards に記録。実機で todos カードがインライン
+     > 描画・高さ追従・カード自己 refresh 往復を確認。
+     > **実運用で3論点が表面化 → fable 設計(docs/design/03)→ F1/F2 修正で解消**:
+     > - 論点1(バグ): 空引数 `{}` を nil に畳んで送信 → swift-sdk が arguments 省略 → TS SDK の
+     >   zod object が undefined 拒否 → list-todos 失敗。F1: `AppsServerProxy.mcpArguments` で
+     >   nil→`{}` 正規化・decodeArguments の空畳み込み削除・壊れ JSON はモデルにエラー返却。
+     > - 論点2: 空 tool-result が prev=[] を確立 → 自己 refresh で全件「追加」誤演出。F2: isError
+     >   結果ではカードを起こさない。「+ ボタンで同期」は事実無根(FAB はローカルドラフトのみ)。
+     > - 論点3: 観測はアプリ責務。TraceSink 1 seam を T6 と同時(F3・未実装)。Langfuse はプロキシ段階。
+     > F1/F2 適用後、実機で「todoを見せて」が1回成功・初回から実データ・追加演出なしを確認(判断ゲート通過)。
+     > swift test 76 件 green。残: カード内 complete の write 往復目視 / モデルが list-calendars を
+     > 先呼びする癖(system prompt 誘導候補)。
+   - T6: 履歴永続化 + サイドバー(+ F3 TraceSink)← 次はここ / T7: コスト表示
 5. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。

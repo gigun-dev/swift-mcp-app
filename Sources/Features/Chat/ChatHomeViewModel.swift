@@ -44,7 +44,11 @@ public final class ChatHomeViewModel {
     // (TodosCardSpikeView と同じ理由)。proxy は ChatViewModel 内にも保持されるが、
     // ここでも参照を握って生存を確実にする。
     private var connectTask: Task<Void, Never>?
-    private var proxy: AppsServerProxy?
+
+    /// 接続で生成した AppsServerProxy。**View(ChatBodyView → InlineCardView)がカード構築で使う**
+    /// ため公開する(T5)。fetchAppHTML と tools/call 素通しはどのカードからも同じ proxy = 同じ接続に
+    /// 流れる(設計 §4「接続は共有」)。.ready へ遷移した時点で必ず非 nil。
+    public private(set) var proxy: AppsServerProxy?
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-home")
 
@@ -113,6 +117,19 @@ public final class ChatHomeViewModel {
         let toolDefs = try toolDefinitions(from: connection.tools)
         logger.notice("LLM ツール定義 \(toolDefs.count) 件(visibility 除外後)")
 
+        // --- 3b. UI 資源マップ(toolName → ui:// URI)の事前計算(設計 §4・T5)------------------
+        // 発見(resolveUIResourceURI)は Features 側でここ1回だけ行い、結果を ChatViewModel へ渡す。
+        // ループ本体は AppsServerProxy に依存せずこの precomputed マップだけ見る(MCPToolExecuting 抽象を
+        // 保つ・ChatViewModel.uiResourceURIs のコメント参照)。resolveUIResourceURI は nonisolated 純関数
+        // なので await 不要。UI を持たないツール(refresh-* 等)は非 nil にならず、マップに載らない。
+        var uiResourceURIs: [String: String] = [:]
+        for tool in connection.tools {
+            if let uri = proxy.resolveUIResourceURI(for: tool) {
+                uiResourceURIs[tool.name] = uri
+            }
+        }
+        logger.notice("UI 資源を持つツール \(uiResourceURIs.count) 件")
+
         // --- 4. OpenAICompatClient(BYOK 設定から)-------------------------------------
         guard let baseURL = URL(string: settings.baseURL) else {
             state = .failed("LLM base URL が不正です: \(settings.baseURL)")
@@ -126,7 +143,8 @@ public final class ChatHomeViewModel {
             toolExecutor: proxy,
             tools: toolDefs,
             model: settings.model,
-            systemPrompt: Self.systemPrompt
+            systemPrompt: Self.systemPrompt,
+            uiResourceURIs: uiResourceURIs
         )
         state = .ready(chatVM)
         logger.notice("チャット準備完了 model=\(self.settings.model, privacy: .public)")

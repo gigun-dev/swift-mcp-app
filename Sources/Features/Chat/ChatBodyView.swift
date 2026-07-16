@@ -19,8 +19,21 @@ struct ChatBodyView: View {
     // @Observable なので let で保持していても body 内で読んだプロパティの変化は自動追従する。
     let chatVM: ChatViewModel
 
+    // カード構築に使う AppsServerProxy(T5)。接続共有(設計 §4)。nil の場合はカードを描画しない
+    // (proxy 未確立の防御・通常 .ready では非 nil)。
+    let proxy: AppsServerProxy?
+
     // 入力欄のローカル下書き。送信で空にする。View ローカルの @State でよい(VM に持たせる必要なし)。
     @State private var draft: String = ""
+
+    // インラインカードのセッション台帳(InlineCardView.swift 冒頭の「最重要の設計判断」)。
+    // @State で1個所有し、チャット画面の生存期間中カード群(webView/session)を生かす。LazyVStack の
+    // スクロール再生成に耐えるための外部保持先。
+    @State private var cardRegistry = InlineCardRegistry()
+
+    // カード列の実測幅(設計 §5「幅=カード列の実測幅」)。メッセージ列の内側幅を GeometryReader で測り、
+    // InlineCardView の containerWidth に渡す。0 の間はカード構築を保留する(InlineCardView 側で guard)。
+    @State private var columnWidth: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,18 +50,29 @@ struct ChatBodyView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(Array(chatVM.turns.enumerated()), id: \.offset) { index, turn in
-                        turnView(turn)
+                        turnView(turn, turnIndex: index)
                             .id(index)
                     }
                 }
+                // 幅測定は .padding の前に background で行い、カード列の内側幅(パディング差引後)を得る。
+                // この幅を InlineCardView の containerWidth に渡し、caldav カードがこの幅にレイアウトする。
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: ColumnWidthKey.self, value: geo.size.width)
+                    }
+                )
                 .padding(.horizontal, 12)
                 .padding(.vertical, 14)
             }
+            .onPreferenceChange(ColumnWidthKey.self) { columnWidth = $0 }
             // 末尾ターンの text が伸びる(ストリーミング)たびに最下部へ追従する。
             // turns.count だけでなく末尾 text の長さも監視して、ストリーミング中の追従を効かせる。
             .onChange(of: chatVM.turns.count) { scrollToBottom(proxy) }
             .onChange(of: chatVM.turns.last?.text) { scrollToBottom(proxy) }
         }
+        // チャット画面が閉じるとき、カードのセッションをまとめて畳む(設計 §6・§4 の生存はここまで)。
+        // スクロールアウトでは畳まない(InlineCardView は onDisappear で teardown しない)。
+        .onDisappear { cardRegistry.teardownAll() }
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -61,7 +85,7 @@ struct ChatBodyView: View {
     // MARK: - 1ターン
 
     @ViewBuilder
-    private func turnView(_ turn: ChatTurn) -> some View {
+    private func turnView(_ turn: ChatTurn, turnIndex: Int) -> some View {
         switch turn.role {
         case .user:
             // ユーザー吹き出し: 右寄せ・青。
@@ -70,7 +94,7 @@ struct ChatBodyView: View {
                 bubble(turn.text, isUser: true)
             }
         case .assistant:
-            // assistant: ツールステップ列(あれば)を先に、続いて本文吹き出し(空なら出さない)。
+            // assistant: ツールステップ列 → 本文吹き出し → インラインカード列(設計 §4)。
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(turn.toolSteps.enumerated()), id: \.offset) { _, step in
                     toolStepRow(step)
@@ -79,6 +103,19 @@ struct ChatBodyView: View {
                     HStack {
                         bubble(turn.text, isUser: false)
                         Spacer(minLength: 40)
+                    }
+                }
+                // ツール結果の ui:// カード(あれば)。proxy と実測幅が揃っているときだけ描画する。
+                // cardID は (turnIndex, cardIndex) で安定(turns/cards は追記のみ)。この ID で
+                // registry から同じ host を引くことで、スクロール再生成でも往復状態が保たれる。
+                if let proxy {
+                    ForEach(Array(turn.cards.enumerated()), id: \.offset) { cardIndex, card in
+                        InlineCardView(
+                            host: cardRegistry.host(for: "\(turnIndex)-\(cardIndex)"),
+                            proxy: proxy,
+                            card: card,
+                            containerWidth: columnWidth
+                        )
                     }
                 }
             }
@@ -211,5 +248,14 @@ struct ChatBodyView: View {
         draft = ""
         // ChatViewModel.send は throw しない(内部で errorMessage に載せる)。
         Task { await chatVM.send(text) }
+    }
+}
+
+/// メッセージ列の内側幅(カード列幅)を GeometryReader → onPreferenceChange で吸い上げる鍵(設計 §5)。
+/// 最大値を採る reduce にしておく(複数 reader が競合しても列の実幅に収束する)。
+private struct ColumnWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

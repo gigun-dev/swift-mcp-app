@@ -203,9 +203,25 @@ public actor AppsServerProxy {
 
     // MARK: - 内部ヘルパ
 
-    /// JSONValue(arguments オブジェクト)→ swift-sdk の [String: Value]? 変換。
-    private func mcpArguments(from arguments: JSONValue?) throws -> [String: Value]? {
-        guard let arguments else { return nil }
+    /// JSONValue(arguments オブジェクト)→ swift-sdk の [String: Value] 変換(設計 03 §1 決定(a))。
+    ///
+    /// **不変条件: nil は空オブジェクト `[:]` に正規化し、必ず arguments フィールドを
+    /// ワイヤに載せる(省略しない)。** swift-sdk の `CallTool.Parameters` は
+    /// `encodeIfPresent(arguments, forKey: .arguments)`(Tools.swift:401)なので、ここで
+    /// nil を返すと arguments キー自体が JSON から消える。MCP 仕様上は optional で許容されるが、
+    /// caldav が使う TS SDK(zod-compat.js)は省略時に `undefined` を `z.object(shape)` へ渡し
+    /// `InvalidParams` で弾く実装になっている(一次資料は設計 03 §1)。TS SDK 系サーバーが
+    /// 圧倒的多数派なので、汎用ホストは「常に `{}` 以上を送る」以外の選択をしない。
+    /// このメソッドは LLM 発(callTool)とカード発(passthroughToolsCall→callTool)の合流点なので、
+    /// ここ1箇所で両経路の不変条件を担保できる(MCPToolExecuting.swift のドキュメントコメントにも
+    /// 対称の記述を残す)。
+    ///
+    /// アクセスレベル: 本来 actor 内部の橋渡しなので private で足りるが、この不変条件
+    /// (nil→`[:]`)自体が今回のバグ修正の本丸なので単体テストで直接固定したい
+    /// (Tests/ServicesTests/AppsServerProxyTests.swift)。呼び出し元を増やさない前提で
+    /// internal に緩めるだけに留める(可逆・影響最小)。
+    func mcpArguments(from arguments: JSONValue?) throws -> [String: Value] {
+        guard let arguments else { return [:] }
         guard case .object = arguments else {
             // arguments は object 以外を取らない契約(tools/call の arguments は Record)。
             throw AppsServerProxyError.missingField("tools/call arguments は object でなければならない")

@@ -218,6 +218,144 @@ actor StubToolExecutor: MCPToolExecuting {
         #expect(toolMsg?.content?.contains("エラー") == true)
     }
 
+    // 6) UI 資源を持つツールが成功 → そのターンの cards に CardEmbed が1件・structuredContent と
+    //    arguments が入る(設計 §4・二重配布の (b))。role:tool の JSON 配布も従来どおり維持される。
+    @Test func UI資源ツール成功でカードが記録される() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "list-todos", arguments: "{\"filter\":\"open\"}")], usage(20, 3))],
+            [.textDelta("一覧です"), .completed(.stop, [], usage(30, 8))],
+        ])
+        let structured: JSONValue = .object(["todos": .array([.string("a")])])
+        let executor = StubToolExecutor(results: ["list-todos": structured])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["list-todos": "ui://todos/list"])
+
+        await vm.send("todos 見せて")
+
+        // カードは assistant ターン(tool_calls を出した1周目のターン)に積まれる。
+        let cardTurn = vm.turns.first(where: { !$0.cards.isEmpty })
+        let cards = cardTurn?.cards ?? []
+        #expect(cards.count == 1)
+        #expect(cards[0].toolName == "list-todos")
+        #expect(cards[0].resourceUri == "ui://todos/list")
+        #expect(cards[0].structuredContent == structured)
+        #expect(cards[0].arguments == .object(["filter": .string("open")]))
+        // 二重配布維持: role:tool テキストも従来どおり LLM へ渡る(JSON)。
+        let toolMsg = llm.receivedRequests[1].messages.first { $0.role == .tool }
+        #expect(toolMsg?.content?.contains("todos") == true)
+    }
+
+    // 7) uiResourceURIs に無いツールはカードを作らない(UI を持たないツール)。
+    @Test func UI資源を持たないツールはカードを作らない() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "plain-tool", arguments: "{}")], usage(5, 1))],
+            [.textDelta("done"), .completed(.stop, [], usage(6, 2))],
+        ])
+        let executor = StubToolExecutor(results: ["plain-tool": .string("ok")])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["list-todos": "ui://todos/list"])  // plain-tool は含まない。
+
+        await vm.send("実行して")
+
+        #expect(vm.turns.allSatisfy { $0.cards.isEmpty })
+    }
+
+    // 8) 失敗したツールはカードを作らない(UI 資源を持っていても・成功時のみ描画)。
+    @Test func 失敗したUI資源ツールはカードを作らない() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "list-todos", arguments: "{}")], usage(5, 1))],
+            [.textDelta("失敗しました"), .completed(.stop, [], usage(6, 2))],
+        ])
+        let executor = StubToolExecutor(throwing: ["list-todos"])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["list-todos": "ui://todos/list"])
+
+        await vm.send("todos 見せて")
+
+        #expect(vm.turns.allSatisfy { $0.cards.isEmpty })
+    }
+
+    // 設計 03 §1 決定(b) 検証: 空文字/空オブジェクトはどちらも `.object([:])`(nil ではない)。
+    @Test func decodeArguments_空文字と空オブジェクトはobjectEmptyを返す() {
+        #expect(ChatViewModel.decodeArguments("") == .value(.object([:])))
+        #expect(ChatViewModel.decodeArguments("   ") == .value(.object([:])))
+        #expect(ChatViewModel.decodeArguments("{}") == .value(.object([:])))
+    }
+
+    // 設計 03 §1 決定(c) 検証: 壊れた JSON は `.invalid` になり、execute はツールを呼ばずに
+    // role:"tool" へエラー文言を積む(ループは止めない)。
+    @Test func decodeArguments_壊れJSONはinvalid() {
+        guard case .invalid(let message) = ChatViewModel.decodeArguments("{\"a\":") else {
+            Issue.record("壊れた JSON が .invalid にならなかった")
+            return
+        }
+        #expect(message.contains("不正"))
+    }
+
+    @Test func 壊れJSONの引数はツール未実行でrole_toolにエラーが積まれる() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "list-todos", arguments: "{\"a\":")], usage(5, 1))],
+            [.textDelta("直します"), .completed(.stop, [], usage(6, 2))],
+        ])
+        let executor = StubToolExecutor(results: ["list-todos": .object([:])])
+        let vm = ChatViewModel(llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil)
+
+        await vm.send("壊れた引数で呼んで")
+
+        // executor は一度も呼ばれない(壊れた JSON を {} に化けさせて成功させない)。
+        #expect(await executor.calls.isEmpty)
+        // 該当ステップは failed。
+        let steps = vm.turns.first(where: { !$0.toolSteps.isEmpty })?.toolSteps ?? []
+        #expect(steps.count == 1)
+        #expect(steps[0].state == .failed)
+        // role:tool にエラー文言が積まれ、モデルへ渡っている。
+        let toolMsg = llm.receivedRequests[1].messages.first { $0.role == .tool }
+        #expect(toolMsg?.content?.contains("不正") == true)
+    }
+
+    // 設計 03 §2 決定2 検証: isError:true の結果ではカードを作らない(uiResourceURIs にあっても)。
+    @Test func isErrorTrueの結果はカードを作らない() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "list-todos", arguments: "{}")], usage(5, 1))],
+            [.textDelta("引数が不正でした"), .completed(.stop, [], usage(6, 2))],
+        ])
+        // caldav の TS SDK は失敗を throw ではなく isError:true の正常応答として返す(設計 03 §1)。
+        let errorResult: JSONValue = .object(["isError": .bool(true), "content": .array([])])
+        let executor = StubToolExecutor(results: ["list-todos": errorResult])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["list-todos": "ui://todos/list"])
+
+        await vm.send("todos 見せて")
+
+        #expect(vm.turns.allSatisfy { $0.cards.isEmpty })
+        // role:tool へは isError の JSON がそのまま配布される(モデルがリトライ判断できるように)。
+        let toolMsg = llm.receivedRequests[1].messages.first { $0.role == .tool }
+        #expect(toolMsg?.content?.contains("isError") == true)
+    }
+
+    // isError:false(通常の成功結果)なら従来どおりカードが作られる(対照テスト)。
+    @Test func isErrorFalseの結果はカードを作る() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "list-todos", arguments: "{}")], usage(5, 1))],
+            [.textDelta("一覧です"), .completed(.stop, [], usage(6, 2))],
+        ])
+        let okResult: JSONValue = .object(["isError": .bool(false), "structuredContent": .object(["todos": .array([])])])
+        let executor = StubToolExecutor(results: ["list-todos": okResult])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["list-todos": "ui://todos/list"])
+
+        await vm.send("todos 見せて")
+
+        let cards = vm.turns.first(where: { !$0.cards.isEmpty })?.cards ?? []
+        #expect(cards.count == 1)
+        #expect(cards[0].toolName == "list-todos")
+    }
+
     // system プロンプトが履歴先頭に固定注入され、毎リクエストに載る。
     @Test func systemプロンプトが毎リクエスト先頭に載る() async {
         let llm = ScriptedLLMClient(scripts: [[.completed(.stop, [], nil)]])

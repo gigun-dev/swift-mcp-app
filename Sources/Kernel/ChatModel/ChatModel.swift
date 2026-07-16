@@ -96,16 +96,29 @@ public struct CardEmbed: Codable, Equatable, Sendable {
     public var snapshotHTML: String?
     /// ツール結果の structuredContent(LLM への配送・カードへの配送の双方の元データ)。
     public var structuredContent: JSONValue?
+    /// カードへ配送する tool-input(その tool_call の引数)。
+    ///
+    /// 【設計 §5 の CardEmbed には無いフィールドを足した理由(T5)】
+    /// P2 のカード起動フローは tool-result の前に `sendToolInput(arguments:)` で「どんな引数で
+    /// 呼んだか」をカードへ渡す(caldav の todos カードは tool-input を状態初期化に使う・
+    /// TodosCardSpikeView の run() 参照)。ChatViewModel はツール実行時にこの引数を持っている
+    /// ので、カード構築時(Features 側)に再現できるようここへ保存する。永続化 DTO 兼用だが、
+    /// 履歴再訪はスナップショット静的表示(§5・ブリッジ無し)なので arguments は再訪では未使用。
+    /// あくまでライブ構築(T5)のための持ち回りデータ。デフォルト nil で後方互換(既存の
+    /// round-trip テスト・スナップショットのみのカードを壊さない)。
+    public var arguments: JSONValue?
 
     public init(
         toolName: String,
         resourceUri: String,
         snapshotHTML: String? = nil,
-        structuredContent: JSONValue? = nil
+        structuredContent: JSONValue? = nil,
+        arguments: JSONValue? = nil
     ) {
         self.toolName = toolName
         self.resourceUri = resourceUri
         self.snapshotHTML = snapshotHTML
         self.structuredContent = structuredContent
+        self.arguments = arguments
     }
 }

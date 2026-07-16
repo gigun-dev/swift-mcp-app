@@ -224,3 +224,25 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - コスト論点: 毎ターン ≈17 ツールのスキーマ送信でトークンが乗る(設計 §6 予期どおり)→ T7 で。
 - 軽微 UI: model chip が小さく潰れて見える(後で詰める)。
 - T4 完了。P3 のコア(チャット + LLM tool-use + 実 MCP)が実機で end-to-end 成立。次は T5(カード)。
+
+## 2026-07-16 P3 T5 + F1/F2: インラインカード + 引数バグ修正
+
+- T5 実装(artisan 委譲): Sources/Features/Chat/InlineCardView.swift(InlineCardHost/Registry で
+  LazyVStack スクロール再生成に耐える生存管理・1カード=1セッション・高さ追従 scrollEnabled=false)。
+  ChatViewModel に uiResourceURIs 注入 → UI 資源ツールの成功結果を turn.cards に CardEmbed 記録。
+  CardEmbed に arguments 追加。ChatHomeViewModel が proxy 公開 + uiResourceURIs 生成。
+- 実運用で3論点表面化 → fable が docs/design/03 に設計 → F1/F2 実装で解消(実機ログで機序確定):
+  - 論点1(バグ確定・実機診断ログ): `list-todos args=null → 失敗` / `refresh-todos args={} → tasks4件`。
+    機序4段(MCP 仕様 arguments optional × swift-sdk encodeIfPresent が nil 省略 × TS SDK zod object が
+    undefined 拒否 × アプリ decodeArguments が {}→nil 畳み込み)。
+    F1: AppsServerProxy.mcpArguments nil→[:]、decodeArguments を .value/.invalid 化(空→{}・壊れ JSON は
+    ツール未実行で role:tool エラー)、診断ログ撤去。
+  - 論点2: 空 tool-result が prev=[] を確立 → 自己 refresh で全件「同期(追加)」誤演出。
+    F2: isError:true 結果ではカードを起こさない(r.result["isError"].boolValue)。
+    「+ ボタンで同期」は事実無根(caldav FAB はローカルドラフトのみ・todos-entry.ts:3301-3310)。
+  - 論点3: 観測はアプリ責務(caldav 要件でない)。TraceSink 1 seam を T6 と同時(F3・未実装)。
+    Langfuse/OTel は LLM プロキシ段階でサーバー側。UI ツール結果フル JSON はコスト実測まで維持。
+- 実機再検証(F1/F2 適用): 「todoを見せて」1回成功・カード初回から実データ・追加演出なし = 判断ゲート通過。
+  caldav 実状態3件(追加へ1/テスト/test・新規はテスト操作中に削除・追加へ1 の優先度/繰り返しも
+  テスト中の write で変化)とアプリ表示が一致 = write 往復も実働。swift test 76 件 green。
+- 残: カード内 complete の write 往復の明示目視 / モデルが list-calendars を先呼ぶ癖(system prompt 誘導)。

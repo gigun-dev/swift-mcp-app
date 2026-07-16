@@ -72,7 +72,13 @@ struct ChatHomeView: View {
             }
             .padding()
         case .ready(let chatVM):
-            ChatBodyView(chatVM: chatVM)
+            // proxy は .ready で必ず非 nil(runConnect が state=.ready の直前に生成)。カード構築
+            //(InlineCardView)に渡す。防御的に if let で受け、万一 nil ならカード無しで本体だけ出す。
+            if let proxy = home.proxy {
+                ChatBodyView(chatVM: chatVM, proxy: proxy)
+            } else {
+                ChatBodyView(chatVM: chatVM, proxy: nil)
+            }
         case .failed(let message):
             failedView(message)
         }

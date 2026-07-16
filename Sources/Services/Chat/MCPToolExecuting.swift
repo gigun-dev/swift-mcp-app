@@ -23,7 +23,14 @@ import Kernel
 /// actor なので自明に満たし、テストスタブも actor/不変値で満たす。
 public protocol MCPToolExecuting: Sendable {
     /// ツールを名前+引数で呼び、結果を JSONValue(ロスレス)で返す。
-    /// arguments が nil = 引数なし(OpenAI が "" や "{}" を返したときはループ側で nil に寄せる)。
+    ///
+    /// **不変条件(設計 03 §1 決定(a))**: `arguments: nil` は呼び出し側(ChatViewModel)が
+    /// 「引数なし」と解釈した意図を表すが、実装(AppsServerProxy.mcpArguments)はこれを
+    /// **ワイヤ上では `{}`(空 object)として送る**。フィールド自体の省略はしない
+    /// (TS SDK 製サーバーの zod object 検証が `undefined` を拒むため — 一次資料は
+    /// docs/design/03-tool-io-and-card-freshness.md §1)。この protocol のシグネチャに
+    /// `JSONValue?` を残しているのは「呼び出し側が引数なしを表明する自然な形」を保つためで、
+    /// nil→`{}` の正規化は実装側の責務として閉じ込める(呼び出し側は気にしなくてよい)。
     func callTool(name: String, arguments: JSONValue?) async throws -> JSONValue
 }
 

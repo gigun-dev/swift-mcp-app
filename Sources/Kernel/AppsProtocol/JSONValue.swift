@@ -105,6 +105,14 @@ extension JSONValue {
         return nil
     }
 
+    /// bool 値の取り出し(設計 03 §2: CallToolResult.isError の判定に使う)。
+    /// bool でなければ nil(存在しないフィールドと型違いを区別しない — 呼び出し側は
+    /// 「true 以外は false 扱い」で十分なユースケースのみ使う)。
+    public var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
     /// object の子要素をキーで引く。object でなければ nil。
     public subscript(key: String) -> JSONValue? {
         objectValue?[key]

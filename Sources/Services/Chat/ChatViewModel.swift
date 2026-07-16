@@ -61,6 +61,19 @@ public final class ChatViewModel {
     private let model: String
     private let maxIterations: Int
 
+    /// toolName → ui:// リソース URI の事前計算マップ(設計 §3-4・§4)。
+    ///
+    /// 【なぜ AppsServerProxy を握らず precomputed マップだけ見るか(重要な設計判断)】
+    /// ループの依存は MCPToolExecuting(1メソッド抽象)に絞る方針(MCPToolExecuting.swift の
+    /// 冒頭コメント・CLAUDE.md ビジョン2 の中立性)。ui:// リソースの「発見」は AppsServerProxy の
+    /// resolveUIResourceURI が担うが、それをループに持ち込むと (1) テストが actor Proxy を必要とし
+    /// (2) ループが「カードを持つツール」という MCP Apps 固有の関心に踏み込む。そこで
+    /// **発見は Features 側(ChatHomeViewModel)で接続直後に一度だけ resolveUIResourceURI して
+    /// [name: uri] に畳み、その結果だけをループに注入する**。ループは「実行成功したツール名が
+    /// このマップに在れば、その URI でカードを1枚起こす」以上のことを知らない(素通しの JSONValue
+    /// 方針と対称)。空マップ = カードを持たないホスト(テキスト往復のみ)で後方互換。
+    private let uiResourceURIs: [String: String]
+
     // MARK: - 内部状態
 
     /// LLM へ送る厳密な履歴(上のクラスコメント参照)。system をあれば先頭に据える。
@@ -75,19 +88,23 @@ public final class ChatViewModel {
     ///   - model: モデル ID(リクエストの model フィールド)。
     ///   - systemPrompt: あれば履歴先頭に system メッセージとして固定注入。
     ///   - maxIterations: tool-use の最大反復。既定 8(設計 §3・暴走とコスト暴発の防止)。
+    ///   - uiResourceURIs: toolName → ui:// URI の事前計算マップ(設計 §4)。UI 資源を持つツールが
+    ///     成功したとき、そのターンの cards に CardEmbed を積む。既定 [:]（カード無し・T3 互換）。
     public init(
         llm: any LLMClient,
         toolExecutor: any MCPToolExecuting,
         tools: [ToolDefinition],
         model: String,
         systemPrompt: String?,
-        maxIterations: Int = 8
+        maxIterations: Int = 8,
+        uiResourceURIs: [String: String] = [:]
     ) {
         self.llm = llm
         self.toolExecutor = toolExecutor
         self.tools = tools
         self.model = model
         self.maxIterations = maxIterations
+        self.uiResourceURIs = uiResourceURIs
 
         if let systemPrompt {
             // system は履歴の不変の先頭。毎リクエストで送られる(設計に system の扱いの
@@ -219,6 +236,42 @@ public final class ChatViewModel {
             turns[assistantIndex].toolSteps[r.index].state = r.failed ? .failed : .done
         }
 
+        // カードの記録(設計 §3-4・§4「二重配布の (b)」)。
+        //
+        // 成功したツールのうち **uiResourceURIs に URI が在る**ものだけ、このターンの cards に
+        // CardEmbed を積む(失敗ツールはカードを作らない — 描画すべき結果が無い)。structuredContent は
+        // callTool が返した生 JSONValue をそのまま入れ、arguments はその tool_call の引数を入れる
+        // (どちらも Features 側の InlineCardView が sendToolResult / sendToolInput にそのまま渡せる形)。
+        //
+        // 【順序の安定化】TaskGroup の完了順は非決定的なので、表示 index 昇順(= call 順)で cards を
+        // 積む。複数カードが1ターンに並ぶのは稀(設計 §3)だが、並んだときも表示ステップと同じ
+        // 順序で並ぶよう固定する(履歴・再現性のため。wire 積み戻しを id 順で安定化しているのと同趣旨)。
+        //
+        // 【二重配布は維持】role:"tool" テキスト配布(下の wire 積み戻し)は UI 資源ツールでも
+        // 従来どおり JSON を LLM へ返す(設計 §4「(a) LLM へ (b) カードへ」の両方)。カードを持つ
+        // ツールでも LLM は結果 JSON を見て次の発話を組む必要がある。
+        // 【トークン最適化の候補(未実装・設計 §4 は「要約 or JSON」で JSON 採用中)】UI 資源ツールは
+        // カードが結果を見せるので、LLM へは短い要約(件数等)で足りる可能性がある。ただし要約の
+        // 正しさ担保が要る(モデルが結果本体を参照して回答するケースがある)ので T5 ではやらず候補に留める。
+        for r in results.sorted(by: { $0.index < $1.index }) {
+            guard !r.failed, let uri = uiResourceURIs[r.toolName] else { continue }
+            // 【設計 03 §2 決定2】isError:true の CallToolResult ではカードを起こさない。
+            // caldav が使う TS SDK は失敗を throw ではなく `isError:true` の**正常応答**として
+            // 返す(zod バリデーション失敗など・一次資料は設計 03 §1)。r.failed(throw 由来)
+            // だけでは拾えないので、成功結果 JSONValue の `isError` フィールドも見る。エラーの
+            // role:"tool" 配布(下の wire 積み戻し)には影響しない ——
+            // isError 結果でもモデルには JSON がそのまま渡り、モデルがリトライを判断できる。
+            // isError の toolStep 表示を failed に寄せる改善は本修正のスコープ外(設計コメント参照)。
+            if r.result?["isError"]?.boolValue == true { continue }
+            turns[assistantIndex].cards.append(CardEmbed(
+                toolName: r.toolName,
+                resourceUri: uri,
+                snapshotHTML: nil,          // スナップショットは T6(履歴永続化)で埋める。ライブ時は nil。
+                structuredContent: r.result, // callTool が返した生 JSONValue(sendToolResult にそのまま渡す)。
+                arguments: r.arguments       // この tool_call の引数(sendToolInput にそのまま渡す)。
+            ))
+        }
+
         // wire への積み戻しは **tool_call_id 順で安定**(TaskGroup の完了順は非決定的なので、
         // ここで必ずソートする)。順序が毎回変わると履歴の再現性・デバッグ性が損なわれる。
         for r in results.sorted(by: { $0.toolCallId < $1.toolCallId }) {
@@ -239,48 +292,86 @@ public final class ChatViewModel {
     /// 1本のツール失敗でチャット全体が死ぬ — LLM エージェントの通常運用ではエラーもモデルへの
     /// 入力として扱うのが定石。該当ステップは failed 表示にする。
     private static func execute(call: ToolCall, index: Int, executor: any MCPToolExecuting) async -> ToolExecResult {
-        let arguments = decodeArguments(call.function.arguments)
-        do {
-            let result = try await executor.callTool(name: call.function.name, arguments: arguments)
-            // 結果 JSONValue を JSON 文字列に落として role:"tool" content にする(設計 §3-4a
-            //「structuredContent を要約 or JSON 文字列」の JSON 文字列側)。要約は T5 以降の課題。
-            let data = (try? JSONEncoder().encode(result)) ?? Data("null".utf8)
+        // 【設計 03 §1 決定(c)】壊れた JSON はツールを呼ばずに失敗として返す。
+        // 「パース不能→nil→引数なしで実行」は、モデルが意図した引数(例: 文字列が途中で
+        // 切れた `{"calendarId": ...`)と**別の呼び出し**を誤って成功させてしまう
+        // (誤データで会話が進む)。ここで止めて role:"tool" にエラー文言を返し、モデル自身に
+        // リトライを委ねる(execute の throw 経路と同じく、ここでも上位ループは止めない)。
+        switch decodeArguments(call.function.arguments) {
+        case .invalid(let message):
             return ToolExecResult(
                 index: index,
                 toolCallId: call.id,
                 toolName: call.function.name,
-                content: String(decoding: data, as: UTF8.self),
-                failed: false
+                content: message,
+                failed: true,
+                // ツール未実行なのでカード用の結果も無い。
+                result: nil,
+                arguments: nil
             )
-        } catch {
-            return ToolExecResult(
-                index: index,
-                toolCallId: call.id,
-                toolName: call.function.name,
-                // モデルが読める形でエラーを渡す。JSON にせず素の文言でよい(role:"tool" の
-                // content は任意文字列)。
-                content: "ツール実行エラー: \(error)",
-                failed: true
-            )
+        case .value(let arguments):
+            do {
+                let result = try await executor.callTool(name: call.function.name, arguments: arguments)
+                // 結果 JSONValue を JSON 文字列に落として role:"tool" content にする(設計 §3-4a
+                //「structuredContent を要約 or JSON 文字列」の JSON 文字列側)。要約は T5 以降の課題。
+                let data = (try? JSONEncoder().encode(result)) ?? Data("null".utf8)
+                return ToolExecResult(
+                    index: index,
+                    toolCallId: call.id,
+                    toolName: call.function.name,
+                    content: String(decoding: data, as: UTF8.self),
+                    failed: false,
+                    // カード配送用に生の結果と引数を持ち帰る(runToolCalls が CardEmbed に載せる)。
+                    result: result,
+                    arguments: arguments
+                )
+            } catch {
+                return ToolExecResult(
+                    index: index,
+                    toolCallId: call.id,
+                    toolName: call.function.name,
+                    // モデルが読める形でエラーを渡す。JSON にせず素の文言でよい(role:"tool" の
+                    // content は任意文字列)。
+                    content: "ツール実行エラー: \(error)",
+                    failed: true,
+                    // 失敗ツールはカードを作らない(runToolCalls が failed を弾く)ので nil でよい。
+                    result: nil,
+                    arguments: arguments
+                )
+            }
         }
     }
 
-    /// OpenAI の tool_call.arguments(JSON 文字列)を JSONValue へ復元する。
-    /// 空文字/空白のみ(引数なしのツールで "" や " " が来る)や "{}" は nil に寄せる
-    /// (AppsServerProxy.callTool は arguments=nil を「引数なし」として扱う)。
-    private static func decodeArguments(_ raw: String) -> JSONValue? {
+    /// `decodeArguments` の結果。パース不能を「無」に握りつぶさず区別する(設計 03 §1 決定(c))。
+    /// internal(private でなく)にしているのは AppsServerProxy.mcpArguments と同じ理由 ——
+    /// 「nil の畳み込みを止めた」こと自体が今回のバグ修正の要なので、単体テストで直接固定したい
+    /// (Tests/ServicesTests/ChatViewModelTests.swift)。
+    enum ArgumentsDecodeResult: Equatable {
+        case value(JSONValue)
+        case invalid(String)
+    }
+
+    /// OpenAI の tool_call.arguments(JSON 文字列)を JSONValue へ復元する(設計 03 §1 決定(b)(c))。
+    ///
+    /// - 空文字/空白のみ(引数なしのツールで "" や " " が来る)は `.object([:])` を返す
+    ///   (「モデルが引数なしを表明した」の正規形。nil ではなく空 object にすることで
+    ///   「値が無い」と「空だと確認した」を区別する — JSONValue 素通し方針(02)との整合)。
+    /// - `"{}"` などの空オブジェクトは**畳み込まずそのまま** `.object([:])` として素通しする
+    ///   (以前は「引数なしと等価」として nil に潰していたが、モデル出力を情報落ちなく下流へ
+    ///   渡す層責務としてこれをやめた — 空文字と空オブジェクトはどちらも `.object([:])` に
+    ///   収束するので、AppsServerProxy.mcpArguments 側の nil→`[:]` 正規化と結果的に一致する)。
+    /// - パース不能な文字列は `.invalid` にして「引数なしで実行」に化けさせない
+    ///   (execute がツールを呼ばず role:"tool" エラーを返す)。
+    static func decodeArguments(_ raw: String) -> ArgumentsDecodeResult {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
+        if trimmed.isEmpty { return .value(.object([:])) }
         guard let value = try? JSONDecoder().decode(JSONValue.self, from: Data(trimmed.utf8)) else {
-            // パース不能な引数文字列(モデルが壊れた JSON を出した)。nil にして「引数なし」で
-            // 呼ぶよりは、そのまま nil で投げてサーバー側のバリデーションに委ねる(ここで
-            // 握りつぶして成功に見せない)。実害があれば execute の catch がエラーを拾う。
-            return nil
+            // モデルへ返すエラー文言に raw の先頭だけを載せる(長大な壊れ JSON をそのまま
+            // 積むと role:"tool" が肥大化するため・N=200 は他ログの先頭切り詰めと揃えた値)。
+            let prefix = String(trimmed.prefix(200))
+            return .invalid("tool call arguments が JSON として不正: \(prefix)")
         }
-        // "{}"(空オブジェクト)は引数なしと等価なので nil に寄せておく(冗長な空 arguments を
-        // サーバーに送らない)。それ以外の object はそのまま渡す。
-        if case .object(let dict) = value, dict.isEmpty { return nil }
-        return value
+        return .value(value)
     }
 
     /// usage の加算(cumulative 用)。片方 nil を吸収する。totalTokens は両方あれば足す。
@@ -309,4 +400,8 @@ private struct ToolExecResult: Sendable {
     let toolName: String
     let content: String
     let failed: Bool
+    /// callTool が返した生 JSONValue(成功時のみ)。カード配送(sendToolResult)の元データ。
+    let result: JSONValue?
+    /// この tool_call の引数(decodeArguments 済み)。カード配送(sendToolInput)の元データ。
+    let arguments: JSONValue?
 }

@@ -8,6 +8,7 @@ import Foundation
 import Testing
 import MCP
 
+@testable import Kernel
 @testable import Services
 
 @Suite struct AppsServerProxyTests {
@@ -79,5 +80,21 @@ import MCP
         ]
         #expect(proxy.resolveUIResourceURI(in: tools, toolName: "list-todos") == "ui://caldav/todos.html")
         #expect(proxy.resolveUIResourceURI(in: tools, toolName: "does-not-exist") == nil)
+    }
+
+    // 設計 03 §1 検証: mcpArguments(from: nil) は「省略」ではなく空オブジェクト `[:]` を返す
+    // (swift-sdk の encodeIfPresent が arguments フィールドを消さないことの担保・本丸の修正)。
+    @Test func mcpArguments_nilは空オブジェクトに正規化される() async throws {
+        let proxy = makeProxy()
+        let result = try await proxy.mcpArguments(from: nil)
+        #expect(result.isEmpty)
+    }
+
+    // object 以外(配列・文字列等)の arguments は従来どおり拒否する(:217-218 の契約を維持)。
+    @Test func mcpArguments_object以外は拒否される() async {
+        let proxy = makeProxy()
+        await #expect(throws: AppsServerProxyError.self) {
+            _ = try await proxy.mcpArguments(from: .array([.string("x")]))
+        }
     }
 }
