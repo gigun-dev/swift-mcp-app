@@ -394,6 +394,12 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
    往復では露見しなかった本番シナリオ(fable 指摘)。
 7. **【新】displayMode(@Observable)の変化観測だけで inline 側 updateUIView が再評価されるか** —
    されれば rehomeToken は不要(保険として削除可)。されなければ rehomeToken bump を正式採用。
+   > **2026-07-16 更新(H4 実装):** 実装は **rehomeToken を入れず displayMode 観測方式**に倒した
+   > (AppCardView が `activeDisplayMode: UIDisplayMode` を値で受け、InlineCardView/FullscreenCardView が
+   > `host.displayMode` を body で読む → 変化で updateUIView 再評価 → 再アダプト)。make check / make app は
+   > green だが、**「sheet dismiss 後に inline へ webView が戻るか(空白化しないか)」の実機確認は未実施**。
+   > caldav C1+C2+C3 デプロイ後の E2E で確認する。もし inline 復帰が空白化したら AppCardView に
+   > `rehomeToken: Int` を足し restoreInline で bump する(スパイクと同型・追加は小さい)。
 8. ~~**【新】ext-apps App SDK に host-context-changed の購読フックが公開されているか**~~ ✅ **確認済み**
    > 2026-07-16(C1 実装時): `app.addEventListener("hostcontextchanged", handler)` が公開されている
    > (app.d.ts:178,219,239,567-582,715-745。非推奨版 `onhostcontextchanged` も同義)。SDK は受信時に

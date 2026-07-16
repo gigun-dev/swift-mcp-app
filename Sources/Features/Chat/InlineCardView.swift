@@ -31,9 +31,10 @@
 // 「スナップショット機構を作る以上、転用はほぼタダ」と T6 前提で書く)。ここでは上限を設けない。
 // ---------------------------------------------------------------------------------------------
 import SwiftUI
+import UIKit     // UIScreen(fullscreen 推定寸法の算出・§5 H4)
 import WebKit
 import OSLog
-import Kernel    // CardEmbed・JSONValue
+import Kernel    // CardEmbed・JSONValue・UIDisplayMode・ContainerDimensions
 import Services  // AppsServerProxy・AppsBridgeSession・WebViewTransport・AppCardWebCoordinator 等
 
 /// 1枚のインラインカードの「構築物」を強参照で束ねて生存させるホスト(設計 §4 の生存単位)。
@@ -43,9 +44,30 @@ import Services  // AppsServerProxy・AppsBridgeSession・WebViewTransport・App
 /// TodosCardSpikeViewModel と同じ理由)ので、ここで強参照して生かし続ける。
 @MainActor
 @Observable
-final class InlineCardHost {
+final class InlineCardHost: Identifiable {
     /// 準備済み WKWebView。構築完了で publish され、InlineCardView がこれを載せる。未構築は nil。
     private(set) var webView: WKWebView?
+
+    /// displayMode の**単一の真実**(P4-DM・設計 04 §3 責務表・§5 H4-A)。@Observable なので、これを
+    /// body で読む View(InlineCardView / FullscreenCardView)は変化で再評価され、AppCardView の
+    /// 再アダプト(webView の inline↔sheet 載せ替え)が発火する。Session の currentDisplayMode は
+    /// この値の「影(ワイヤ通知の相関用)」であって真実ではない。
+    var displayMode: UIDisplayMode = .inline
+
+    /// fullscreen 昇格の調停役(高々1枚・決定2b)。registry 経由で ChatBodyView 所有の
+    /// FullscreenCoordinator が注入される。weak: coordinator は ChatBodyView(@State)が所有し、
+    /// host はそれを参照するだけ(所有の輪を作らない)。名前が既存の AppCardWebCoordinator
+    /// (下の private var coordinator)と衝突するので fullscreenCoordinator と明示する。
+    private(set) weak var fullscreenCoordinator: FullscreenCoordinator?
+
+    /// registry(host 生成時)から調停役を注入する。
+    func attach(fullscreenCoordinator: FullscreenCoordinator) {
+        self.fullscreenCoordinator = fullscreenCoordinator
+    }
+
+    /// `.sheet(item:)` 用の Identifiable 準拠。インスタンス同一性で識別する(host は registry で
+    /// cardID キーに1つ、生存中は同一インスタンス)。
+    nonisolated var id: ObjectIdentifier { ObjectIdentifier(self) }
 
     /// カード高さ(size-changed 追従・設計 §5)。ObservableObject なので View 側は @ObservedObject で観測。
     /// InlineCardHost(@Observable)とは別機構だが、AppCardState を新規に作り替えない方針(既存の
@@ -70,13 +92,16 @@ final class InlineCardHost {
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "inlinecard")
 
-    /// インラインカードの高さの安全上限。**基本は内容に応じて高さ追従**する方針(ユーザー方針・
-    /// 2026-07-16「スクロールより普通に高さを内容に応じて調整」)。ネストした内部スクロールは
-    /// チャット全体のスクロールと二重になり UX が悪いため採らない。この値は「暴走(カードが
-    /// 異常な巨大高さを報告する等)への安全網」で、実カード(todos/agenda)は到達しない大きさに
-    /// する。maxHeight を大きく渡すことで、カードは内部スクロールせず全内容を展開して高さを報告し、
-    /// その高さぴったりに .frame を追従させられる(+ ボタン等 下端も見える)。
-    static let inlineCardMaxHeight: CGFloat = 4000
+    /// inline の実 maxHeight(可視高 × 0.65・P4-DM 決定1・設計 04 §5 H1)と実測幅。build 時に
+    /// ChatBodyView から渡され、①Session の containerDimensions.maxHeight として広告、②onSizeChanged の
+    /// クランプ上限、③inline 復帰時の host-context-changed の寸法、に使う。build 前(未確定)は 0。
+    ///
+    /// 【4000 番兵の廃止(設計 04 §1・決定1)】旧実装は maxHeight=4000 の「安全網」で実質無制限追従だった。
+    /// これは「spec の maxHeight を実装していないことの代替」であり、H1 で可視高ベースの実制約へ置換した。
+    /// 暴走(カードが異常な巨大高さを報告)への安全網は、maxHeight そのものがクランプ上限を兼ねるので別途持たない
+    /// (実 maxHeight を超える報告は一律クランプされる)。
+    private var inlineMaxHeight: CGFloat = 0
+    private var containerWidth: CGFloat = 0
 
     /// カードを1度だけ構築する。2回目以降(スクロール往復での再 .task)は no-op(既存 webView を維持)。
     /// - Parameters:
@@ -84,12 +109,17 @@ final class InlineCardHost {
     ///   - card: 描画対象の CardEmbed(resourceUri・arguments・structuredContent を使う)。
     ///   - containerWidth: カード列の実測幅(設計 §5「幅=カード列の実測幅」)。initialize の
     ///     containerDimensions.width としてカードへ渡り、caldav カードがこの幅にレイアウトする。
-    func buildIfNeeded(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat) {
+    ///   - maxHeight: inline の実 maxHeight(可視高 × 0.65・H1)。containerDimensions.maxHeight として
+    ///     広告され、size-changed のクランプ上限を兼ねる。
+    func buildIfNeeded(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat) {
         guard buildTask == nil else { return }  // 既に構築開始済み(= host は生存中)なら何もしない。
-        buildTask = Task { await self.build(proxy: proxy, card: card, containerWidth: containerWidth) }
+        // 寸法を保持(onSizeChanged クランプ・inline 復帰通知で使う)。build は非同期なのでここで確定させる。
+        self.containerWidth = containerWidth
+        self.inlineMaxHeight = maxHeight
+        buildTask = Task { await self.build(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight) }
     }
 
-    private func build(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat) async {
+    private func build(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat) async {
         do {
             // 1. HTML プリフェッチ(接続内キャッシュが効くので2枚目以降の同一 URI は resources/read を省く)。
             let (html, _) = try await proxy.fetchAppHTML(uri: card.resourceUri)
@@ -104,31 +134,58 @@ final class InlineCardHost {
             let webView = await AppCardWebViewFactory.make(
                 transport: transport, html: html, coordinator: coordinator, scrollEnabled: false)
 
-            // 3. セッション起動。onSizeChanged は高さを cardState へ流し込み、maxHeight(600)でクランプ
-            //    してチャットを食い潰さない(設計 §5)。
+            // 3. セッション起動。onSizeChanged は高さを cardState へ流し込み、実 maxHeight(可視高×0.65・H1)で
+            //    クランプしてチャットを食い潰さない(設計 04 §5 H1)。
             let cardState = self.cardState
             let session = AppsBridgeSession(
                 transport: transport,
                 proxy: proxy,
                 containerWidth: Double(containerWidth),
-                maxHeight: Self.inlineCardMaxHeight,
+                maxHeight: Double(maxHeight),
                 onSizeChanged: { [weak self] height in
                     await MainActor.run {
-                        // 【カードは内容に応じて高さ追従(2026-07-16・ユーザー方針)】キャップして
-                        // 内部スクロール、ではなく **内容ぴったりの高さに素直に追従**する(todos が
-                        // 9件でも全部見えて + ボタンも下端に出る)。安全網の上限(inlineCardMaxHeight
-                        // =4000)にだけ min をかけるが、実カードは到達しない。scrollEnabled は
-                        // factory 既定の false のまま(ネスト内スクロールは使わない・チャット全体で
-                        // スクロールする)。
+                        guard let self else { return }
+                        // 【fullscreen 中は .frame 追従を停止(P4-DM 決定2・設計 04 §5 H4-E)】sheet 中は
+                        // カードが overflow-y:auto で自己スクロールし、器(sheet)の寸法は固定なので、
+                        // size-changed の高さは inline の枠に反映しない(反映すると sheet を閉じた瞬間に
+                        // 巨大高さが残る)。inline 復帰後の次の size-changed で最新値が入る。
+                        guard self.displayMode == .inline else {
+                            self.captureSnapshotOnFirstSizeChanged()
+                            return
+                        }
+                        // 【inline は実 maxHeight でクランプ(H1・設計 04 決定1)】旧実装は 4000 番兵で
+                        // 実質無制限追従だったが、可視高×0.65 の実制約に置換した。maxHeight 内に収まる
+                        // (少数件)ならカードは内容ぴったりで全部見え、超える場合はここでクランプされる
+                        // (超過分はカード側が畳み UI = caldav C2/C3 で自己整形する。caldav 未デプロイ時は
+                        // クランプで内容が見切れるが、これは設計どおりの既知の中間状態)。
                         withAnimation(.easeOut(duration: 0.3)) {
-                            cardState.desiredHeight = min(CGFloat(height), Self.inlineCardMaxHeight)
+                            cardState.desiredHeight = min(CGFloat(height), self.inlineMaxHeight)
                         }
                         // スナップショット取得の第一候補(設計 §5): tool-result 配送後、カードが
                         // 描画確定した合図として size-changed が到達した時点で outerHTML を取る。
                         // 初回到達で1度だけ(以降の size-changed は同じ DOM の再計測が主で、
                         // 取り直しは teardown 時にまとめて行う——毎 size-changed で JS 評価すると
                         // スクロール中に無駄な評価が積み上がるため)。
-                        self?.captureSnapshotOnFirstSizeChanged()
+                        self.captureSnapshotOnFirstSizeChanged()
+                    }
+                },
+                // fullscreen 昇格の受理判断(P4-DM・設計 04 §5 H4-D)。カード発 request-display-mode を
+                // 受けて、調停役(coordinator)に「今 fullscreen を出せるか(高々1枚・決定2b)」を問う。
+                // このハンドラを注入すること自体が「fullscreen を広告する」意味を持つ(H4-F)。
+                onDisplayModeRequested: { [weak self] requested in
+                    // @Sendable クロージャ。MainActor 隔離の host/coordinator を触るので hop する。
+                    await MainActor.run {
+                        // fullscreen 以外(pip 等)は当面非対応 → 現状維持(inline)。
+                        guard requested == .fullscreen else {
+                            return DisplayModeResolution(mode: .inline)
+                        }
+                        guard let self, let coordinator = self.fullscreenCoordinator else {
+                            return DisplayModeResolution(mode: .inline)  // 調停役未接続なら安全に拒否。
+                        }
+                        // 推定寸法(large detent ≒ 可視高 − トップインセット・§5 H4-D)。sheet 実寸は提示
+                        // 完了まで確定しないので、まずこの推定を返す(必要なら提示後に補正・§5 H4-E)。
+                        let dims = self.estimatedFullscreenDimensions()
+                        return coordinator.requestFullscreen(self, estimatedDimensions: dims)
                     }
                 })
             self.session = session
@@ -159,6 +216,43 @@ final class InlineCardHost {
         captureSnapshot()
         let session = self.session
         Task { await session?.teardown() }
+    }
+
+    // MARK: - fullscreen(sheet)器の連携(P4-DM・設計 04 §5 H4)
+
+    /// fullscreen 昇格時にカードへ渡す推定寸法(§5 H4-D)。sheet の large detent は
+    /// 「画面高 − トップの安全余白」に近い。sheet 実寸は提示アニメーション完了まで確定しないため、
+    /// まず画面 bounds からの推定を返し、必要なら提示後に補正する(§5 H4-E・高さ誤差の実害は小さい)。
+    /// 幅は画面幅(sheet は全幅)。
+    func estimatedFullscreenDimensions() -> ContainerDimensions {
+        let screen = UIScreen.main.bounds.size
+        // トップインセット + グラバー余白の概算(large detent は上端を少し残す)。実測不要な概算値。
+        let topReserve: CGFloat = 60
+        return ContainerDimensions(
+            width: Double(screen.width),
+            maxHeight: Double(max(0, screen.height - topReserve)))
+    }
+
+    /// webView 内部スクロールの動的切替(§5 H4・§6-2)。fullscreen ではカード自己スクロールを許し、
+    /// inline では切る(チャット全体スクロールと二重にしない)。生成時引数でなく実行時に切替できる。
+    func setWebViewScrollEnabled(_ enabled: Bool) {
+        webView?.scrollView.isScrollEnabled = enabled
+    }
+
+    /// sheet dismiss で inline へ戻す一連の処理(P4-DM・設計 04 §5 H4-E の**固定順序**)。
+    /// 順序は「rehome → scrollEnabled=false → host-context-changed(inline)」で固定する
+    /// (寸法通知が rehome より先だとカードが旧寸法でレイアウトするため)。
+    func restoreInline() {
+        // 1. rehome: displayMode=.inline に戻すと、inline 側 AppCardView が再アダプトで webView を取り戻す
+        //    (@Observable 観測で InlineCardView が再評価される。設計 04 §6-7 の rehomeToken 保険は
+        //    この観測が効くので不要 —— スパイクの View 側 @State bump を @Observable の単一真実が代替する)。
+        displayMode = .inline
+        // 2. scrollEnabled=false: inline は高さ追従で内部スクロール不要(チャット全体でスクロールする)。
+        setWebViewScrollEnabled(false)
+        // 3. host-context-changed(inline + inline 寸法): カードに inline へ戻ったことと寸法を通知。
+        let dims = ContainerDimensions(width: Double(containerWidth), maxHeight: Double(inlineMaxHeight))
+        let session = self.session
+        Task { await session?.notifyDisplayModeChanged(to: .inline, containerDimensions: dims) }
     }
 
     // MARK: - スナップショット取得(設計 §5)
@@ -198,9 +292,12 @@ final class InlineCardRegistry {
 
     /// key に対応する host を返す(無ければ生成して登録)。get-or-create なので body から呼んでも
     /// 同一インスタンスが返り、スクロール再生成に耐える。
-    func host(for key: String) -> InlineCardHost {
+    /// - Parameter coordinator: fullscreen 昇格の調停役(ChatBodyView 所有)。生成時に host へ注入する
+    ///   (registry 経由が自然・設計 04 §5 H4-D)。既存 host には再注入しない(生存中は同一 coordinator)。
+    func host(for key: String, coordinator: FullscreenCoordinator) -> InlineCardHost {
         if let existing = hosts[key] { return existing }
         let host = InlineCardHost()
+        host.attach(fullscreenCoordinator: coordinator)
         hosts[key] = host
         return host
     }
@@ -219,6 +316,8 @@ struct InlineCardView: View {
     let proxy: AppsServerProxy
     let card: CardEmbed
     let containerWidth: CGFloat
+    /// inline の実 maxHeight(可視高 × 0.65・P4-DM 決定1・設計 04 §5 H1)。ChatBodyView が可視高から算出して渡す。
+    let maxHeight: CGFloat
     /// スナップショット取得時に呼ばれる(T6・設計 §5)。ChatBodyView が identity=(turnIndex,cardIndex)
     /// を閉じ込めて渡し、最終的に ChatViewModel.setCardSnapshot を叩く。既定 nil で T5 の既存呼び出し
     /// (スナップショット不要のプレビュー等)を壊さない。
@@ -233,12 +332,14 @@ struct InlineCardView: View {
         proxy: AppsServerProxy,
         card: CardEmbed,
         containerWidth: CGFloat,
+        maxHeight: CGFloat,
         onSnapshot: (@MainActor (String) -> Void)? = nil
     ) {
         self.host = host
         self.proxy = proxy
         self.card = card
         self.containerWidth = containerWidth
+        self.maxHeight = maxHeight
         self.onSnapshot = onSnapshot
         // @ObservedObject を host の cardState に束ねる(init で _cardState を組む標準パターン)。
         self._cardState = ObservedObject(wrappedValue: host.cardState)
@@ -254,7 +355,7 @@ struct InlineCardView: View {
                 // 取得が走るので、それより前に設定しておく)。host は生存し続けるが closure は
                 // View 再生成のたびに新しくなりうるので、毎回入れ替える(identity は同じなので実害なし)。
                 host.onSnapshot = onSnapshot
-                host.buildIfNeeded(proxy: proxy, card: card, containerWidth: containerWidth)
+                host.buildIfNeeded(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight)
             }
         // onDisappear では teardown しない(設計 §4 の生存優先・ファイル冒頭の判断)。スクロールアウトは
         // 一時的な View 破棄にすぎず、host は registry が生かし続ける。teardown はチャット画面クローズ時に
@@ -265,8 +366,13 @@ struct InlineCardView: View {
     private var content: some View {
         // host.webView(@Observable)を読むことで、構築完了(nil→非nil)時に自動で差し替わる。
         if let webView = host.webView {
-            AppCardView(webView: webView)
-                .frame(height: cardState.desiredHeight)  // size-changed 追従(設計 §5)。
+            // role:.inline + host.displayMode を渡す(P4-DM・container 再アダプト方式)。host.displayMode を
+            // ここで読むことで @Observable 依存が張られ、fullscreen 昇格/復帰で content が再評価され、
+            // AppCardView の updateUIView が走って webView の載せ替え(奪い合いガード込み)が起きる。
+            // fullscreen 中はこの inline 側 AppCardView は webView を所有しない(sheet 側が持つ)ため
+            // 空の枠が cardState.desiredHeight で残る(カードは sheet に居る・設計 04 §6)。
+            AppCardView(webView: webView, role: .inline, activeDisplayMode: host.displayMode)
+                .frame(height: cardState.desiredHeight)  // size-changed 追従(設計 §5・fullscreen 中は停止)。
                 .frame(maxWidth: .infinity)
                 .background(Color(white: 0.98))
                 .clipShape(RoundedRectangle(cornerRadius: 12))

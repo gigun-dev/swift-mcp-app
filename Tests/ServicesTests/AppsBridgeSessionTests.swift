@@ -63,8 +63,8 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     /// initialized を push する(Session の受信ループは非同期なので、応答到着を軽くポーリングする)。
     private func makeReadySession(
         transport: MockTransport,
-        onDisplayModeRequested: @escaping @Sendable (UIDisplayMode) async -> DisplayModeResolution
-            = { _ in DisplayModeResolution(mode: .inline) }
+        // 既定 nil = 本番の「ハンドラ未注入」構成に一致(fullscreen 非広告・request-display-mode 拒否)。
+        onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil
     ) async -> AppsBridgeSession {
         let session = AppsBridgeSession(
             transport: transport,
@@ -131,12 +131,12 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         await session.close()
     }
 
-    // MARK: - 昇格拒否(既定コールバック)
+    // MARK: - 昇格拒否(ハンドラ未注入 = nil)
 
-    @Test("request-display-mode(fullscreen)拒否(既定 = inline): result.mode=inline のみ・host-context-changed は送出されない")
+    @Test("request-display-mode(fullscreen)拒否(ハンドラ nil): result.mode=inline のみ・host-context-changed は送出されない")
     func requestDisplayModeRejectedByDefault() async throws {
         let transport = MockTransport()
-        // onDisplayModeRequested を明示注入しない = init 既定(常に inline を返す = 拒否)。
+        // onDisplayModeRequested を明示注入しない = init 既定 nil(fullscreen 非広告・現状維持を返す = 拒否)。
         let session = await makeReadySession(transport: transport)
 
         let beforeCount = transport.sentRawJSON.count
@@ -171,6 +171,33 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         #expect(notification.params?["displayMode"] == .string("fullscreen"))
         #expect(notification.params?["containerDimensions"]?["maxHeight"] == .int(600))
 
+        await session.close()
+    }
+
+    // MARK: - availableDisplayModes 広告のハンドラ分岐(H4-F・死にボタン排除)
+
+    /// initialize 応答の hostContext.availableDisplayModes を取り出す(sentRawJSON の先頭 = initialize 応答)。
+    private func advertisedModes(_ transport: MockTransport) throws -> [UIDisplayMode] {
+        let response = try JSONDecoder().decode(JSONRPCResponse.self, from: Data(try #require(transport.sentRawJSON.first).utf8))
+        let result = try #require(response.result).decode(InitializeResult.self)
+        return try #require(result.hostContext.availableDisplayModes)
+    }
+
+    @Test("ハンドラ未注入(nil): availableDisplayModes は [inline] のみ(fullscreen を広告しない=死にボタン排除)")
+    func advertisesInlineOnlyWithoutHandler() async throws {
+        let transport = MockTransport()
+        let session = await makeReadySession(transport: transport)   // 既定 nil ハンドラ
+        #expect(try advertisedModes(transport) == [.inline])
+        await session.close()
+    }
+
+    @Test("ハンドラ注入時: availableDisplayModes は [inline, fullscreen](昇格できる ⇔ 広告する を一致させる)")
+    func advertisesFullscreenWithHandler() async throws {
+        let transport = MockTransport()
+        let session = await makeReadySession(
+            transport: transport,
+            onDisplayModeRequested: { _ in DisplayModeResolution(mode: .inline) })
+        #expect(try advertisedModes(transport) == [.inline, .fullscreen])
         await session.close()
     }
 }

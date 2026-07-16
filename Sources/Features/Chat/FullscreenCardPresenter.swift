@@ -1,0 +1,81 @@
+// fullscreen カードの調停役 + sheet 器(P4-DM・設計 04 §5 H4-C/E・決定2/2b)。
+//
+// このファイルは H4 の Features 側 2 要素を持つ:
+//  1. FullscreenCoordinator: 「今どのカードが fullscreen 昇格中か」の単一状態(高々1枚・決定2b)。
+//     カード横断の判断なので単一の InlineCardHost には置けず、ChatBodyView 層(registry の隣)に置く。
+//  2. FullscreenCardView: sheet に載せる中身。モック合意(§5 H4)どおり「カードが sheet 全面・ホストは
+//     グラバー(チキ)のみ・カード自前 sticky ヘッダがそのまま上端・内部スクロール・下スワイプで戻る」。
+//     ホストのナビバー(タイトル+閉じるボタン)は重ねない(カードの『完了』と二重になる案は却下・§5 H4)。
+import SwiftUI
+import Kernel    // ContainerDimensions
+import Services  // DisplayModeResolution
+
+/// fullscreen 昇格の調停役(決定2b: 常に高々1カード)。ChatBodyView が @State で1個所有する。
+///
+/// なぜ ChatBodyView 層か(設計 04 §3 責務表): 「今どのカードが fullscreen か」はカード横断の判断で、
+/// 単一の InlineCardHost には収まらない。sheet は同時1枚しか出せないので、既に1枚昇格中なら2枚目の
+/// 要求は拒否する(apps.mdx:787「モードを変えなかった場合も結果のモードを返す」に適合)。
+@MainActor
+@Observable
+final class FullscreenCoordinator {
+    /// 現在 fullscreen 昇格中のカード(nil = 無し)。`.sheet(item:)` のトリガも兼ねる。
+    var activeHost: InlineCardHost?
+
+    /// カード発の fullscreen 要求を捌く(§5 H4-C・決定2b)。
+    /// - 誰も昇格していない(activeHost==nil)なら受理: activeHost をセット・host.displayMode=.fullscreen にし、
+    ///   推定寸法つきで `.fullscreen` を返す。→ Session が result.mode + host-context-changed を送る。
+    /// - 既に**別**カードが昇格中なら拒否: `.inline` を返す(sheet は1枚だけ)。
+    /// - 同一カードの再要求(通常来ないが冪等性のため)は受理扱いで `.fullscreen` を返す。
+    func requestFullscreen(_ host: InlineCardHost, estimatedDimensions: ContainerDimensions) -> DisplayModeResolution {
+        if activeHost == nil {
+            activeHost = host
+            host.displayMode = .fullscreen  // 単一の真実を更新(sheet 側 AppCardView が adopt する条件)。
+            return DisplayModeResolution(mode: .fullscreen, containerDimensions: estimatedDimensions)
+        }
+        if activeHost === host {
+            // 既に自分が昇格中。冪等に fullscreen を返す(displayMode は既に .fullscreen)。
+            return DisplayModeResolution(mode: .fullscreen, containerDimensions: estimatedDimensions)
+        }
+        // 別カードが占有中 → 拒否(現状維持=inline)。host.displayMode は触らない。
+        return DisplayModeResolution(mode: .inline)
+    }
+
+    /// sheet を閉じて inline へ戻す(下スワイプ dismiss・§5 H4-E)。順序固定の復帰処理は host.restoreInline() が担う
+    /// (rehome → scrollEnabled=false → host-context-changed)。ここでは activeHost をクリアするだけ。
+    func dismiss() {
+        activeHost?.restoreInline()
+        activeHost = nil
+    }
+}
+
+/// sheet に載る fullscreen カード本体(§5 H4 モック合意)。カードを全面に広げ、内部スクロールを許す。
+/// グラバー(presentationDragIndicator)だけ出し、ホストのナビバー・閉じるボタンは重ねない
+/// (カードの sticky ヘッダ『完了』と役割が重ならない中立設計・ビジョン2)。
+struct FullscreenCardView: View {
+    let host: InlineCardHost
+
+    var body: some View {
+        Group {
+            if let webView = host.webView {
+                // role:.fullscreen + host.displayMode を渡す。sheet が出ている間 host.displayMode==.fullscreen
+                // なので、この AppCardView が webView を adopt する(inline 側は displayMode ガードで奪わない)。
+                AppCardView(webView: webView, role: .fullscreen, activeDisplayMode: host.displayMode)
+            } else {
+                // 通常来ない(昇格は webView 構築後にしか起きない)が、防御的にプレースホルダ。
+                ProgressView()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // カードが全面(§5 H4 合意)。下端の safe area まで使う(グラバー分の上端は sheet が確保する)。
+        .ignoresSafeArea(edges: .bottom)
+        .presentationDetents([.large])          // large detent(§5 決定2: fullScreenCover でなく sheet)。
+        .presentationDragIndicator(.visible)    // グラバー(チキ)だけ出す。
+        .onAppear {
+            // fullscreen はカード内部スクロール(§5 H4-E・§6-2)。生成時 false だったのをここで true に。
+            host.setWebViewScrollEnabled(true)
+            // 実寸ズレの補正(§5 H4-E)は任意。fullscreen はカード内部スクロールで高さ誤差の実害が小さく、
+            // 幅は推定(画面幅=sheet 全幅)と一致するので、初期の推定寸法のままで足りると判断し送らない
+            // (必要になれば host.setWebViewScrollEnabled と同型の補正通知をここに足す)。
+        }
+    }
+}

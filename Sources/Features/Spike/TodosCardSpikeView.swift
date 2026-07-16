@@ -176,7 +176,9 @@ struct TodosCardSpikeView: View {
                 // 内容は WKWebView の内部スクロールで見せる(size-changed 追従はやめる —
                 // それは P3 のチャット内インラインカード向けの挙動で、単カード占有には
                 // 固定枠+内部スクロールの方が素直。2026-07-15 の「縦幅足りない」への対応)。
-                AppCardView(webView: webView)
+                // 単カード全画面スパイクは単一所有(reparent なし)。role/activeDisplayMode を共に inline
+                // 固定にして常に webView を載せる(P4-DM の container 再アダプト方式・器は1つ)。
+                AppCardView(webView: webView, role: .inline, activeDisplayMode: .inline)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(white: 0.98))
                     .clipShape(RoundedRectangle(cornerRadius: 12))

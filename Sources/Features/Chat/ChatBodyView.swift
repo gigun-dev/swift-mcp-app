@@ -35,6 +35,26 @@ struct ChatBodyView: View {
     // InlineCardView の containerWidth に渡す。0 の間はカード構築を保留する(InlineCardView 側で guard)。
     @State private var columnWidth: CGFloat = 0
 
+    // チャット可視領域(ScrollView のビューポート)の高さ(P4-DM・設計 04 §5 H1)。inline の実 maxHeight
+    // = floor(可視高 × 0.65)の算出に使う。ScrollView の背景 GeometryReader で測る(background 修飾は
+    // コンテンツ全高ではなく ScrollView 自身の frame = ビューポート高になる)。0 の間はフォールバックを使う。
+    @State private var visibleHeight: CGFloat = 0
+
+    // fullscreen 昇格の調停役(高々1枚・決定2b・設計 04 §5 H4-C)。@State で1個所有し registry と並置する。
+    @State private var fullscreenCoordinator = FullscreenCoordinator()
+
+    /// inline カードの実 maxHeight を可視高から算出する(P4-DM 決定1・設計 04 §5 H1)。
+    /// 可視高 × 0.65 を floor。可視高未確定(0)の間はカード構築が columnWidth==0 で保留されるため
+    /// フォールバック値(600)は実際にはほぼ使われないが、念のため 0 を避ける。
+    private var inlineMaxHeight: CGFloat {
+        visibleHeight > 0 ? (visibleHeight * Self.inlineMaxHeightRatio).rounded(.down) : 600
+    }
+
+    /// 可視高に対する inline カード上限の比(設計 04 §5 H1・決定1)。spec の例(apps.mdx:616)も
+    /// maxHeight:600 と「画面より小さい inline」を示しており、チャットの流れを保つため画面を占有しすぎない
+    /// 65% に置く。この値は 1 定数で完全に可逆(§4 可逆性・実機で調整予定 §6-5)。
+    private static let inlineMaxHeightRatio: CGFloat = 0.65
+
     // 入力欄のフォーカス。キーボードを明示的に閉じる(スクロール dismiss・送信時・タップ外し)ために持つ
     // (ユーザー指摘: TextField から focus を外してもキーボードが出っぱなしだった。@FocusState を
     //  介して inputFocused=false で resignFirstResponder 相当になる)。
@@ -51,6 +71,24 @@ struct ChatBodyView: View {
         .simultaneousGesture(
             TapGesture().onEnded { inputFocused = false }
         )
+        // fullscreen カードの sheet(P4-DM・設計 04 §5 H4-E)。item に activeHost をラップした Binding を
+        // 渡し、下スワイプ dismiss(item→nil)で coordinator.dismiss()(= host.restoreInline の順序復帰)を呼ぶ。
+        .sheet(item: activeHostBinding) { host in
+            FullscreenCardView(host: host)
+        }
+    }
+
+    /// `.sheet(item:)` 用の Binding。get は coordinator.activeHost、set は nil(スワイプ dismiss)で
+    /// coordinator.dismiss() を呼ぶ。昇格(非 nil への set)は起きない(昇格は onDisplayModeRequested 経由で
+    /// coordinator が activeHost を直接立てるため、この Binding の set には流れてこない)。
+    private var activeHostBinding: Binding<InlineCardHost?> {
+        Binding(
+            get: { fullscreenCoordinator.activeHost },
+            set: { newValue in
+                // SwiftUI が dismiss で item を nil にしてくる。ここで inline 復帰(rehome → scrollEnabled=false
+                // → host-context-changed)を順序どおり実行する(§5 H4-E)。非 nil は来ない想定だが無視して安全。
+                if newValue == nil { fullscreenCoordinator.dismiss() }
+            })
     }
 
     // MARK: - メッセージ列
@@ -74,10 +112,18 @@ struct ChatBodyView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 14)
             }
+            // 可視領域(ビューポート)の高さを測る(P4-DM・H1)。ScrollView 自身の frame に付く background は
+            // コンテンツ全高ではなくビューポート高になるので、ここで inline maxHeight の分母(可視高)が取れる。
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: VisibleHeightKey.self, value: geo.size.height)
+                }
+            )
             // チャットのメッセージをスワイプしたらキーボードを対話的に閉じる(iMessage 等の標準挙動・
             // ユーザー指摘のキーボード出っぱなし対策)。
             .scrollDismissesKeyboard(.interactively)
             .onPreferenceChange(ColumnWidthKey.self) { columnWidth = $0 }
+            .onPreferenceChange(VisibleHeightKey.self) { visibleHeight = $0 }
             // 末尾ターンの text が伸びる(ストリーミング)たびに最下部へ追従する。
             // turns.count だけでなく末尾 text の長さも監視して、ストリーミング中の追従を効かせる。
             .onChange(of: chatVM.turns.count) { scrollToBottom(proxy) }
@@ -124,10 +170,11 @@ struct ChatBodyView: View {
                 if let proxy {
                     ForEach(Array(turn.cards.enumerated()), id: \.offset) { cardIndex, card in
                         InlineCardView(
-                            host: cardRegistry.host(for: "\(turnIndex)-\(cardIndex)"),
+                            host: cardRegistry.host(for: "\(turnIndex)-\(cardIndex)", coordinator: fullscreenCoordinator),
                             proxy: proxy,
                             card: card,
                             containerWidth: columnWidth,
+                            maxHeight: inlineMaxHeight,  // 可視高 × 0.65(P4-DM 決定1・H1)。
                             // スナップショット到達で永続モデルへ書き戻す(T6・設計 §5)。identity は
                             // (turnIndex, cardIndex)。turns/cards は追記のみなのでこの index は安定
                             // (ChatViewModel.setCardSnapshot 側でも範囲外を安全に無視する)。
@@ -380,6 +427,15 @@ private func prettyJSON(_ raw: String) -> String {
 /// メッセージ列の内側幅(カード列幅)を GeometryReader → onPreferenceChange で吸い上げる鍵(設計 §5)。
 /// 最大値を採る reduce にしておく(複数 reader が競合しても列の実幅に収束する)。
 private struct ColumnWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// チャット可視領域(ScrollView ビューポート)の高さを吸い上げる鍵(P4-DM・設計 04 §5 H1)。
+/// inline カードの実 maxHeight = floor(可視高 × 0.65)の分母。幅と同じく最大値 reduce にしておく。
+private struct VisibleHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())

@@ -73,7 +73,10 @@ struct StaticCardView: View {
     @ViewBuilder
     private var content: some View {
         if let webView = host.webView {
-            AppCardView(webView: webView)
+            // 静的カードは単一所有(reparent なし)。常に自分が webView を持つよう role/activeDisplayMode を
+            // 共に inline 固定にする(P4-DM で AppCardView は container 再アダプト方式になったが、履歴の
+            // 静的表示は器が1つだけなので displayMode ガードは常時 true = 従来どおり載せるだけ)。
+            AppCardView(webView: webView, role: .inline, activeDisplayMode: .inline)
                 .frame(height: 360)
                 .frame(maxWidth: .infinity)
                 .background(Color(white: 0.98))

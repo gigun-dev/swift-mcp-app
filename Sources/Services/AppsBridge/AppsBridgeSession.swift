@@ -76,11 +76,17 @@ public actor AppsBridgeSession {
     private let onSizeChanged: @Sendable (Double) async -> Void
 
     // request-display-mode を受けたとき、実際にどのモードへ遷移するかを決める注入点
-    // (P4-DM・設計 04 §5 H3)。Features(H4)が sheet 器を持つかどうかを知っているのは
-    // Features 側なので、Session 自身は「昇格してよいか」を判断しない。既定は
-    // 「昇格拒否(inline のまま)」——H4 の sheet 器が未実装でも安全に動く
-    // (カードが fullscreen を要求しても inline を返すだけで、host-context-changed も飛ばない)。
-    private let onDisplayModeRequested: @Sendable (UIDisplayMode) async -> DisplayModeResolution
+    // (P4-DM・設計 04 §5 H3 + H4-F)。Features(H4)が sheet 器を持つかどうかを知っているのは
+    // Features 側なので、Session 自身は「昇格してよいか」を判断しない。
+    //
+    // 【optional にした理由(設計 04 §5 H3 追補「fullscreen 広告はハンドラ注入時のみ」= H4-F)】
+    // fullscreen の広告は「このハンドラが注入されたときだけ」にする。ハンドラが無い(nil)= sheet 器を
+    // 持たないホスト構成では fullscreen を広告しない([inline] だけ)ことで、「押すと必ず拒否される
+    // 死にボタン」を構造的に排除する(availableDisplayModes に fullscreen が出る ⇔ 実際に昇格できる、を
+    // 一致させる)。nil のとき request-display-mode が来ても現状維持(currentDisplayMode)を応答して
+    // 安全に拒否する(spec 上は View が apps.mdx:786 の MUST を守れば非広告モードへ要求してこないが、
+    // 来ても壊れない)。本番 InlineCardHost は常にこのハンドラを注入するので fullscreen が広告される。
+    private let onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)?
 
     // 現在の displayMode(Session が最後に View へ通知した値)。単一の真実は将来
     // Features 側(InlineCardHost)に置く設計(設計 04 §3 責務表)だが、Session は
@@ -104,8 +110,8 @@ public actor AppsBridgeSession {
         containerWidth: Double,
         maxHeight: Double = 600,
         onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in },
-        onDisplayModeRequested: @escaping @Sendable (UIDisplayMode) async -> DisplayModeResolution
-            = { _ in DisplayModeResolution(mode: .inline) }
+        // 既定 nil = fullscreen を広告しない・request-display-mode は拒否(H4-F)。本番は Features が注入する。
+        onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil
     ) {
         self.transport = transport
         self.proxy = proxy
@@ -302,7 +308,9 @@ public actor AppsBridgeSession {
 
         case let .requestDisplayMode(id, params):
             // カード発のモード変更要求。Features(H4)が実モードを決めて返す。既定は拒否(inline)。
-            let resolution = await onDisplayModeRequested(params.mode)
+            // ハンドラ未注入(nil = fullscreen 非広告構成)なら現状維持を応答して拒否する(H4-F)。
+            let resolution = await onDisplayModeRequested?(params.mode)
+                ?? DisplayModeResolution(mode: currentDisplayMode)
             // apps.mdx:787 MUST: 変えなかった場合も「結果のモード」を必ず返す。
             let result = RequestDisplayModeResult(mode: resolution.mode)
             await deliver(response: JSONRPCResponse(
@@ -325,13 +333,16 @@ public actor AppsBridgeSession {
     private func handleInitialize(id: RequestID, params: InitializeParams) async {
         logger.notice("ui/initialize 受信 appInfo=\(params.appInfo.name, privacy: .public) proto=\(params.protocolVersion, privacy: .public)")
 
-        // availableDisplayModes: fullscreen を広告する(P4-DM・設計 04 §5 H3)。pip は見送り
-        // (設計 04 §4 ボツ案 — ユースケースが薄く、host-context-changed の寸法契約も未整理)。
+        // availableDisplayModes: fullscreen は onDisplayModeRequested ハンドラが注入されたときだけ
+        // 広告する(設計 04 §5 H3 追補「fullscreen 広告はハンドラ注入時のみ」= H4-F)。nil = sheet 器の
+        // 無いホスト構成では [inline] だけを広告し、「押すと必ず拒否される死にボタン」を排除する。
+        // pip は見送り(設計 04 §4 ボツ案 — ユースケースが薄く、host-context-changed の寸法契約も未整理)。
+        let availableModes: [UIDisplayMode] = onDisplayModeRequested != nil ? [.inline, .fullscreen] : [.inline]
         let hostContext = HostContext(
             theme: .light,
             locale: "ja-JP",
             displayMode: currentDisplayMode,
-            availableDisplayModes: [.inline, .fullscreen],
+            availableDisplayModes: availableModes,
             containerDimensions: ContainerDimensions(width: containerWidth, maxHeight: maxHeight))
 
         // protocolVersion は View が送ってきたものをそのまま返す(バージョン交渉はスパイク外・
@@ -344,7 +355,7 @@ public actor AppsBridgeSession {
 
         if let resultJSON = try? JSONValue(encoding: result) {
             await deliver(response: JSONRPCResponse(id: id, result: resultJSON))
-            logger.notice("ui/initialize 応答済み(hostContext.availableDisplayModes=[inline,fullscreen])")
+            logger.notice("ui/initialize 応答済み(availableDisplayModes=\(availableModes.map(\.rawValue), privacy: .public))")
         } else {
             await deliver(response: JSONRPCResponse(
                 id: id, error: JSONRPCError(code: -32603, message: "initialize result のエンコードに失敗")))

@@ -12,6 +12,7 @@
 import SwiftUI
 import WebKit
 import OSLog
+import Kernel    // UIDisplayMode(displayMode ガードに使う)
 import Services
 
 /// カードの可変状態(高さ)。session の onSizeChanged から MainActor で更新される。
@@ -22,13 +23,72 @@ final class AppCardState: ObservableObject {
     @Published var desiredHeight: CGFloat = 200
 }
 
-/// 準備済みの WKWebView を SwiftUI に載せるだけのラッパ。frame(height:) は呼び出し側が
-/// AppCardState を観測して適用する(この View は寸法を決めない)。
+/// このカードの WKWebView を「どこに載せる役」か(P4-DM・設計 04 §6 の container 再アダプト方式)。
+/// inline はチャット行、fullscreen は sheet。1 つの webView を高々どちらか1箇所だけが所有する。
+enum CardMountRole: Sendable {
+    case inline
+    case fullscreen
+}
+
+/// 準備済みの WKWebView を SwiftUI に載せる Representable。**container 再アダプト方式**
+/// (P4-DM・設計 04 §6-1 の reparent スパイク実証結果を本番に移植)。
+///
+/// 【なぜ webView を直接 return しないのか】素朴に makeUIView で webView をそのまま返すと、
+/// sheet 側 Representable が同じ webView を奪ったあと dismiss しても SwiftUI が inline 側の
+/// makeUIView を再呼び出ししないため webView が orphan(superview=nil)になり、inline が空白化する
+/// (スパイク第1回で実証・ReparentSpikeView.swift 冒頭)。対処として各所は「空の container UIView」を
+/// 返し、updateUIView で「自分が所有すべきなら webView を自分の container へ載せ直す(再アダプト)」。
+///
+/// 【displayMode ガード(最重要・奪い合い防止・設計 04 §6-新)】再アダプトは無条件ではなく
+/// `activeDisplayMode` が自分の `role` に一致するときだけ行う(inline は .inline のとき・fullscreen は
+/// .fullscreen のときだけ adopt)。これが無いと「sheet 表示中に LazyVStack がスクロールして inline 行が
+/// 再生成された瞬間、inline が sheet から webView を奪う」バグを踏む(スパイクの単純往復では露見しなかった
+/// 本番シナリオ)。displayMode は InlineCardHost の @Observable な単一の真実(設計 04 §3 責務表)であり、
+/// 呼び出し側(InlineCardView / FullscreenCardView)が host.displayMode を body で読むことで、変化時に
+/// この Representable が再評価され updateUIView が走る = inline が webView を取り戻す。**スパイクの
+/// rehomeToken の役割を、この activeDisplayMode の @Observable 観測が担う**(rehomeToken 保険は不要と
+/// 判断・下記コメント参照)。
 struct AppCardView: UIViewRepresentable {
     let webView: WKWebView
+    /// この Representable がどちらの器か(inline / fullscreen)。
+    let role: CardMountRole
+    /// host.displayMode の現在値。呼び出し側が host.displayMode をそのまま渡す。値型で受け取ることで
+    /// SwiftUI が差分を検知し、displayMode 変化時に必ず updateUIView を呼ぶ(再アダプトの発火点)。
+    let activeDisplayMode: UIDisplayMode
 
-    func makeUIView(context: Context) -> WKWebView { webView }
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        adoptIfOwned(into: container)
+        return container
+    }
+
+    func updateUIView(_ container: UIView, context: Context) {
+        adoptIfOwned(into: container)
+    }
+
+    /// この role が現在 webView を所有すべきなら(= activeDisplayMode が一致)、まだ自分の container に
+    /// 載っていない場合に載せ直す。所有すべきでないときは何もしない(奪い合いガード)。冪等。
+    private func adoptIfOwned(into container: UIView) {
+        let shouldOwn: Bool
+        switch role {
+        case .inline: shouldOwn = (activeDisplayMode == .inline)
+        case .fullscreen: shouldOwn = (activeDisplayMode == .fullscreen)
+        }
+        guard shouldOwn else { return }
+        if webView.superview !== container { adopt(into: container) }
+    }
+
+    private func adopt(into container: UIView) {
+        webView.removeFromSuperview()
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: container.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+    }
 }
 
 /// WKWebView の navigation / UI デリゲート(設計 §6 のサンドボックス強化)。
