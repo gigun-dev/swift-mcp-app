@@ -14,6 +14,8 @@
 import Foundation
 import Observation
 import Kernel
+import os  // 【診断 2026-07-17】実機で「LLM tool_calls 後に tools/call が発火しない」ハングの位置特定用。
+           // 原因確定後にこの診断ログは撤去してよい(chat-diag カテゴリ)。
 
 /// チャット1画面ぶんの状態 + tool-use ループ。
 ///
@@ -74,6 +76,9 @@ public final class ChatViewModel {
 
     private let llm: any LLMClient
     private let toolExecutor: any MCPToolExecuting
+
+    /// 【診断 2026-07-17】実機ハング位置特定用の一時ロガー(chat-diag)。原因確定後に撤去可。
+    static let diagLogger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-diag")
     /// LLM に見せるツール定義。**呼び出し側が ToolConversion.toolDefinitions で visibility 除外
     /// 済みのものを渡す**前提(設計 §7 の除外は変換時に済む — ループは再判定しない)。
     private let tools: [ToolDefinition]
@@ -368,16 +373,23 @@ public final class ChatViewModel {
         // 表示ステップとの対応を保つ。
         let executor = self.toolExecutor
         let sink = self.traceSink
+        // 【診断 2026-07-17】実機ハングの挟み撃ちログ(chat-diag)。実機ログで llmCompleted 後に
+        // toolCallStarted も tools/call 素通しも出ない=TaskGroup の子が走っていない疑いを確定させる。
+        Self.diagLogger.notice("runToolCalls: withTaskGroup 開始 calls=\(calls.count, privacy: .public)")
         let results: [ToolExecResult] = await withTaskGroup(of: ToolExecResult.self) { group in
             for (index, call) in calls.enumerated() {
                 group.addTask {
-                    await Self.execute(call: call, index: index, executor: executor, traceSink: sink, turnId: turnId)
+                    Self.diagLogger.notice("runToolCalls: 子タスク開始 index=\(index, privacy: .public) name=\(call.function.name, privacy: .public)")
+                    let r = await Self.execute(call: call, index: index, executor: executor, traceSink: sink, turnId: turnId)
+                    Self.diagLogger.notice("runToolCalls: 子タスク完了 index=\(index, privacy: .public) failed=\(r.failed, privacy: .public)")
+                    return r
                 }
             }
             var collected: [ToolExecResult] = []
             for await r in group { collected.append(r) }
             return collected
         }
+        Self.diagLogger.notice("runToolCalls: withTaskGroup 完了 results=\(results.count, privacy: .public)")
 
         // 表示ステップの状態を確定(index で対応づけ)。r.content は role:"tool" に積み戻すのと
         // 同じ文字列(成功時は結果 JSON、失敗時はエラー文言)なので、そのまま resultJSON に転記して

@@ -247,6 +247,25 @@ struct ChatBodyView: View {
                 ForEach(Array(turn.toolSteps.enumerated()), id: \.offset) { _, step in
                     toolStepRow(step)
                 }
+                // 【思考中インジケータ(ユーザー実機 FB 2026-07-17「送信しても下に何も出ない」への対処)】
+                // tool-use ループは各周で「空テキストの assistant ターンを先に append → ストリームを待つ」
+                // (ChatViewModel.send)。その待ち時間、このターンは text も toolSteps も cards も空で、
+                // 上の描画はすべて条件で隠れる=**吹き出しゼロの不可視 VStack**になる。速い回線では最初の
+                // トークンが ~1s で来るので見えないが、低速/初トークンが遅い回線(実機セルラー等)では
+                // 「ユーザー発話の下に何も出ない・スピナーも無い・エラーも無い」状態が長く続き、送信が
+                // 死んだように見える(実機 FB の症状に一致)。ここで「まだ何も描くものが無い実行中ターン」に
+                // 限って明示のインジケータを出し、その空白を埋める。
+                // 条件: 実行中(isRunning)/ 末尾ターン / text・toolSteps・cards すべて空。
+                //  - 末尾ターン限定: 過去の(確定済みで偶々空文字の)assistant ターンには出さない。
+                //  - 3要素とも空限定: 1つでも描くものが出た瞬間に自動で消える(スピナー行・本文・カードが
+                //    出れば「待ち」ではないため)。isRunning が false になれば当然消える(取り残し防止)。
+                if chatVM.isRunning
+                    && turnIndex == chatVM.turns.count - 1
+                    && turn.text.isEmpty
+                    && turn.toolSteps.isEmpty
+                    && turn.cards.isEmpty {
+                    thinkingIndicator
+                }
                 if !turn.text.isEmpty {
                     HStack {
                         bubble(turn.text, isUser: false)
@@ -296,6 +315,22 @@ struct ChatBodyView: View {
             // turns に user/assistant しか積まない)。将来のために握りつぶさず何も出さない。
             EmptyView()
         }
+    }
+
+    /// 思考中インジケータ(実行中で、まだ何も描くものが無い assistant ターンに出す・上の呼び出し箇所参照)。
+    /// 初回の textDelta / toolStep / card が出れば呼び出し側の条件が外れて自動的に消える。
+    /// 【2026-07-17 ユーザー FB で改訂】初版は「spinner +『考え中…』テキストの吹き出し」だったが、
+    /// 「ChatGPT みたいな、丸のインジケータが縮小拡大するアニメーションがいい」との裁定で
+    /// **息をする丸(pulsing dot)**へ変更。吹き出し枠もテキストも無し — 「本文が現れる場所で
+    /// 小さな丸が脈打つ」だけの控えめな表現(枠があると「空メッセージが来た」ように見える)。
+    /// ボツ案: 3点リーダー(typing indicator)は iMessage の「相手が入力中」の語彙で意味がズレる。
+    private var thinkingIndicator: some View {
+        ThinkingPulseDot()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 8)
+            // アクセシビリティ: 読み上げに「応答を生成中」を伝える(視覚のみに依存しない)。
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("応答を生成中")
     }
 
     private func bubble(_ text: String, isUser: Bool) -> some View {
@@ -668,5 +703,26 @@ private struct VisibleHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// ChatGPT 式の「息をする丸」(2026-07-17 ユーザー裁定・thinkingIndicator のコメント参照)。
+/// 直径 12pt の丸が 0.55⇄1.0 のスケールと薄い⇄濃いの opacity を ~0.9s 周期で往復する。
+/// 値は ChatGPT iOS の見た目の近似(正確な仕様は非公開なので目視合わせ・1定数ずつ可逆)。
+/// prefers-reduced-motion(SwiftUI は accessibilityReduceMotion)ではアニメを止めて静止した丸のみ。
+private struct ThinkingPulseDot: View {
+    @State private var pulsing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Circle()
+            .fill(Color.primary.opacity(pulsing ? 0.85 : 0.35))
+            .frame(width: 12, height: 12)
+            .scaleEffect(pulsing ? 1.0 : 0.55)
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 0.45).repeatForever(autoreverses: true),
+                value: pulsing
+            )
+            .onAppear { pulsing = true }
     }
 }

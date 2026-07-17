@@ -25,11 +25,40 @@ public struct OpenAICompatClient: LLMClient {
     ///     `https://api.openai.com/v1/chat/completions`)。パスまで含めた完全 URL を渡す
     ///     (プロバイダによって /v1 の有無が違うため、ここで組み立てず呼び出し側=BYOK 設定に委ねる)。
     ///   - apiKey: `Authorization: Bearer <key>` に載せる API キー。
-    ///   - urlSession: 注入可能(テストで差し替え・既定は .shared)。
-    public init(baseURL: URL, apiKey: String, urlSession: URLSession = .shared) {
+    ///   - urlSession: 注入可能(テストで差し替え)。既定 nil のときは明示タイムアウト付きの
+    ///     専用セッションを組む(下 defaultSession)。テストは自前のスタブ session を渡すので影響なし。
+    public init(baseURL: URL, apiKey: String, urlSession: URLSession? = nil) {
         self.baseURL = baseURL
         self.apiKey = apiKey
-        self.urlSession = urlSession
+        self.urlSession = urlSession ?? Self.defaultSession()
+    }
+
+    /// 明示タイムアウト付きの既定セッション(実機 FB 2026-07-17「送信後ずっと無音」への恒久対処)。
+    ///
+    /// 【なぜ ChatViewModel の消費側でなくここ(ネットワーク層)にタイムアウトを置くか】
+    /// 無応答の実体は URLSession が「追加データを待ち続ける」状態。URLSessionConfiguration の
+    /// `timeoutIntervalForRequest` は **追加データ到着ごとにリセットされるイベント間タイムアウト**で、
+    /// まさに「delta が N 秒来なければ打ち切る」の意味に一致する。ここで設定すれば URLSession.bytes の
+    /// for-await が timeout エラーで throw → consumeSSE が投げ返し → ChatViewModel.send の
+    /// catch(既存のエラー経路)が errorMessage に載せて赤字表示する。消費側で自前の per-event
+    /// タイムアウトを組む(AsyncThrowingStream のイテレータを race させる)より、標準機構に乗る方が
+    /// 単純で確実(iterator を並行タスクで race するのは Sendable/再入の綱渡りになる)。
+    /// 中立性: これは HTTP/SSE トランスポートの都合なので OpenAI 互換アダプタ内に閉じてよい
+    /// (LLMClient プロトコルにタイムアウトの概念を持ち込まない)。
+    ///
+    /// 既定 `.shared` も実は timeoutIntervalForRequest=60 を持つが、それは暗黙のプロセス共有既定で
+    /// あり、この値に依存していることがコードから読み取れない。専用セッションで**明示**し、
+    /// 意図(無音ハングを 60s で切る)をコードに刻む。
+    private static func defaultSession() -> URLSession {
+        let config = URLSessionConfiguration.default
+        // イベント間(追加データ待ち)の無応答タイムアウト。SSE は正常時 delta が刻々届くので、
+        // 60s も新データが来なければ回線ハング/プロバイダ停止とみなして打ち切る。正常にストリームが
+        // 流れている限りデータ到着ごとにリセットされるので誤発火しない(= inter-event timeout)。
+        config.timeoutIntervalForRequest = 60
+        // リクエスト全体の上限。ツール1周の補完は通常数秒〜十数秒だが、長考モデルや長い tool-use
+        // ターンを考慮して 300s に置く(全体が固まり続けるのを最終的に断ち切る保険)。
+        config.timeoutIntervalForResource = 300
+        return URLSession(configuration: config)
     }
 
     public func stream(_ request: ChatCompletionRequest) -> AsyncThrowingStream<LLMEvent, Error> {
