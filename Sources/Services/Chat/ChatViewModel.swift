@@ -40,6 +40,31 @@ public final class ChatViewModel {
     /// ストリーミング中は末尾 assistant ターンの text/toolSteps を逐次書き換える。
     public private(set) var turns: [ChatTurn] = []
 
+    /// 「ユーザー発話が turns に積まれた」という**事実の記録**(2026-07-17 スクロール再設計・Fable)。
+    ///
+    /// 【なぜ turns の形からの推測をやめて明示イベントにするか(バグ機序)】旧実装は View 側で
+    /// `onChange(of: turns.count)` を観測し `turns.last?.role == .user` のときだけ「送信された」と
+    /// *推測*して user ターンを最上部へスクロールしていた。しかし send() は user ターンを append した
+    /// 直後、同じ実行フロー内で(間に await を挟まず)**空の assistant ターンも append** する。
+    /// SwiftUI の onChange は1トランザクション内の複数 mutation を合体した最終値でしか発火しないため、
+    /// 観測時点では `turns.last` が既に `.assistant` になっており、guard が常に弾いて**一度もスクロール
+    /// しなかった**。配列の形から送信イベントを復元するのは append 2連発・retry(縮んで伸びる)・
+    /// LazyVStack 遅延生成に対して原理的に脆い。そこで「送信が起きた」ことを VM が事実として1点に記録し、
+    /// View はそれを観測する(推測しない)。
+    ///
+    /// seq(単調増加)を持つ理由: retry では**同じ turnIndex**へ再送されることがあり、turnIndex だけだと
+    /// Equatable 上の変化が起きず onChange が発火しない。seq を毎回 +1 することで再送でも必ず変化を作る。
+    ///
+    /// 命名に "scroll" を含めないのは、VM が View の使途を知らない中立設計(CLAUDE.md ビジョン2・
+    /// onTurnSettled と同じ「事実の通知であって UI 指示ではない」思想)。
+    public struct UserSubmission: Equatable, Sendable {
+        /// 積まれた user ターンの turns 内 index。
+        public let turnIndex: Int
+        /// 単調増加のシーケンス番号(同一 index への retry でも Equatable 変化を保証)。
+        public let seq: Int
+    }
+    public private(set) var lastSubmission: UserSubmission?
+
     /// ループ実行中フラグ(送信ボタンの無効化・スピナー表示に使う)。
     public private(set) var isRunning: Bool = false
 
@@ -264,6 +289,12 @@ public final class ChatViewModel {
         // 1) user を wire と表示の両方へ積む。
         wireMessages.append(ChatMessage(role: .user, content: userText))
         turns.append(ChatTurn(role: .user, text: userText))
+        // 送信イベントを事実として記録(スクロール再設計・Fable / lastSubmission の宣言コメント参照)。
+        // この直後に空 assistant ターンが append されて turns.last が .assistant になっても、
+        // この記録は「どの index の user が今積まれたか」を確定させるので View 側が正しく追える。
+        lastSubmission = UserSubmission(
+            turnIndex: turns.count - 1,
+            seq: (lastSubmission?.seq ?? 0) + 1)
 
         // 2) 反復。各周で assistant ターンを1つ起こし、そこへ text/toolSteps を書き込む。
         var settled = false

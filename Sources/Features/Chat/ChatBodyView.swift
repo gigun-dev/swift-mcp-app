@@ -87,6 +87,13 @@ struct ChatBodyView: View {
     // 初期 true(空/1画面に収まるうちはボタンを出さない)。
     @State private var isAtBottom: Bool = true
 
+    // 送信アンカーのアニメを抑制するか(アクセシビリティ「視差効果を減らす」)。位置決め自体は残す。
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 送信した user ターンを寄せる先のアンカー(x=中央・y=上端起点)。ChatGPT 風の「上部に少し余白」は
+    /// まず LazyVStack の上 padding で担う。足りなければ y を 0.02〜0.05 に上げる(1定数・可逆・実機調整)。
+    private static let userTurnAnchor = UnitPoint(x: 0.5, y: 0.0)
+
     var body: some View {
         VStack(spacing: 0) {
             messages
@@ -203,13 +210,23 @@ struct ChatBodyView: View {
                 let hiddenBelow = sentinelMaxY - visibleHeight
                 isAtBottom = hiddenBelow <= scrollJumpThreshold
             }
-            // 【ChatGPT 式スクロールアンカー(ユーザー実機 FB 2026-07-17・添付スクショの挙動)】
-            // 旧実装は「ストリーミング中ずっと最下部へ強制追従(turns.count と末尾 text 双方を監視して
-            // scrollToBottom)」だった。これを ChatGPT のように「送信したユーザーメッセージが画面**最上部**に
-            // 来るようスクロールし、AI の返事はその下に流れ込む(強制追従しない)」へ変える。
-            // → 末尾 text 伸長での scrollToBottom 追従は廃止(この観測点はハプティクス tick 用にだけ残す)。
-            // → turns.count 変化のうち「新しい user ターンが積まれた」ときだけ、その user ターンを .top へ寄せる。
-            .onChange(of: chatVM.turns.count) { anchorLatestUserTurn(proxy) }
+            // 【ChatGPT 式スクロールアンカー(2026-07-17 再設計・Fable)】送信した user メッセージを画面
+            // 上部へ寄せ、AI の返事はその下へ流れ込む(ストリーミング中は強制追従しない)。
+            // 旧実装は `onChange(of: turns.count)` + `turns.last?.role == .user` ガードで送信を推測していたが、
+            // send() が user append 直後に空 assistant ターンも append するため、onChange 発火時には
+            // turns.last が常に .assistant になり **一度もスクロールしなかった**(ChatViewModel.lastSubmission
+            // の宣言コメントに機序)。配列の形からの推測をやめ、VM が記録した送信イベント(lastSubmission)を
+            // 直接観測する。seq により retry(同一 index 再送)でも確実に発火する。
+            .onChange(of: chatVM.lastSubmission) { _, submission in
+                guard let submission else { return }
+                // 1拍遅延: この onChange は user/assistant の append を含むトランザクションで発火するが、
+                // その時点では LazyVStack が対象行を遅延生成し終えておらず、同一 runloop の scrollTo は
+                // 着地がズレる/対象未生成で失敗しうる。main queue に1拍逃がしてレイアウト確定後に打つ
+                // (二度打ちは既定では入れない — 実機で着地ズレが出たら +50ms の2発目を足す方針・可逆)。
+                DispatchQueue.main.async {
+                    anchorSubmittedTurn(submission.turnIndex, proxy: proxy)
+                }
+            }
             // ストリーミング tick(ChatGPT アプリ風の刻まれてる感・ユーザー要望 2026-07-17)。
             // かつて scrollToBottom と同じ観測点(末尾ターンの text 伸長)に相乗りしていた。スクロール追従は
             // 廃止したが、tick の観測点はそのまま残す(削るのはスクロールだけ・タスク指示)。streamingThrottle が
@@ -253,15 +270,24 @@ struct ChatBodyView: View {
         .onDisappear { cardRegistry.teardownAll() }
     }
 
-    /// 新しく積まれた末尾ターンが user なら、その user ターンを画面**最上部**へ寄せる(ChatGPT 式・
-    /// タスク指示2)。assistant ターンが積まれたとき(= LLM の応答開始)は何もしない(強制追従しない・
-    /// ユーザーの読み位置を奪わない)。ツール実行・カード出現でレイアウトが伸びても呼ばれない
-    /// (turns.count は増えないため)ので、読み位置は保たれる。
-    private func anchorLatestUserTurn(_ proxy: ScrollViewProxy) {
-        guard let last = chatVM.turns.last, last.role == .user else { return }
-        let index = chatVM.turns.count - 1
-        withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo(index, anchor: .top)
+    /// 送信された user ターン(index 指定)を画面上部へ寄せる(ChatGPT 式・2026-07-17 再設計・Fable)。
+    /// トリガは chatVM.lastSubmission の観測(上の onChange)。ツール実行・カード出現・ストリーミング
+    /// text 伸長では lastSubmission は変わらないので呼ばれない = 読み位置を奪わない。
+    ///
+    /// - 遅延実行(DispatchQueue.main.async)経由で呼ばれるため、その間に retry 等で turns が縮んで
+    ///   index が範囲外になる可能性がある。実行時ガードで安全に無視する(スクロールしそこねても壊れない)。
+    /// - anchor は Self.userTurnAnchor(上部・y=0 起点)。LazyVStack の上 padding(14)が「上端ぴったり」を
+    ///   少し和らげるので、ChatGPT 風の「上部に少し余白」はまず padding で足りる想定(足りなければ
+    ///   userTurnAnchor.y を 0.02〜0.05 に上げる・1定数で可逆・実機調整項目)。
+    /// - reduce-motion 時はアニメ無しで即時に位置決めする(位置合わせは機能なので省かない・動きだけ消す)。
+    private func anchorSubmittedTurn(_ index: Int, proxy: ScrollViewProxy) {
+        guard chatVM.turns.indices.contains(index) else { return }
+        if reduceMotion {
+            proxy.scrollTo(index, anchor: Self.userTurnAnchor)
+        } else {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(index, anchor: Self.userTurnAnchor)
+            }
         }
     }
 
