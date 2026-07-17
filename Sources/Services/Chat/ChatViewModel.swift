@@ -355,6 +355,50 @@ public final class ChatViewModel {
         ))
     }
 
+    // MARK: - 再生成(retry・ユーザー要望 2026-07-17)
+
+    /// 直近の user ターン以降を巻き戻して同じ内容で再送する(ChatGPT/claude.ai の「再生成」相当)。
+    ///
+    /// **表示(turns)と wire(wireMessages)を別々に巻き戻す理由**: クラス冒頭コメントのとおり両者は
+    /// 別の正しさ基準を持つ。turns は「最後の user ターン以降(user 含む)を削除」するだけでよいが、
+    /// wireMessages は system が先頭に残るため「最後の role:.user のインデックス以降を削除」で対応する。
+    /// send() が user メッセージを turns/wireMessages へ**同時に** append する(1) 節)ため、
+    /// 「turns の最後の user」と「wireMessages の最後の user」は常に同じ発話を指す = この2つの
+    /// 巻き戻しは常に整合する(片方だけ削って系列がズレることはない)。
+    ///
+    /// **OpenAI の assistant(tool_calls)/role:"tool" 厳密ペア(400 対策)を壊さない理由**:
+    /// 巻き戻しは「最後の user 以降を丸ごと」落とすので、途中の反復で積まれた
+    /// assistant(tool_calls)+role:"tool" のペアも(存在すれば)まとめて削除される。ペアの片方だけが
+    /// 残る状態には原理的にならない(ペアは必ず「最後の user より後」に積まれるため)。
+    ///
+    /// usage(lastUsage/cumulativeUsage)はあえてリセットしない: retry も実際に LLM を叩き直す =
+    /// 実トークンを消費するので、cumulativeUsage に足し続けるのが「嘘の金額を出さない」(設計 §6)と
+    /// 整合する(リセットすると「このセッションで実際に使った合計」より少ない額を見せてしまう)。
+    ///
+    /// カード(CardEmbed)は削除された turns ごと消える。ライブカード(WKWebView)の後始末は
+    /// このメソッドの関知するところではない(Kernel/Services は WKWebView を知らない・レイヤー分離)。
+    /// Features 側(ChatBodyView の retry アクション)が cardRegistry.teardownAll() で対処する。
+    /// 巻き戻し後に setCardSnapshot(turnIndex:cardIndex:) が古い index で遅延到着しても、
+    /// index ガード(turns.indices.contains / cards.indices.contains)で安全に無視される
+    /// (turns が短くなった/該当 index の中身が入れ替わった場合を型で弾けないぶん、実行時ガードで守る)。
+    public func retryLastTurn() async {
+        guard !isRunning else { return }
+
+        // turns 側: 最後の user ターンの index を探す。
+        guard let lastUserTurnIndex = turns.lastIndex(where: { $0.role == .user }) else { return }
+        let retryText = turns[lastUserTurnIndex].text
+
+        // wire 側: 最後の role:.user の index を探す(system は先頭に残るので同じ探索を独立に行う)。
+        guard let lastUserWireIndex = wireMessages.lastIndex(where: { $0.role == .user }) else { return }
+
+        // 表示・wire それぞれを「最後の user 以降(user 含む)」まで切り詰める。
+        turns.removeSubrange(lastUserTurnIndex...)
+        wireMessages.removeSubrange(lastUserWireIndex...)
+
+        errorMessage = nil
+        await send(retryText)
+    }
+
     // MARK: - ツール実行(1ターンぶんの tool_calls をまとめて)
 
     /// 1ターンで返ってきた tool_calls をすべて実行し、結果を wire に積む。

@@ -320,6 +320,12 @@ final class InlineCardHost: Identifiable {
     /// inline では切る(チャット全体スクロールと二重にしない)。生成時引数でなく実行時に切替できる。
     func setWebViewScrollEnabled(_ enabled: Bool) {
         webView?.scrollView.isScrollEnabled = enabled
+        // ズームロックの再適用(2026-07-17 実機 FB: fullscreen でダブルタップ拡大が復活)。
+        // WKWebView はサイズ変更(inline→全画面)で viewport を再計算し、生成時に掛けた
+        // 1:1 ロック(min/max zoomScale・認識器無効化)を上書きし直すことがある。この関数は
+        // fullscreen⇄inline の切替点で必ず通るので、ここで毎回掛け直すのが最小の防衛線
+        // (詳細は AppCardWebViewFactory.relockZoom のコメント)。
+        if let webView { AppCardWebViewFactory.relockZoom(of: webView) }
     }
 
     /// sheet dismiss で inline へ戻す一連の処理(P4-DM・設計 04 §5 H4-E の**固定順序**)。

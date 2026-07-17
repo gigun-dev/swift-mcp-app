@@ -266,6 +266,18 @@ enum AppCardWebViewFactory {
     /// 同じ理屈で、ダブルタップズーム・ピンチズーム・focus zoom を根ごと封じる。
     /// (旧ボツ判断「a11y のためピンチは残す」は、実機でダブルタップ拡大の取りこぼしが出たため上書き。
     ///  経緯は make 内のコメント参照。)
+    ///
+    /// 【2026-07-17 追記: internal 化 + relock 導線】生成時1回のロックだけでは不十分と実機で判明
+    /// (fullscreen 昇格でダブルタップ拡大が復活)。WKWebView はサイズ変更(inline→全画面)で
+    /// viewport を再計算し、scrollView の min/max zoomScale や認識器の有効状態を**上書きし直す**ことが
+    /// ある。そこで relockZoom を公開し、InlineCardHost.setWebViewScrollEnabled(fullscreen⇄inline の
+    /// 切替点)から毎回再適用する。根本対処はカード側 viewport meta の maximum-scale=1(caldav へ併記)
+    /// だが、任意の MCP アプリが正しい meta を持つ保証はないのでホスト側でも防衛する(中立性・ビジョン2)。
+    static func relockZoom(of webView: WKWebView) {
+        lockZoom(of: webView.scrollView)
+        disableDoubleTapGestures(in: webView.scrollView)
+    }
+
     private static func lockZoom(of scrollView: UIScrollView) {
         scrollView.minimumZoomScale = 1
         scrollView.maximumZoomScale = 1

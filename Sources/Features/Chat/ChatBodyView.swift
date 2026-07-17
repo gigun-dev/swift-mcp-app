@@ -302,6 +302,13 @@ struct ChatBodyView: View {
                         .zoomSource(id: host.id, in: cardZoom)
                     }
                 }
+                // 再生成(retry・ユーザー要望 2026-07-17)。末尾 assistant ターンにだけ出す(ChatGPT 式)。
+                // エラー時(chatVM.errorMessage 非 nil)もこの分岐を通る——エラーで打ち切られたターンも
+                // 「末尾の assistant ターン」であることに変わりなく、同じボタンがそのまま
+                // 「エラーからの再試行」導線を兼ねる(専用のエラー UI を別に作らずに済む)。
+                if !chatVM.isRunning && turnIndex == chatVM.turns.count - 1 {
+                    retryButton
+                }
             }
             // ツールステップの完了/失敗ハプティクス(ChatHaptics.swift・ユーザー要望 2026-07-17)。
             // turn.toolSteps の変化を (oldValue, newValue) で受け取り、失敗/完了の判定は
@@ -331,6 +338,40 @@ struct ChatBodyView: View {
             // アクセシビリティ: 読み上げに「応答を生成中」を伝える(視覚のみに依存しない)。
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("応答を生成中")
+    }
+
+    /// 再生成ボタン(retry・ユーザー要望 2026-07-17)。ChatGPT 式に控えめな丸矢印1個のみ
+    /// (「送信」ボタンのような主張はしない・タスク指示)。タップ領域は 28×28 を contentShape で確保する
+    /// (アイコン自体は .caption サイズで小さいため、指のタップ精度に対して見た目より広い当たり判定が必要)。
+    private var retryButton: some View {
+        Button {
+            haptics.sent()  // 送信と同じ軽い合図(タスク指示・「もう一度投げる」操作として自然)。
+            // 【なぜ teardownAll(全カード畳み)にしたか(タスク指示で裁量とされた点・ボツ案を残す)】
+            // retry は「最後の user ターン以降」を丸ごと巻き戻す(ChatViewModel.retryLastTurn)。
+            // このとき削除される turns に紐づく CardEmbed も消えるが、registry のキーは
+            // "\(turnIndex)-\(cardIndex)" で **turn の内容を含まない**。もしピンポイント削除
+            // (該当 turnIndex 以降のキーだけ teardown)にとどめると、再送後に同じ index へ
+            // *別内容の* カードが積まれたとき、registry.host(for:) が「index が一致する」という
+            // だけの理由で古い WKWebView/AppsBridgeSession を再利用してしまう(古いセッションに
+            // 新しい tool 結果を送りつける事故になりうる)。
+            // ピンポイント削除も不可能ではない(registry に「turnIndex プレフィックスで選択削除」
+            // API を足せばよい)が、retry は低頻度操作であり、巻き戻されない過去ターンのカードも
+            // host(for:) がオンデマンドで作り直す(InlineCardHost.swift の InlineCardRegistry.host(for:)
+            // は get-or-create なので、teardownAll 後に dict が空になっても次の描画で新しい
+            // InlineCardHost が生成され buildIfNeeded が再構築する)ため、実害は「過去カードの
+            // WKWebView が一瞬作り直しになる(往復状態が飛ぶ)」程度に留まる。キー走査 API を
+            // 足す複雑さより、全畳みの単純さ・安全さを優先した(ボツ案として残す)。
+            cardRegistry.teardownAll()
+            Task { await chatVM.retryLastTurn() }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("応答を再生成")
     }
 
     private func bubble(_ text: String, isUser: Bool) -> some View {
