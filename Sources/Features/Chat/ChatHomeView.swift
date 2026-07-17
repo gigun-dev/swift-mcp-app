@@ -97,8 +97,18 @@ struct ChatHomeView: View {
                 .background(Color(.systemBackground))  // 下層が透けないよう不透明。ZStack ごと bleed する。
                 .clipShape(RoundedRectangle(cornerRadius: offset > 0.5 ? 22 : 0, style: .continuous))
                 .shadow(color: .black.opacity(offset > 0.5 ? 0.22 : 0), radius: 16, x: -6, y: 0)
-                .offset(x: offset)
                 // 開いている間は、退いたメインカードをタップで閉じる(手本と同じ・操作を「閉じる」に一本化)。
+                //
+                // 【2026-07-17 実機バグ修正(サイドバー全操作不能)— overlay/gesture は .offset の"前"に付ける】
+                // SwiftUI の .offset は**描画だけ**を平行移動し、レイアウト frame は元の位置に残る。
+                // 旧実装は `.offset(x:).overlay { タップキャッチャ }` の順だったため、overlay が
+                // **ずれる前の全画面 frame**(=露出したサイドバーの真上)に配置され、ほぼ透明の
+                // contentShape(Rectangle) + onTapGesture がサイドバーへの全入力(履歴タップ・検索フォーカス・
+                // List スクロール)を食っていた — 「タップすると読み込まれずドロワーが閉じるだけ」
+                // 「検索欄が反応しない」「スクロールできない」の実機症状すべての単一原因。
+                // .offset の**前**に overlay/simultaneousGesture を付ければ、両方ともカードの描画と
+                // 一緒に右へ動き、サイドバー領域には何も残らない(タップキャッチャは「退いたカードの
+                // 見えている部分だけ」を覆う=本来の意図どおり)。
                 .overlay {
                     if offset > 1 {
                         Color.black.opacity(0.0001)
@@ -108,7 +118,10 @@ struct ChatHomeView: View {
                 }
                 // 横ドラッグでカードを追従させて開閉(「漫画のページめくり」)。縦スクロール・タップと
                 // 両立させるため simultaneousGesture + 横方向優位ガード(縦優位のときは無反応)。
+                // これも .offset の前(上記コメント参照 — 後に付けると全画面 frame でサイドバーの
+                // 縦スクロールと競合する)。カード上の横ドラッグ開閉という意図は変わらない。
                 .simultaneousGesture(dragGesture(revealWidth: revealWidth))
+                .offset(x: offset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // paper を全画面へ(サイドバーのステータスバー下も埋める)+ ZStack ごと物理端まで広げる
