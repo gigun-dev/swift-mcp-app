@@ -208,6 +208,14 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
    > (claude.ai 準拠・ホスト発 fullscreen)、(b) tool-calling デバッグパネル展開を `</>` アイコンへ、
    > (c) カードの + FAB 楽観追加後に畳みが再走しない(caldav 側 applyInlineFold 再走の取りこぼし)、
    > (d) その他カードクローム/ローディング/エラー表示の作法。
+   > **2026-07-17 追更新: inline モデルの再設計 + 場所/会議の設計を正典化** — UX 改善の実機 FB から
+   > 根本モデルを見直し。裁定: **inline = 境界プレビュー(すべて表示・動的畳み廃止/完了残骸は
+   > lifecycle スコープ+約5秒退場/削除ゴースト廃止)、fullscreen = 全件 + 作成(vevent は詳細
+   > フォーム・vtodo は既存 quick-add 維持)**。場所/会議/URL の3スロット意味モデル・実データ
+   > decode(proximity VALARM 等)・サンドボックス feasibility・タスク分解 C0〜C8/H-a,b は
+   > **docs/design/05-location-and-conference.md**(新設)が正典。fullscreen 遷移は iOS 18 zoom
+   > transition 実装済み(e1e0a2a)。fullscreen 中の FAB 右下固定は caldav bc5ebd1(要デプロイ)。
+   > 実行順: C0(inline 基本修理)→ C1+C2(read)→ C3-C5(作成)→ C6+C7(geocode+地図)。
 6. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。

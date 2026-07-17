@@ -1,0 +1,155 @@
+<!doctype html>
+<!--
+  ============================================================================
+  モック: todos カードの「新規作成」= 既存 quick-add(ドラフト行)維持 + 段階的開示
+  ============================================================================
+  - 出典(視覚言語・挙動): caldav/src/presentation/mcp/ui/todos-app.ts /
+    todos-entry.ts。v3 で確立した「FAB → 一覧末尾にドラフト行をインライン挿入 →
+    確定操作(行外タップ/Enter)で create-todo」の選択モデルをそのまま踏襲する
+    (ボトムシート案は v2 で fixed+vh 実機バグにより撤回済み — 経緯は todos-entry.ts)。
+  - vevent 側(create-event-fullscreen.html)との差別化: todo は「タイトルだけで
+    完結できる」(due 省略可)ため quick-add が成立する。event は start 必須
+    (create-event.ts InvalidStartError)なので quick-add が構造的に成立しない —
+    これが2カードの作成フローを分ける根拠。
+  - フィールド語彙: server.ts createTodoInputShape(title/notes/due/priority/
+    location/recurrence/calendarId/timeZone)。
+  - 左フレーム = ドラフト行(タイトルのみの最短経路)、右フレーム = 段階的開示
+    (「詳細」タップで期日/優先度/繰り返し/場所/メモを開いた状態)。
+  - event↔todo セグメントは置かない(todo からの追加は todo のみ — ユーザー裁定)。
+-->
+<html lang="ja">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mock: todos quick-add draft row</title>
+<style>
+  :root {
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --pri: #ff9500;
+    --add: #2f9e63;
+    --add-wake: rgba(47, 158, 99, 0.07);
+    --radius: var(--border-radius-md, 8px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--color-background-primary, #1c1c1e);
+      --fg: var(--color-text-primary, #f2f2f2);
+      --muted: var(--color-text-secondary, #98989e);
+      --accent: #0a84ff;
+      --pri: #ff9f0a;
+      --add: #55b884;
+      --add-wake: rgba(85, 184, 132, 0.1);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #888; display: flex; gap: 24px; justify-content: center;
+    padding: 24px 12px; font-family: -apple-system, "Hiragino Sans", sans-serif; flex-wrap: wrap;
+  }
+  .frame {
+    width: 390px; background: var(--bg); color: var(--fg); border-radius: 16px;
+    padding: 16px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .frame h2 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 0 0 8px; }
+  h1 { font-size: 17px; font-weight: 700; margin: 0 0 10px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: center; gap: 10px; padding: 10px 4px;
+    border-bottom: 1px solid var(--border); font-size: 15px;
+  }
+  .check {
+    width: 22px; height: 22px; border: 1.5px solid var(--muted); border-radius: 50%;
+    flex: none; background: none;
+  }
+  .meta { color: var(--muted); font-size: 12px; margin-left: auto; flex: none; }
+  /* ドラフト行: added の左端バー + wake(todos-app.ts の --add / --add-wake を写経) */
+  .draft {
+    box-shadow: inset 2px 0 0 var(--add);
+    background: linear-gradient(to right, var(--add-wake), transparent 55%);
+  }
+  .draft input {
+    flex: 1; border: none; background: none; color: var(--fg); font-size: 15px; outline: none;
+  }
+  .draft input::placeholder { color: var(--muted); }
+  .detail-toggle {
+    border: none; background: none; color: var(--accent); font-size: 13px; flex: none; padding: 4px;
+  }
+  /* 段階的開示パネル(ドラフト行の直下・インライン。fixed は使わない — v2 撤回の経緯) */
+  .disclosure {
+    background: var(--surface); border-radius: var(--radius); margin: 6px 0 2px; overflow: hidden;
+  }
+  .drow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 14px; }
+  .drow + .drow { border-top: 1px solid var(--border); }
+  .drow label { flex: 1; }
+  .drow select, .drow input[type="datetime-local"] {
+    border: none; background: none; color: var(--accent); font-size: 14px; text-align: right;
+  }
+  .drow input[type="text"], .drow textarea {
+    flex: 1; border: none; background: none; color: var(--fg); font-size: 14px; outline: none;
+  }
+  .drow textarea { resize: none; min-height: 40px; }
+  /* FAB(フロー配置 .fab-row — todos-app.ts v2.2 item4 の裁定に合わせ fixed にしない) */
+  .fab-row { display: flex; justify-content: flex-end; padding-top: 12px; }
+  .fab {
+    width: 44px; height: 44px; border-radius: 50%; border: none; background: var(--accent);
+    color: #fff; font-size: 24px; line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+</style>
+<body>
+  <!-- 状態1: FAB タップ直後 — タイトルだけの最短経路(quick-add) -->
+  <div class="frame">
+    <h2>状態1: quick-add(タイトルのみ・最短経路)</h2>
+    <h1>タスク</h1>
+    <ul>
+      <li><button class="check"></button>牛乳を買う<span class="meta">今日</span></li>
+      <li><button class="check"></button>レポート提出<span class="meta">7/20 ⚑中</span></li>
+      <li class="draft">
+        <button class="check"></button>
+        <input type="text" placeholder="新規リマインダー" autofocus />
+        <button class="detail-toggle">詳細</button><!-- タップで状態2へ(段階的開示) -->
+      </li>
+    </ul>
+    <div class="fab-row"><button class="fab">+</button></div>
+  </div>
+
+  <!-- 状態2: 「詳細」開示 — createTodoInputShape の全フィールド -->
+  <div class="frame">
+    <h2>状態2: 「詳細」タップで段階的開示</h2>
+    <h1>タスク</h1>
+    <ul>
+      <li><button class="check"></button>牛乳を買う<span class="meta">今日</span></li>
+      <li><button class="check"></button>レポート提出<span class="meta">7/20 ⚑中</span></li>
+      <li class="draft">
+        <button class="check"></button>
+        <input type="text" value="教科書を注文する" />
+        <button class="detail-toggle">閉じる</button>
+      </li>
+    </ul>
+    <div class="disclosure">
+      <div class="drow">
+        <label>期日</label><!-- → due(時刻付きはサーバーが VALARM 自動生成 — 2026-07-13 V6 裁定) -->
+        <input type="datetime-local" value="2026-07-18T09:00" />
+      </div>
+      <div class="drow">
+        <label>繰り返し</label><!-- → recurrence(due 必須) -->
+        <select><option>しない</option><option>毎日</option><option>毎週</option><option>毎月</option><option>毎年</option></select>
+      </div>
+      <div class="drow">
+        <label>優先順位</label><!-- → priority(1=高 5=中 9=低) -->
+        <select><option>なし</option><option>低</option><option selected>中</option><option>高</option></select>
+      </div>
+      <div class="drow">
+        <label>リスト</label><!-- → calendarId(既定 "tasks") -->
+        <select><option>タスク</option><option>リーディングリスト</option></select>
+      </div>
+      <div class="drow"><input type="text" placeholder="場所(テキストのみ)" /></div><!-- → location -->
+      <div class="drow"><textarea placeholder="メモ"></textarea></div><!-- → notes -->
+    </div>
+    <div class="fab-row"><button class="fab">+</button></div>
+  </div>
+</body>
+</html>

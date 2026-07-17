@@ -1,0 +1,127 @@
+<!doctype html>
+<!--
+  ============================================================================
+  モック: inline displayMode の根本モデル改訂 —「境界の効いたプレビュー」
+  (todos 版 + agenda 版。fullscreen が全件+作成を担う前提の inline)
+  ============================================================================
+  - 出典(視覚言語): caldav/src/presentation/mcp/ui/todos-app.ts の CSS トークン写経
+    (create-event-fullscreen.html と同一)。
+  - モデル: inline = 上位 N 件の未完了/直近 occurrence のプレビュー + フッタの残件数。
+    「すべて表示」ボタンと動的畳み(fold.ts の folded 分岐)は廃止し、全件閲覧は
+    右上 ⤢(requestDisplayMode fullscreen)に一本化する。computeInlineFit は
+    「N_MAX と maxHeight フィットの min を取る安全クランプ」として残す(純関数は無改造)。
+  - 完了残骸: 「カード lifecycle スコープ」で残す(2026-07-17 ユーザー裁定)。カード上で
+    完了した行は becoming-done(塗り丸+取消線+凍結リング)のままその場に残り、塗り丸の
+    再タップでカードが生きている間いつでも undo できる。溢れは「残骸を隠す/時限で消す」
+    ではなく「inline を上位 N 件プレビューに束ねる」で解く(残骸も N 窓内の1行として数える。
+    全件は ⤢ の fullscreen で)。
+    ボツ案(財産): (a) inline から完了残骸を排除 — 完了フィードバック/undo 導線が消え、
+    楽観ドクトリン(todos-entry.ts 2026-07-14 改訂)と矛盾。(b) 時限フェード(約5秒で退場)
+    — undo 猶予が時間で切れるのはユーザーの lifecycle 認識(「カードが生きている間は残る」)
+    と不一致。(c) 現状維持 — 無制限蓄積が maxHeight クリップの主因(欠陥)。
+  - 削除: 破線ゴースト行(todos-entry.ts renderGhostRow)は廃止(ユーザー FB「点々は不要」)。
+    自分の削除 = 行を高さ 0 へフェードアウトして即退場(持続プレースホルダなし)。
+    sync 由来の外部削除 = 同じフェードアウト + 既存 .status 行への一過性の一行通知
+    (「◯件が他のクライアントで削除されました」)。行単位の持続ゴーストはどちらにも出さない。
+  - + FAB は inline でも隠さない(2026-07-17 ユーザー実機 FB の裁定を維持)が、
+    タップの意味を「inline 内ドラフト行」から「fullscreen 昇格 + 作成サーフェス」へ変更。
+  - フッタ「他 n 件」はタップ可能で ⤢ と同じ fullscreen 昇格(導線は2つ、装置は1つ)。
+-->
+<html lang="ja">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mock: inline preview model (todos / agenda)</title>
+<style>
+  :root {
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --accent-soft: rgba(0, 122, 255, 0.14);
+    --pri: #ff9500;
+    --radius: var(--border-radius-md, 8px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--color-background-primary, #1c1c1e);
+      --fg: var(--color-text-primary, #f2f2f2);
+      --muted: var(--color-text-secondary, #98989e);
+      --accent: #0a84ff;
+      --accent-soft: rgba(10, 132, 255, 0.2);
+      --pri: #ff9f0a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #888; display: flex; gap: 24px; justify-content: center;
+    padding: 24px 12px; font-family: -apple-system, "Hiragino Sans", sans-serif; flex-wrap: wrap;
+  }
+  .frame {
+    width: 390px; background: var(--bg); color: var(--fg); border-radius: 16px;
+    padding: 14px 16px; align-self: flex-start;
+  }
+  .cap { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .head h1 { font-size: 17px; font-weight: 700; margin: 0; }
+  .expand { border: none; background: none; color: var(--muted); font-size: 16px; padding: 4px; }
+  h2 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 10px 0 2px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 15px; }
+  .check { width: 22px; height: 22px; border: 1.5px solid var(--muted); border-radius: 50%; flex: none; background: none; }
+  .meta { color: var(--muted); font-size: 12px; margin-left: auto; flex: none; }
+  .overdue .meta { color: #ff3b30; }
+  /* becoming-done(lifecycle スコープの完了残骸): 塗り丸 + 取消線 + 凍結リング(todos-app.ts の文法)。
+     塗り丸の再タップで undo(カードが生きている間有効)。 */
+  .done .check { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .done .title { text-decoration: line-through; color: var(--muted); }
+  .done { opacity: .75; }
+  /* フッタ: 残件数 = fullscreen への第2導線(「すべて表示」ボタンの代替・畳み機構なし) */
+  .more {
+    display: block; width: 100%; text-align: left; border: none; background: none;
+    color: var(--muted); font-size: 13px; padding: 10px 2px 2px;
+  }
+  .more span { color: var(--accent); }
+  .fab-row { display: flex; justify-content: flex-end; padding-top: 10px; }
+  .fab { width: 40px; height: 40px; border-radius: 50%; border: none; background: var(--accent); color: #fff; font-size: 22px; line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+  .time { font-size: 12px; color: var(--muted); width: 82px; flex: none; }
+</style>
+<body>
+  <!-- ===== todos inline: 上位 N=5 の未完了プレビュー + 直近完了1件の短時間残骸 ===== -->
+  <div class="frame">
+    <p class="cap">todos inline: 上位 N 件プレビュー(畳み/すべて表示なし・完了残骸は lifecycle スコープでその場に残る)</p>
+    <div class="head"><h1>タスク</h1><button class="expand" title="全画面(全件+作成)">⤢</button></div>
+    <ul>
+      <li class="overdue"><button class="check"></button><span class="title">家賃振込</span><span class="meta">昨日</span></li>
+      <!-- このカード上でタップ完了した行: 取消線のままその場に残る(カード lifecycle の間)。
+           塗り丸の再タップで undo。N 窓の1行として数え、蓄積で maxHeight を破らない -->
+      <li class="done"><button class="check"></button><span class="title">牛乳を買う</span><span class="meta">完了</span></li>
+      <li><button class="check"></button><span class="title">レポート提出</span><span class="meta">今日 ⚑高</span></li>
+      <li><button class="check"></button><span class="title">教科書を注文する</span><span class="meta">明日</span></li>
+      <li><button class="check"></button><span class="title">部屋の掃除</span><span class="meta">7/20</span></li>
+    </ul>
+    <button class="more">他 <span>7件の未完了</span> — 全画面で表示</button>
+    <div class="fab-row"><button class="fab" title="全画面で新規作成">+</button></div>
+  </div>
+
+  <!-- ===== agenda inline: 今日以降の直近 N occurrence プレビュー ===== -->
+  <div class="frame">
+    <p class="cap">agenda inline: 直近 N occurrence プレビュー(同モデル。完了概念なし=残骸問題なし)</p>
+    <div class="head"><h1>予定</h1><button class="expand" title="全画面(全件+作成)">⤢</button></div>
+    <h2>今日 7/17(金)</h2>
+    <ul>
+      <li><span class="dot"></span><span class="time">10:00–11:00</span><span class="title">ゼミ</span></li>
+      <li><span class="dot"></span><span class="time">15:00–15:30</span><span class="title">歯医者</span></li>
+    </ul>
+    <h2>明日 7/18(土)</h2>
+    <ul>
+      <li><span class="dot"></span><span class="time">終日</span><span class="title">レポート締切</span></li>
+      <li><span class="dot"></span><span class="time">13:00–14:00</span><span class="title">昼食 w/ 田中</span></li>
+    </ul>
+    <button class="more">他 <span>9件の予定</span>(〜7/24)— 全画面で表示</button>
+    <div class="fab-row"><button class="fab" title="全画面で新規作成(詳細フォーム)">+</button></div>
+  </div>
+</body>
+</html>

@@ -352,3 +352,18 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   未知→nil・sample_spec/欠損除外)、ChatViewModel(@Suite(.serialized)・modelPrice 有無でコスト計算)。
   swift test 103 件 green(3x 安定)。make app BUILD SUCCEEDED。
 - これで P3(T1〜T7)完了。実チャットでの ≈$ 表示目視は実機/シミュレータで確認。
+
+## 2026-07-17(続き・場所/会議の問題提起 → 設計 05 正典化)
+
+- ユーザー問題提起「vevent/vtodo どちらでも場所の入力体験が弱い」から4層の発見:
+  意味モデル(場所/会議/URL の3スロット)・read 未対応・入力体験・ホスト権限の天井。
+- 本番 D1 の生 ICS を直接採取して decode(自宅到着 proximity VALARM・岐阜大学
+  structured-location・paiza 招待の URL=message: + DESCRIPTION ビデオ通話ブロック)。
+  「CONFERENCE 新設が要る」見積りを撤回(Apple 自身が規約+走査で実現)。
+- サンドボックス制約の切り分け: カード全遮断(ContentRuleList)は事実だが、
+  geocode は Worker 側で可・地図確認は (a)静的サムネ/(b)宣言型網許可(H-a)の2案で留保。
+  「サンドボックス緩和=工数大」も撤回(数行。難しいのは権限モデルの設計判断)。
+- inline モデル再設計の裁定: プレビュー化(すべて表示廃止)・完了残骸 lifecycle+5秒退場・
+  削除ゴースト廃止・vevent 作成は fullscreen 詳細フォーム・vtodo は既存 quick-add 維持。
+- docs/design/05-location-and-conference.md 新設(D1 完了)。タスク C0〜C8 / H-a,b 登録。
+- 実装面: fullscreen zoom transition(host e1e0a2a)・fullscreen 固定 FAB(caldav bc5ebd1)。
