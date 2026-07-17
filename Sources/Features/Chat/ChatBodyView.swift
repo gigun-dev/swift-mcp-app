@@ -127,6 +127,19 @@ struct ChatBodyView: View {
                         turnView(turn, turnIndex: index)
                             .id(index)
                     }
+                    // 最下部センチネル(不可視・高さ 1)。ChatGPT 式の「↓ ボタン」出し分け用の
+                    // 「最下部にいるか」検出に使う。可視領域に入れば isAtBottom=true・外れれば false。
+                    // ↓ ボタンのタップ先(scrollTo("bottom-sentinel"))も兼ねる。
+                    // 【2026-07-17 ユーザー FB で位置を修正】初版は下の予約スペーサーの**後**に置いていたが、
+                    // それだと「最下部」の意味が「予約余白(空白)の底まで降りたか」になり、↓ を押すと
+                    // 実コンテンツを通り過ぎて空白の底までスクロールしてしまう。ユーザーの期待は
+                    // 「**その時点のコンテンツの一番下**が見える位置まで」なので、センチネルは実コンテンツの
+                    // 直後(スペーサーの前)に置く。これで出現判定も「最後のメッセージの底が見えているか」になる。
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom-sentinel")
+                        .onAppear { isAtBottom = true }
+                        .onDisappear { isAtBottom = false }
                     // 末尾の予約スペース(ChatGPT 式アンカーの前提条件)。scrollTo(.top) で「送信した
                     // user メッセージを画面最上部へ」動かすには、その下にビューポート分のスクロール余地が
                     // 必要になる(余地が無いと最下部で頭打ちになり user メッセージが中途半端な位置で止まる)。
@@ -135,17 +148,10 @@ struct ChatBodyView: View {
                     // 【v1 の割り切り(親へ報告)】会話完了後もこの余白は残り、最下部までスクロールすると
                     // 空白が見える。ChatGPT web も同様の余地を持つため許容するが、完了後に畳む最適化は
                     // 未実装(visibleHeight>0 のときだけ確保し、レイアウト確定前は 0)。
+                    // 【順序】センチネルより**後**に置く(センチネルの位置修正コメント参照)。
                     if visibleHeight > 0 && !chatVM.turns.isEmpty {
                         Color.clear.frame(height: visibleHeight * 0.85)
                     }
-                    // 最下部センチネル(不可視・高さ 1)。ChatGPT 式の「↓ ボタン」出し分け用の
-                    // 「最下部にいるか」検出に使う。可視領域に入れば isAtBottom=true・外れれば false。
-                    // ↓ ボタンのタップ先(scrollTo("bottom-sentinel"))も兼ねる。
-                    Color.clear
-                        .frame(height: 1)
-                        .id("bottom-sentinel")
-                        .onAppear { isAtBottom = true }
-                        .onDisappear { isAtBottom = false }
                 }
                 // 幅測定は .padding の前に background で行い、カード列の内側幅(パディング差引後)を得る。
                 // この幅を InlineCardView の containerWidth に渡し、caldav カードがこの幅にレイアウトする。
@@ -189,9 +195,11 @@ struct ChatBodyView: View {
                 InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
             }
             // ↓ フローティングボタン(ChatGPT の scroll-to-bottom 相当・タスク指示2)。最下部にいない
-            // ときだけ右下(composer の直上)に半透明で出し、タップで最下部センチネルへ寄せる。強制追従を
-            // 廃止した代わりに「読み終えたら手動で最新へ戻る」導線を1つ用意する(ユーザーの読み位置を奪わない)。
-            .overlay(alignment: .bottomTrailing) {
+            // ときだけ半透明で出し、タップで最下部センチネル(=その時点のコンテンツの一番下)へ寄せる。
+            // 強制追従を廃止した代わりに「読み終えたら手動で最新へ戻る」導線を1つ用意する(読み位置を奪わない)。
+            // 【2026-07-17 ユーザー FB で右下 → 左右中央へ】ChatGPT 本家は中央下。右下は inline カードの
+            // ⤢ や入力欄の送信ボタンと同じ側で導線が渋滞する、という点でも中央が良い。
+            .overlay(alignment: .bottom) {
                 if !isAtBottom {
                     Button {
                         withAnimation(.easeOut(duration: 0.2)) {
@@ -206,7 +214,6 @@ struct ChatBodyView: View {
                             .overlay(Circle().stroke(Color(uiColor: .separator)))
                     }
                     .buttonStyle(.plain)
-                    .padding(.trailing, 14)
                     .padding(.bottom, 10)
                     .transition(.opacity)
                     .accessibilityLabel("最新のメッセージへ")
