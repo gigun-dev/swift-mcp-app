@@ -216,6 +216,14 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
    > **docs/design/05-location-and-conference.md**(新設)が正典。fullscreen 遷移は iOS 18 zoom
    > transition 実装済み(e1e0a2a)。fullscreen 中の FAB 右下固定は caldav bc5ebd1(要デプロイ)。
    > 実行順: C0(inline 基本修理)→ C1+C2(read)→ C3-C5(作成)→ C6+C7(geocode+地図)。
+   > **2026-07-17 追々更新: C0/C1/C2 + UX #5/#6 完了 ✅(3レーン並列)** — caldav: C0(9756fe8
+   > プレビュー化・残骸5秒退場・ゴースト廃止)/ C1(8c51ca5 read DTO: structuredLocation・
+   > proximityAlarm・conference + 実データフィクスチャ)/ C2(9e9b751 カード描画: 🎥参加・📍場所・
+   > 🔗参照 URL・📍到着時バッジ、location-view.ts 純関数)。host: prefersBorder + ダークモード
+   > (129b725・theme/styles を host-context 通知・最小6キー・spec バイト一致テスト)。
+   > **未デプロイ: caldav bc5ebd1〜9e9b751。次: デプロイ → 実機一括検証 → C3-C5(作成フォーム)。**
+   > 残課題: caldav カード側の styles トークン参照(ダーク完全対応)・agenda 詳細ページの
+   > conference/住所表示(C3/C4 で SheetDraft 拡張とセット)・StaticCardView の prefersBorder。
 6. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
    対比(路線C要素・プレゼンの主張になる)、または (b) caldav 以外の MCP サーバー接続デモで
    汎用性を示す。初版の P4(アジェンダ)はホスト経由なら agenda カードがそのまま動くため吸収。

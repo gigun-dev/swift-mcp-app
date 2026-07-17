@@ -367,3 +367,18 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   削除ゴースト廃止・vevent 作成は fullscreen 詳細フォーム・vtodo は既存 quick-add 維持。
 - docs/design/05-location-and-conference.md 新設(D1 完了)。タスク C0〜C8 / H-a,b 登録。
 - 実装面: fullscreen zoom transition(host e1e0a2a)・fullscreen 固定 FAB(caldav bc5ebd1)。
+
+## 2026-07-17(続き2・3レーン並列実装ラウンド)
+
+- 並列レーン構成(ファイル競合で分割): C0=caldav ui/、C1=caldav usecases/(ui 触るな指示)、
+  UX #5/#6=host。C2 は C0 と同 entry ファイルのため C0 着地後に直列起動。
+- C0(caldav 9756fe8): プレビュー化(INLINE_PREVIEW_MAX=5・computeInlineFit は安全クランプに
+  役割変更・履歴積層)、完了残骸5秒退場(exitTimers/retiredDoneIds 冪等)、削除ゴースト廃止。
+- C1(caldav 8c51ca5): structured-location.ts 新設(semantics 層・degrade 方針)。server.ts
+  無変更(スプレッド透過)。実データ3種フィクスチャ。
+- C2(caldav 9e9b751): location-view.ts(描画判断の純関数)。agenda meta 3スロット統一形・
+  todos 到着時バッジ。inline は会議優先の主要1つ。
+- host(129b725): prefersBorder(既定 true=退行ゼロ)+ ダークモード(HostThemeBuilder・
+  最小6キー・notifyThemeChanged 部分通知・overrideUserInterfaceStyle)。
+- C0 実装途中に API 証明書エラーで artisan が落ちた → SendMessage 再開で無傷続行(作業
+  ツリーはクリーンのまま)。C0 コミット時は C1 走行中ファイルを除外して選択ステージ。
