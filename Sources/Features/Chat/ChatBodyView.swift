@@ -64,6 +64,14 @@ struct ChatBodyView: View {
     /// 65% に置く。この値は 1 定数で完全に可逆(§4 可逆性・実機で調整予定 §6-5)。
     private static let inlineMaxHeightRatio: CGFloat = 0.65
 
+    /// ↓ ボタンを出すためのスクロールアップしきい値(px)。ビューポート下端より下にこの量以上の
+    /// コンテンツが隠れて初めてボタンを出す(ユーザー FB「出るのが早すぎる」への対処)。可視高の 0.4 倍
+    /// (端末非依存)を採り、下限 200 で小型端末でも実用的な遊びを残す。値は体感チューニング用に可逆
+    /// (小さいほど早く出る・0 にすると旧来の 1px 相当)。
+    private var scrollJumpThreshold: CGFloat {
+        max(200, visibleHeight * 0.4)
+    }
+
     // 入力欄のフォーカス。キーボードを明示的に閉じる(スクロール dismiss・送信時・タップ外し)ために持つ
     // (ユーザー指摘: TextField から focus を外してもキーボードが出っぱなしだった。@FocusState を
     //  介して inputFocused=false で resignFirstResponder 相当になる)。
@@ -127,19 +135,25 @@ struct ChatBodyView: View {
                         turnView(turn, turnIndex: index)
                             .id(index)
                     }
-                    // 最下部センチネル(不可視・高さ 1)。ChatGPT 式の「↓ ボタン」出し分け用の
-                    // 「最下部にいるか」検出に使う。可視領域に入れば isAtBottom=true・外れれば false。
-                    // ↓ ボタンのタップ先(scrollTo("bottom-sentinel"))も兼ねる。
-                    // 【2026-07-17 ユーザー FB で位置を修正】初版は下の予約スペーサーの**後**に置いていたが、
-                    // それだと「最下部」の意味が「予約余白(空白)の底まで降りたか」になり、↓ を押すと
-                    // 実コンテンツを通り過ぎて空白の底までスクロールしてしまう。ユーザーの期待は
-                    // 「**その時点のコンテンツの一番下**が見える位置まで」なので、センチネルは実コンテンツの
-                    // 直後(スペーサーの前)に置く。これで出現判定も「最後のメッセージの底が見えているか」になる。
+                    // 最下部センチネル(不可視・高さ 1)。↓ ボタンのタップ先(scrollTo("bottom-sentinel"))
+                    // 兼、「最下部からどれだけ離れているか」の距離測定点。実コンテンツの直後(スペーサーの前)に
+                    // 置くことで、距離 0 =「最後のメッセージの底が画面下端に来ている」を意味する。
+                    // 【2026-07-17 ユーザー FB「矢印が出るのが早すぎる」への対処 — 1px 可視判定 → しきい値距離へ】
+                    // 初版は onAppear/onDisappear の単純な可視判定で、センチネルが 1px でも外れた瞬間に
+                    // ボタンが出た(= 少しスクロールしただけで出る)。ChatGPT/iMessage/Slack のベスプラは
+                    // 「一定量スクロールアップして初めて出す」しきい値方式。ScrollView に名前付き座標空間を張り、
+                    // このセンチネルの maxY をその空間で測って「ビューポート下端からどれだけ下にあるか
+                    // (= まだ見えていないコンテンツ量)」を求め、しきい値超えでだけボタンを出す(iOS 17 で動く
+                    // 素直な手法。onScrollGeometryChange は iOS 18+ なので使わない)。
                     Color.clear
                         .frame(height: 1)
                         .id("bottom-sentinel")
-                        .onAppear { isAtBottom = true }
-                        .onDisappear { isAtBottom = false }
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BottomSentinelYKey.self,
+                                    value: geo.frame(in: .named("chatScroll")).maxY)
+                            })
                     // 末尾の予約スペース(ChatGPT 式アンカーの前提条件)。scrollTo(.top) で「送信した
                     // user メッセージを画面最上部へ」動かすには、その下にビューポート分のスクロール余地が
                     // 必要になる(余地が無いと最下部で頭打ちになり user メッセージが中途半端な位置で止まる)。
@@ -163,6 +177,10 @@ struct ChatBodyView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 14)
             }
+            // ↓ ボタンのしきい値判定用の座標空間(上の BottomSentinelYKey コメント参照)。センチネルの
+            // maxY をこの空間で測ると、スクロールに応じて値が動く(最下部で ≈ 可視高、上へスクロールすると
+            // それより大きくなる)ので、差分でビューポート下端からの距離が取れる。
+            .coordinateSpace(name: "chatScroll")
             // 可視領域(ビューポート)の高さを測る(P4-DM・H1)。ScrollView 自身の frame に付く background は
             // コンテンツ全高ではなくビューポート高になるので、ここで inline maxHeight の分母(可視高)が取れる。
             .background(
@@ -175,6 +193,16 @@ struct ChatBodyView: View {
             .scrollDismissesKeyboard(.interactively)
             .onPreferenceChange(ColumnWidthKey.self) { columnWidth = $0 }
             .onPreferenceChange(VisibleHeightKey.self) { visibleHeight = $0 }
+            // ↓ ボタンの出し分け(しきい値方式・ユーザー FB「出るのが早すぎる」)。センチネル maxY と
+            // 可視高の差 = ビューポート下端から下に隠れているコンテンツ量。これが scrollJumpThreshold を
+            // 超えたときだけ「最下部でない」= ボタンを出す。1画面弱スクロールしないと出ないので、最下部
+            // 付近の微小スクロールでチラつかない(ChatGPT 等の体感に合わせる)。visibleHeight 未確定(0)や
+            // 差が負(レイアウト過渡)のときは最下部扱いにしてボタンを出さない(誤出現を避ける安全側)。
+            .onPreferenceChange(BottomSentinelYKey.self) { sentinelMaxY in
+                guard visibleHeight > 0 else { isAtBottom = true; return }
+                let hiddenBelow = sentinelMaxY - visibleHeight
+                isAtBottom = hiddenBelow <= scrollJumpThreshold
+            }
             // 【ChatGPT 式スクロールアンカー(ユーザー実機 FB 2026-07-17・添付スクショの挙動)】
             // 旧実装は「ストリーミング中ずっと最下部へ強制追従(turns.count と末尾 text 双方を監視して
             // scrollToBottom)」だった。これを ChatGPT のように「送信したユーザーメッセージが画面**最上部**に
@@ -751,6 +779,16 @@ private struct VisibleHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// 最下部センチネルの maxY を "chatScroll" 座標空間で吸い上げる鍵(↓ ボタンのしきい値判定・上記コメント)。
+/// スクロール位置に応じて動く値なので、幅/可視高のような「最大値 reduce」ではなく最後の値をそのまま採る
+/// (センチネルは1個だけなので nextValue が実質そのまま最新値になる)。
+private struct BottomSentinelYKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
