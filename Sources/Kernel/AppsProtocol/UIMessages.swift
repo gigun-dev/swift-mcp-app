@@ -37,6 +37,27 @@ public enum UIDisplayMode: String, Codable, Hashable, Sendable {
     case pip
 }
 
+/// hostContext.styles.variables の CSS 変数キー名(#5 ダークモード)。
+///
+/// spec.types.ts:31 `McpUiStyleVariableKey` は 70 個超の CSS 変数キーの列挙だが、v1 は
+/// 「iOS システムカラーから素直に導出できる最小セット」だけを提供する(下の HostThemeBuilder で
+/// UIColor.systemBackground 等から値を作る)。**キー名は spec の文字列にバイト一致させる**
+/// (勝手な命名をしない — カード側 CSS が `var(--color-text-primary)` 等でこの名前を参照するため、
+/// 1文字でもズレると効かない)。ここに定数として集約し、Kernel のテストで綴りを固定する。
+///
+/// 部分提供の合法性(spec.types.ts:33-40 McpUiStyles のコメント):
+///   「Individual style keys are optional - hosts may provide any subset of these values.」
+/// = ホストは任意の部分集合を提供してよい。よって最小6キーだけ載せても spec 準拠。残りのキー
+/// (font/radius/shadow 系や info/danger/success 等の意味色)はカード側が自前既定にフォールバックする。
+public enum UIStyleVariableKey {
+    public static let colorBackgroundPrimary = "--color-background-primary"
+    public static let colorBackgroundSecondary = "--color-background-secondary"
+    public static let colorTextPrimary = "--color-text-primary"
+    public static let colorTextSecondary = "--color-text-secondary"
+    public static let colorBorderPrimary = "--color-border-primary"
+    public static let colorRingPrimary = "--color-ring-primary"
+}
+
 /// コンテナ寸法。spec.types.ts:362 の union 型
 /// `({height}|{maxHeight?}) & ({width}|{maxWidth?})` を、4フィールドすべて optional の
 /// フラットな構造体で表す(union を Swift の直和で厳密再現するとエンコードが煩雑になり、
@@ -57,24 +78,41 @@ public struct ContainerDimensions: Codable, Hashable, Sendable {
     }
 }
 
-/// hostContext(設計 §3-2 の最小集合: theme / locale / displayMode /
-/// containerDimensions / availableDisplayModes のみ)。spec.types.ts:340 McpUiHostContext。
+/// テーマ用の CSS 変数群。spec.types.ts:210-217 McpUiHostStyles
+/// (`{ variables?: McpUiStyles; css?: McpUiHostCss }`)の最小写経。
 ///
-/// styles.variables(テーマ CSS 変数)・toolInfo・safeAreaInsets・deviceCapabilities などは
-/// P3 の堅牢化に回す(設計 §4 の displayMode/permissions と同じ扱い。省略はプロトコル上合法 —
+/// v1 は `variables`(CSS 変数の辞書)だけを持つ。`css`(@font-face 等の CSS ブロック注入)は
+/// フォント配信をしないので省略(省略は spec 上合法・McpUiHostStyles の各フィールドは optional)。
+/// variables のキーは `UIStyleVariableKey` の spec 準拠文字列、値は CSS 値文字列(色なら
+/// `rgba(...)` など)。McpUiStyles = `Record<McpUiStyleVariableKey, string | undefined>` に対応する。
+public struct HostStyles: Codable, Hashable, Sendable {
+    public let variables: [String: String]?
+
+    public init(variables: [String: String]? = nil) {
+        self.variables = variables
+    }
+}
+
+/// hostContext(設計 §3-2 の最小集合 + #5 で theme/styles を追加)。spec.types.ts:340 McpUiHostContext。
+///
+/// #5 以前は theme を常に .light 固定・styles 未提供だった。#5 でホストの実 colorScheme を theme に載せ、
+/// styles.variables に iOS システムカラー由来の最小トークン(HostThemeBuilder)を載せるようにした。
+/// toolInfo・safeAreaInsets・deviceCapabilities などは引き続き未提供(省略はプロトコル上合法 —
 /// McpUiHostContext は index signature で forward-compat を許す)。
 public struct HostContext: Codable, Hashable, Sendable {
     public let theme: UITheme?
+    public let styles: HostStyles?
     public let locale: String?
     public let displayMode: UIDisplayMode?
     public let availableDisplayModes: [UIDisplayMode]?
     public let containerDimensions: ContainerDimensions?
 
-    public init(theme: UITheme? = nil, locale: String? = nil,
+    public init(theme: UITheme? = nil, styles: HostStyles? = nil, locale: String? = nil,
                 displayMode: UIDisplayMode? = nil,
                 availableDisplayModes: [UIDisplayMode]? = nil,
                 containerDimensions: ContainerDimensions? = nil) {
         self.theme = theme
+        self.styles = styles
         self.locale = locale
         self.displayMode = displayMode
         self.availableDisplayModes = availableDisplayModes

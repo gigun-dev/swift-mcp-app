@@ -74,6 +74,15 @@ public actor AppsBridgeSession {
     private var containerWidth: Double
     private let maxHeight: Double
 
+    // 現在のテーマとスタイルトークン(#5 ダークモード)。Session は状態を「持たない」設計だが、
+    // theme/styles は containerWidth と同じく「initialize 応答に載せる材料 + 変化時に
+    // host-context-changed で再通知する相関用の影」として保持する(単一の真実は Features 側の
+    // colorScheme。設計 04 の責務表に合わせ、Session はホストから受けた値を反映するだけ)。
+    // 既定は .light / styles 無し(従来挙動 = テーマ非提供と等価)。Features が init と
+    // notifyThemeChanged で実値を注入する。
+    private var currentTheme: UITheme
+    private var currentStyles: HostStyles?
+
     // size-changed の height を Features(AppCardView)へ流すコールバック。
     // actor から MainActor の @Observable を直接触らないための注入点(設計 §5)。
     private let onSizeChanged: @Sendable (Double) async -> Void
@@ -147,6 +156,10 @@ public actor AppsBridgeSession {
         hostInfo: Implementation = Implementation(name: "MCPHost", version: "0.1.0"),
         containerWidth: Double,
         maxHeight: Double = 600,
+        // #5: 初期テーマとスタイルトークン。Features(InlineCardHost)が build 時の colorScheme から
+        // 導出して渡す。既定は従来挙動(theme=.light・styles 無し)で、渡さない呼び出し(スパイク/テスト)を壊さない。
+        theme: UITheme = .light,
+        styles: HostStyles? = nil,
         onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in },
         // 既定 nil = fullscreen を広告しない・request-display-mode は拒否(H4-F)。本番は Features が注入する。
         onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil,
@@ -158,6 +171,8 @@ public actor AppsBridgeSession {
         self.hostInfo = hostInfo
         self.containerWidth = containerWidth
         self.maxHeight = maxHeight
+        self.currentTheme = theme
+        self.currentStyles = styles
         self.onSizeChanged = onSizeChanged
         self.onDisplayModeRequested = onDisplayModeRequested
         self.onCardCapabilities = onCardCapabilities
@@ -243,6 +258,28 @@ public actor AppsBridgeSession {
         await deliver(notification: JSONRPCNotification(
             method: AppsMethod.hostContextChanged, params: try? JSONValue(encoding: patch)))
         logger.notice("host-context-changed 送信(ホスト起点) mode=\(String(describing: mode))")
+    }
+
+    /// ホストの外観(colorScheme)変更を View へ伝える(#5 ダークモード・apps.mdx:822-882)。
+    /// theme と styles(部分更新)だけを載せた host-context-changed を送る。setContainerWidth と同じく、
+    /// ready 前は「initialize で返す値」を更新するだけで送らない(MUST NOT の機械的遵守・apps.mdx:485)。
+    ///
+    /// 【なぜ Features から値を受けるのか】theme/styles の導出は UIColor(UIKit)や SwiftUI colorScheme に
+    /// 依存し、Services/actor には持ち込めない。Session は「受けた値を反映するだけ」に留め、導出は
+    /// Features(InlineCardHost + HostThemeBuilder)に置く(CLAUDE.md のレイヤー方針・設計 04 責務表)。
+    public func notifyThemeChanged(theme: UITheme, styles: HostStyles?) async {
+        // 記憶を先に更新(ready 前でも、後続の initialize が最新値で応答できるように)。
+        currentTheme = theme
+        currentStyles = styles
+        guard state == .ready else {
+            logger.notice("notifyThemeChanged: ready 前なので initialize 値のみ更新 theme=\(theme.rawValue)")
+            return
+        }
+        // 部分更新(spec: params は「変わったフィールドだけ」の Partial context)。theme と styles だけ載せる。
+        let patch = HostContext(theme: theme, styles: styles)
+        await deliver(notification: JSONRPCNotification(
+            method: AppsMethod.hostContextChanged, params: try? JSONValue(encoding: patch)))
+        logger.notice("host-context-changed 送信(theme 変更) theme=\(theme.rawValue)")
     }
 
     // MARK: - 片付け(設計 §4/§5)
@@ -393,8 +430,11 @@ public actor AppsBridgeSession {
         // 無いホスト構成では [inline] だけを広告し、「押すと必ず拒否される死にボタン」を排除する。
         // pip は見送り(設計 04 §4 ボツ案 — ユースケースが薄く、host-context-changed の寸法契約も未整理)。
         let availableModes: [UIDisplayMode] = onDisplayModeRequested != nil ? [.inline, .fullscreen] : [.inline]
+        // #5: theme/styles はホスト(Features)が build 時の colorScheme から導出し init で注入した値。
+        // 以後の外観変更は notifyThemeChanged が host-context-changed で追送する(apps.mdx:822-882)。
         let hostContext = HostContext(
-            theme: .light,
+            theme: currentTheme,
+            styles: currentStyles,
             locale: "ja-JP",
             displayMode: currentDisplayMode,
             availableDisplayModes: availableModes,

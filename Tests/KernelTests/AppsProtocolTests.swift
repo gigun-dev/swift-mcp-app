@@ -104,6 +104,62 @@ func initializeRoundTrip() throws {
     #expect(try roundTrip(result) == result)
 }
 
+// MARK: - #5 テーマ / スタイル(host-context の theme / styles)
+
+@Test("HostContext は theme と styles.variables を round-trip する")
+func hostContextThemeStylesRoundTrip() throws {
+    let ctx = HostContext(
+        theme: .dark,
+        styles: HostStyles(variables: [
+            UIStyleVariableKey.colorBackgroundPrimary: "rgba(0, 0, 0, 1.000)",
+            UIStyleVariableKey.colorTextPrimary: "rgba(255, 255, 255, 1.000)",
+        ]),
+        displayMode: .inline)
+    let back = try roundTrip(ctx)
+    #expect(back == ctx)
+    #expect(back.theme == .dark)
+    #expect(back.styles?.variables?[UIStyleVariableKey.colorBackgroundPrimary] == "rgba(0, 0, 0, 1.000)")
+}
+
+@Test("HostContext の部分更新は載せないフィールドを JSON から省く(spec の Partial context)")
+func hostContextPartialOmitsNilFields() throws {
+    // notifyThemeChanged が送る patch 相当: theme と styles だけ。
+    let patch = HostContext(theme: .dark, styles: HostStyles(variables: ["--color-text-primary": "rgba(1, 2, 3, 1.000)"]))
+    let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(patch)) as? [String: Any]
+    #expect(json?["theme"] as? String == "dark")
+    // displayMode / containerDimensions / locale / availableDisplayModes は nil なので書き出さない。
+    #expect(json?["displayMode"] == nil)
+    #expect(json?["containerDimensions"] == nil)
+    #expect(json?["locale"] == nil)
+    #expect(json?["availableDisplayModes"] == nil)
+}
+
+@Test("UIStyleVariableKey の綴りは spec の McpUiStyleVariableKey にバイト一致する")
+func styleVariableKeySpelling() {
+    // spec.types.ts:31 McpUiStyleVariableKey の該当キーと1文字も違わないこと(カード CSS が参照する)。
+    #expect(UIStyleVariableKey.colorBackgroundPrimary == "--color-background-primary")
+    #expect(UIStyleVariableKey.colorBackgroundSecondary == "--color-background-secondary")
+    #expect(UIStyleVariableKey.colorTextPrimary == "--color-text-primary")
+    #expect(UIStyleVariableKey.colorTextSecondary == "--color-text-secondary")
+    #expect(UIStyleVariableKey.colorBorderPrimary == "--color-border-primary")
+    #expect(UIStyleVariableKey.colorRingPrimary == "--color-ring-primary")
+}
+
+// MARK: - #6 prefersBorder(resources/read の _meta.ui からの読み取り)
+
+@Test("prefersBorder は _meta.ui から三値(true/false/未指定)で読める")
+func prefersBorderReadFromUiMeta() throws {
+    // AppsServerProxy.fetchAppHTML は content-level _meta の "ui" を JSONValue で持ち帰る。
+    // InlineCardHost はそこから ["prefersBorder"]?.boolValue を読む(spec.types.ts:590)。
+    let uiTrue = try decode(JSONValue.self, #"{"resourceUri":"ui://x","prefersBorder":true}"#)
+    #expect(uiTrue["prefersBorder"]?.boolValue == true)
+    let uiFalse = try decode(JSONValue.self, #"{"prefersBorder":false}"#)
+    #expect(uiFalse["prefersBorder"]?.boolValue == false)
+    // 未指定 → nil(= ホスト既定「枠+背景あり」に倒す)。
+    let uiOmitted = try decode(JSONValue.self, #"{"resourceUri":"ui://x"}"#)
+    #expect(uiOmitted["prefersBorder"]?.boolValue == nil)
+}
+
 // MARK: - ロスレス素通し(設計 §3 の要求)
 
 @Test("tool-result の structuredContent 内の未知フィールドがロスレスに保存される")

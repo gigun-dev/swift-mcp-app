@@ -72,6 +72,18 @@ final class InlineCardHost: Identifiable {
     /// 初期値 false = 未 initialize / 非対応カードでは ⤢ を出さない(安全側)。
     private(set) var cardSupportsFullscreen: Bool = false
 
+    /// カード(リソース)が「ホストの枠・背景を付けてほしいか」の宣言(#6 prefersBorder・
+    /// spec.types.ts:590 McpUiResourceMeta.prefersBorder / apps.mdx:222-229)。resources/read 結果の
+    /// content-level `_meta.ui.prefersBorder` を build 時に読んで反映する。@Observable なので、
+    /// これを読む InlineCardView は変化で再評価され、枠/背景の出し分けが発火する。
+    ///
+    /// 三値(spec 準拠):
+    ///   - true  → ホストが枠+背景を描く(現行の見た目)
+    ///   - false → 枠+背景なしの素のカード
+    ///   - nil(未指定・初期値)→ **ホストが決める**。本ホストの既定は「枠+背景あり」= 現行の見た目に倒す
+    ///     (spec は既定を定めず「ホスト依存・明示推奨」とだけ言う。既定を現行維持にして退行ゼロにする)。
+    private(set) var prefersBorder: Bool?
+
     /// fullscreen 昇格の調停役(高々1枚・決定2b)。registry 経由で ChatBodyView 所有の
     /// FullscreenCoordinator が注入される。weak: coordinator は ChatBodyView(@State)が所有し、
     /// host はそれを参照するだけ(所有の輪を作らない)。名前が既存の AppCardWebCoordinator
@@ -121,6 +133,11 @@ final class InlineCardHost: Identifiable {
     private var inlineMaxHeight: CGFloat = 0
     private var containerWidth: CGFloat = 0
 
+    // 現在のホスト外観(#5)。build 時に InlineCardView から渡された colorScheme を保持し、
+    // ①initialize の theme/styles、②webView.overrideUserInterfaceStyle、③外観変更時の差分検出に使う。
+    // 初期 nil = build 前(未確定)。updateColorScheme が build 後の変更で更新する。
+    private var currentColorScheme: ColorScheme?
+
     /// カードを1度だけ構築する。2回目以降(スクロール往復での再 .task)は no-op(既存 webView を維持)。
     /// - Parameters:
     ///   - proxy: 接続共有の AppsServerProxy(fetchAppHTML と tools/call 素通しの両方を担う・設計 §4)。
@@ -129,18 +146,23 @@ final class InlineCardHost: Identifiable {
     ///     containerDimensions.width としてカードへ渡り、caldav カードがこの幅にレイアウトする。
     ///   - maxHeight: inline の実 maxHeight(可視高 × 0.65・H1)。containerDimensions.maxHeight として
     ///     広告され、size-changed のクランプ上限を兼ねる。
-    func buildIfNeeded(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat) {
+    func buildIfNeeded(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat, colorScheme: ColorScheme) {
         guard buildTask == nil else { return }  // 既に構築開始済み(= host は生存中)なら何もしない。
         // 寸法を保持(onSizeChanged クランプ・inline 復帰通知で使う)。build は非同期なのでここで確定させる。
         self.containerWidth = containerWidth
         self.inlineMaxHeight = maxHeight
-        buildTask = Task { await self.build(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight) }
+        self.currentColorScheme = colorScheme  // #5: initialize の theme/styles に載せる初期外観。
+        buildTask = Task { await self.build(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight, colorScheme: colorScheme) }
     }
 
-    private func build(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat) async {
+    private func build(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat, colorScheme: ColorScheme) async {
         do {
             // 1. HTML プリフェッチ(接続内キャッシュが効くので2枚目以降の同一 URI は resources/read を省く)。
-            let (html, _) = try await proxy.fetchAppHTML(uri: card.resourceUri)
+            //    uiMeta = content-level の _meta.ui(#6: prefersBorder はここに載る・AppsServerProxy.fetchAppHTML)。
+            let (html, uiMeta) = try await proxy.fetchAppHTML(uri: card.resourceUri)
+            // #6: カードの枠・背景の希望を反映(spec.types.ts:590 / apps.mdx:222-229)。欠落・型違いは nil
+            // (= ホスト既定「枠+背景あり」)に倒れ、現行の見た目を維持する。@Observable なので View が再評価される。
+            self.prefersBorder = uiMeta?["prefersBorder"]?.boolValue
 
             // 2. サンドボックス WKWebView 生成。**インラインは高さ追従なので scrollEnabled:false**
             //    (設計 §5・AppCardWebViewFactory の scrollEnabled 引数コメント)。内部スクロールを切り、
@@ -151,6 +173,10 @@ final class InlineCardHost: Identifiable {
             self.coordinator = coordinator
             let webView = await AppCardWebViewFactory.make(
                 transport: transport, html: html, coordinator: coordinator, scrollEnabled: false)
+            // #5: WKWebView 自体の外観をホストに合わせる。カード CSS が prefers-color-scheme を見る場合、
+            // overrideUserInterfaceStyle を明示すると環境ではなくこの値でメディアクエリが解決される
+            // (styles トークンを見ないカードでも、素の prefers-color-scheme だけでダーク化できる)。
+            webView.overrideUserInterfaceStyle = colorScheme == .dark ? .dark : .light
 
             // 3. セッション起動。onSizeChanged は高さを cardState へ流し込み、実 maxHeight(可視高×0.65・H1)で
             //    クランプしてチャットを食い潰さない(設計 04 §5 H1)。
@@ -160,6 +186,9 @@ final class InlineCardHost: Identifiable {
                 proxy: proxy,
                 containerWidth: Double(containerWidth),
                 maxHeight: Double(maxHeight),
+                // #5: build 時の外観から導出した theme/styles を initialize に載せる(HostThemeBuilder)。
+                theme: HostThemeBuilder.theme(for: colorScheme),
+                styles: HostThemeBuilder.styles(for: colorScheme),
                 onSizeChanged: { [weak self] height in
                     await MainActor.run {
                         guard let self else { return }
@@ -298,6 +327,23 @@ final class InlineCardHost: Identifiable {
         Task { await session?.notifyDisplayModeChanged(to: .inline, containerDimensions: dims) }
     }
 
+    // MARK: - テーマ(外観)変更(#5 ダークモード)
+
+    /// ホストの外観(colorScheme)が変わったらカードへ伝える(#5・apps.mdx:822-882)。
+    /// InlineCardView が @Environment(\.colorScheme) の変化(.onChange)を検知して呼ぶ。build 前(session 未生成)や
+    /// 同値のときは何もしない(冗長な host-context-changed を送らない)。
+    /// 手順: ①webView の overrideUserInterfaceStyle を更新(prefers-color-scheme 用)→ ②theme/styles を
+    /// 導出して session.notifyThemeChanged で host-context-changed を送る(styles トークン用)。
+    func updateColorScheme(_ scheme: ColorScheme) {
+        guard currentColorScheme != scheme else { return }  // 同値は無視(初回 build 時に確定済み)。
+        currentColorScheme = scheme
+        webView?.overrideUserInterfaceStyle = scheme == .dark ? .dark : .light
+        let theme = HostThemeBuilder.theme(for: scheme)
+        let styles = HostThemeBuilder.styles(for: scheme)
+        let session = self.session
+        Task { await session?.notifyThemeChanged(theme: theme, styles: styles) }
+    }
+
     // MARK: - スナップショット取得(設計 §5)
 
     /// size-changed 初回到達時に1度だけ outerHTML を取る(第一候補のタイミング)。
@@ -370,6 +416,9 @@ struct InlineCardView: View {
     // 別機構だが、既存の高さ状態型を作り替えない方針(ファイル冒頭 InlineCardHost.cardState 参照)。
     @ObservedObject private var cardState: AppCardState
 
+    // #5: ホストの現在外観。initialize に載せる初期 theme と、変化時の host-context-changed 追送に使う。
+    @Environment(\.colorScheme) private var colorScheme
+
     init(
         host: InlineCardHost,
         proxy: AppsServerProxy,
@@ -398,7 +447,12 @@ struct InlineCardView: View {
                 // 取得が走るので、それより前に設定しておく)。host は生存し続けるが closure は
                 // View 再生成のたびに新しくなりうるので、毎回入れ替える(identity は同じなので実害なし)。
                 host.onSnapshot = onSnapshot
-                host.buildIfNeeded(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight)
+                host.buildIfNeeded(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight, colorScheme: colorScheme)
+            }
+            // #5: ホスト外観の変化をカードへ追送する(ライト⇄ダーク切替・システム設定変更)。build 後の
+            // 変更のみが対象で、host 側が同値ガード・session 未生成ガードを持つので初回や build 前は no-op。
+            .onChange(of: colorScheme) { _, newScheme in
+                host.updateColorScheme(newScheme)
             }
         // onDisappear では teardown しない(設計 §4 の生存優先・ファイル冒頭の判断)。スクロールアウトは
         // 一時的な View 破棄にすぎず、host は registry が生かし続ける。teardown はチャット画面クローズ時に
@@ -436,13 +490,22 @@ struct InlineCardView: View {
             // AppCardView の updateUIView が走って webView の載せ替え(奪い合いガード込み)が起きる。
             // fullscreen 中はこの inline 側 AppCardView は webView を所有しない(sheet 側が持つ)ため
             // 空の枠が cardState.desiredHeight で残る(カードは sheet に居る・設計 04 §6)。
+            // #6 prefersBorder: カードが枠+背景を望むか。nil(未指定)= ホスト既定で「枠+背景あり」に倒す
+            // (現行の見た目を維持・退行ゼロ)。false のときだけ枠・背景・角丸クリップを外して素のカードにする。
+            let showBorder = host.prefersBorder ?? true
             AppCardView(webView: webView, role: .inline, activeDisplayMode: host.displayMode)
                 .frame(height: cardState.desiredHeight)  // size-changed 追従(設計 §5・fullscreen 中は停止)。
                 .frame(maxWidth: .infinity)
-                .background(Color(white: 0.98))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                // 角丸+枠(TodosCardSpike の見た目を踏襲)。
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
+                // #5 ダークモード: 枠・背景はシステム意味カラーにして外観に追従する(旧: Color(white:) 固定は
+                // ダークで白浮きする)。webView 自体は透過なのでカードの地色は styles トークン由来で入る。
+                .background(showBorder ? Color(uiColor: .secondarySystemBackground) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: showBorder ? 12 : 0))
+                // 角丸+枠(TodosCardSpike の見た目を踏襲・showBorder のときだけ描く)。
+                .overlay {
+                    if showBorder {
+                        RoundedRectangle(cornerRadius: 12).stroke(Color(uiColor: .separator))
+                    }
+                }
                 // 右上の汎用マキシマイズ ⤢(UX #1・fable #1・claude.ai 準拠で右上に控えめに置く)。
                 // 表示条件: カードが fullscreen を宣言していて(cardSupportsFullscreen)かつ現在 inline のときだけ
                 // (fullscreen 中は出さない)。inline 復帰時は @Observable 観測で自動的に再表示される。

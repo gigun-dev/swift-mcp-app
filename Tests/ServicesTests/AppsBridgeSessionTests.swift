@@ -72,13 +72,18 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         // UX #1: カード capability(fullscreen 対応)を Features へ流す注入点(既定は無視)。
         onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil,
         // UX #1: initialize で push する appCapabilities の生 JSON(fullscreen 宣言の有無をテストで切替える)。
-        appCapabilitiesJSON: String = "{}"
+        appCapabilitiesJSON: String = "{}",
+        // #5: 初期テーマ/スタイル(初期 hostContext に載る値を検証するため注入できるようにする)。
+        theme: UITheme = .light,
+        styles: HostStyles? = nil
     ) async -> AppsBridgeSession {
         let session = AppsBridgeSession(
             transport: transport,
             proxy: proxy ?? makeProxy(),
             containerWidth: 340,
             maxHeight: 600,
+            theme: theme,
+            styles: styles,
             onSizeChanged: onSizeChanged,
             onDisplayModeRequested: onDisplayModeRequested,
             onCardCapabilities: onCardCapabilities)
@@ -192,6 +197,51 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         #expect(notification.method == AppsMethod.hostContextChanged)
         #expect(notification.params?["displayMode"] == .string("fullscreen"))
         #expect(notification.params?["containerDimensions"]?["maxHeight"] == .int(600))
+
+        await session.close()
+    }
+
+    // MARK: - テーマ / スタイル(#5 ダークモード・apps.mdx:822-882)
+
+    @Test("initialize 応答の hostContext に注入した theme/styles が載る")
+    func initializeCarriesThemeAndStyles() async throws {
+        let transport = MockTransport()
+        let styles = HostStyles(variables: [
+            UIStyleVariableKey.colorBackgroundPrimary: "rgba(0, 0, 0, 1.000)",
+            UIStyleVariableKey.colorTextPrimary: "rgba(255, 255, 255, 1.000)",
+        ])
+        let session = await makeReadySession(transport: transport, theme: .dark, styles: styles)
+
+        // sentRawJSON の先頭 = initialize 応答(makeReadySession が最初に待つのがこれ)。
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self, from: Data(try #require(transport.sentRawJSON.first).utf8))
+        let result = try #require(response.result).decode(InitializeResult.self)
+        #expect(result.hostContext.theme == .dark)
+        #expect(result.hostContext.styles == styles)
+
+        await session.close()
+    }
+
+    @Test("notifyThemeChanged: ready なら theme/styles だけ載せた host-context-changed が1本出る")
+    func notifyThemeChangedSendsPartialContext() async throws {
+        let transport = MockTransport()
+        let session = await makeReadySession(transport: transport, theme: .light)
+
+        let beforeCount = transport.sentRawJSON.count
+        let dark = HostStyles(variables: [UIStyleVariableKey.colorBackgroundPrimary: "rgba(0, 0, 0, 1.000)"])
+        await session.notifyThemeChanged(theme: .dark, styles: dark)
+
+        let newMessages = transport.sentRawJSON[beforeCount...]
+        #expect(newMessages.count == 1)
+        let notification = try JSONDecoder().decode(JSONRPCNotification.self, from: Data(newMessages.first!.utf8))
+        #expect(notification.method == AppsMethod.hostContextChanged)
+        #expect(notification.params?["theme"] == .string("dark"))
+        // 部分更新: 変えていない displayMode/containerDimensions は載せない(spec の Partial context)。
+        #expect(notification.params?["displayMode"] == nil)
+        #expect(notification.params?["containerDimensions"] == nil)
+        // styles.variables のトークンがそのまま届く。
+        #expect(notification.params?["styles"]?["variables"]?[UIStyleVariableKey.colorBackgroundPrimary]
+            == .string("rgba(0, 0, 0, 1.000)"))
 
         await session.close()
     }
