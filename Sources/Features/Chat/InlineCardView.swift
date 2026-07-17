@@ -459,25 +459,40 @@ struct InlineCardView: View {
         // ChatBodyView が registry.teardownAll() でまとめて行う。
     }
 
-    /// 右上のマキシマイズ ⤢ ボタン(UX #1・fable #1)。claude.ai は MCP カード右上に ⤢ を置く。
-    /// 見た目は控えめ(小さい SF Symbol + 半透明の丸背景)。カードの角丸(cornerRadius 12)に馴染ませ、
-    /// 右上の余白側に軽くパディングしてカード内容(caldav の「完了」等)と重ならない位置に置く。
-    /// 表示条件: cardSupportsFullscreen && displayMode==.inline(fullscreen 中・非対応カードでは非表示)。
+    /// カード**外**・カード上に置く極薄のホストクローム行(⤢ のみ・右寄せ)。
+    ///
+    /// 【なぜオーバーレイをやめたか(設計 04 決定2・2026-07-17 追記)】旧実装はカード右上に
+    /// `.overlay(alignment: .topTrailing)` で ⤢ を重ねていたが、caldav の sticky ヘッダ「完了」
+    /// (todos-app.ts:1173)と実機で衝突し押せなくなった(ユーザー実機報告)。設計 04 は fullscreen 側の
+    /// 対称なボタン(⤡)について既に「カード右上へのオーバーレイはボツ、位置はカード外」と裁定済み
+    /// (04 §5 H4・2026-07-17 更新)。ホストはカードの内部レイアウト(ヘッダがどこにあるか)を知らない
+    /// (CLAUDE.md ビジョン2: AppsBridge は caldav 非依存)ため、「ホストクロームをカードのコンテンツ
+    /// 領域に重ねない」が任意のカードに対して安全な唯一の一般解。inline 側もこの原則を適用し、
+    /// ⤢ を**カード枠の外・カードの上**の行に出す(fullscreen の上端ストリップと対称の位置づけ)。
+    ///
+    /// 【ボツ案: オーバーレイのまま位置だけずらす】カードごとに sticky ヘッダの配置(高さ・左右)が
+    /// 違いうる(caldav は上端固定だが、他の任意の MCP App が同じ保証をする理由がない)ため、
+    /// 「ずらせば直る」は特定カードへの場当たり対応でしかなく構造的に解決しない。却下(財産として残す)。
+    ///
+    /// 表示条件: cardSupportsFullscreen && displayMode==.inline のときだけ行自体を出す
+    /// (非対応カードでは行が無い=余白を増やさない・押しても拒否される死にボタンにしない)。
     @ViewBuilder
-    private var maximizeButton: some View {
+    private var chromeRow: some View {
         if host.cardSupportsFullscreen && host.displayMode == .inline {
-            Button {
-                host.requestFullscreenFromHost()
-            } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(6)
-                    .background(.ultraThinMaterial, in: Circle())
+            HStack {
+                Spacer()
+                Button {
+                    host.requestFullscreenFromHost()
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("最大化")
             }
-            .buttonStyle(.plain)
-            .padding(8)  // カード角から少し離し、内容と重ならない右上の余白側へ置く。
-            .accessibilityLabel("最大化")
+            .frame(height: 24)  // 極薄・背景なし(カード枠の外なので同居に制約は無いが、控えめに保つ)。
+            .padding(.trailing, 4)
         }
     }
 
@@ -493,23 +508,25 @@ struct InlineCardView: View {
             // #6 prefersBorder: カードが枠+背景を望むか。nil(未指定)= ホスト既定で「枠+背景あり」に倒す
             // (現行の見た目を維持・退行ゼロ)。false のときだけ枠・背景・角丸クリップを外して素のカードにする。
             let showBorder = host.prefersBorder ?? true
-            AppCardView(webView: webView, role: .inline, activeDisplayMode: host.displayMode)
-                .frame(height: cardState.desiredHeight)  // size-changed 追従(設計 §5・fullscreen 中は停止)。
-                .frame(maxWidth: .infinity)
-                // #5 ダークモード: 枠・背景はシステム意味カラーにして外観に追従する(旧: Color(white:) 固定は
-                // ダークで白浮きする)。webView 自体は透過なのでカードの地色は styles トークン由来で入る。
-                .background(showBorder ? Color(uiColor: .secondarySystemBackground) : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: showBorder ? 12 : 0))
-                // 角丸+枠(TodosCardSpike の見た目を踏襲・showBorder のときだけ描く)。
-                .overlay {
-                    if showBorder {
-                        RoundedRectangle(cornerRadius: 12).stroke(Color(uiColor: .separator))
+            // 【カード外クローム行(2026-07-17 追記)】⤢ はカードの上・カード枠の**外**に置く(chromeRow
+            // 冒頭コメント参照)。VStack で縦積みするだけで、カード自体のレイアウト(background/clipShape/
+            // overlay の枠線)には一切手を入れない — オーバーレイ撤去に伴う変更はここだけに閉じる。
+            VStack(spacing: 4) {
+                chromeRow
+                AppCardView(webView: webView, role: .inline, activeDisplayMode: host.displayMode)
+                    .frame(height: cardState.desiredHeight)  // size-changed 追従(設計 §5・fullscreen 中は停止)。
+                    .frame(maxWidth: .infinity)
+                    // #5 ダークモード: 枠・背景はシステム意味カラーにして外観に追従する(旧: Color(white:) 固定は
+                    // ダークで白浮きする)。webView 自体は透過なのでカードの地色は styles トークン由来で入る。
+                    .background(showBorder ? Color(uiColor: .secondarySystemBackground) : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: showBorder ? 12 : 0))
+                    // 角丸+枠(TodosCardSpike の見た目を踏襲・showBorder のときだけ描く)。
+                    .overlay {
+                        if showBorder {
+                            RoundedRectangle(cornerRadius: 12).stroke(Color(uiColor: .separator))
+                        }
                     }
-                }
-                // 右上の汎用マキシマイズ ⤢(UX #1・fable #1・claude.ai 準拠で右上に控えめに置く)。
-                // 表示条件: カードが fullscreen を宣言していて(cardSupportsFullscreen)かつ現在 inline のときだけ
-                // (fullscreen 中は出さない)。inline 復帰時は @Observable 観測で自動的に再表示される。
-                .overlay(alignment: .topTrailing) { maximizeButton }
+            }
         } else if host.buildFailed {
             // 【fable #3: 構築失敗のエラー表示】旧実装はこの分岐が無く、失敗時も下のローディングに
             // 落ちてスピナーが回り続けていた(ファイル冒頭 buildFailed 宣言のコメント参照)。

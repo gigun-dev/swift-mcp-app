@@ -349,6 +349,14 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   > fullScreenCover の遷移差し替えが公開 API 上不可** → ChatBodyView の `zoomSource`/`zoomTransition` 拡張が
   > `#available(iOS 18, *)` で no-op に落ち、既定カバー遷移にフォールバック(遷移だけの差・機能同一・§4 可逆)。
   > 実装: `Sources/Features/Chat/ChatBodyView.swift`(`@Namespace cardZoom` + source/destination + 拡張)。
+  > **2026-07-17 追記(inline ⤢ もオーバーレイ廃止 → カード外クローム行へ):** 実機で inline カード右上の
+  > ⤢ オーバーレイが caldav sticky ヘッダの「完了」(todos-app.ts:1173)と衝突し押せなくなったと報告。
+  > 上記 fullscreen 側の裁定(「カード右上へのオーバーレイはボツ、ホストクロームはカードに重ねない」)を
+  > inline にも適用し、`InlineCardView` の `.overlay(alignment: .topTrailing)` を撤去、代わりに
+  > カード枠の**外・上**に高さ24pt の極薄クローム行(右寄せ ⤢ のみ・背景なし)を VStack で縦積みした。
+  > 表示条件は変更なし(`cardSupportsFullscreen && displayMode == .inline` のときだけ行自体を出す・
+  > 非対応カードは余白すら増やさない)。実装: `Sources/Features/Chat/InlineCardView.swift` の
+  > `chromeRow`(旧 `maximizeButton`)。
   - **InlineCardHost に `displayMode`(@Observable)を新設** = 単一の真実(§3 責務表)。Session は状態を持たない。
   - **AppCardView を container 再アダプト方式へ全面変更**(inline-only 経路含む):makeUIView は空の
     container UIView を返し、updateUIView が **displayMode ガード付きで** adopt する(inline 側 container は
