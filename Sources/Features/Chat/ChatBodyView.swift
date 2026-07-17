@@ -197,6 +197,9 @@ struct ChatBodyView: View {
                         // host を先に束ねる: zoom source の id(host.id)を InlineCardView 本体と
                         // .matchedTransitionSource の両方に使うため(call site で参照が要る)。
                         let host = cardRegistry.host(for: "\(turnIndex)-\(cardIndex)", coordinator: fullscreenCoordinator)
+                        // カード内操作(done/undo 等の tools/call)の触覚を配線(ユーザー要望 2026-07-17)。
+                        // body 評価のたびに同じ closure を再代入するが冪等・軽量(ChatHaptics.cardAction 参照)。
+                        let _ = { host.onCardToolCall = { haptics.cardAction() } }()
                         InlineCardView(
                             host: host,
                             proxy: proxy,

@@ -195,6 +195,13 @@ enum AppCardWebViewFactory {
         // 根本原因を対症療法で隠すだけ。focus zoom の正しい対処はカード側で入力欄を 16px 以上に
         // すること(caldav の .d-notes が 13px 等 — docs/caldav-feedback.md に起票)。
         // ダブルタップ認識器の無効化はピンチズームを残すので、この方針と両立する。
+        // 【2026-07-17 再改訂(ユーザー実機 FB で上記ボツ判断を上書き)】: 実機で「ダブルタップ判定されて
+        // 拡大される」事故が依然発生(認識器の無効化は iOS バージョン依存で取りこぼす)。ユーザー裁定
+        // 「拡大いらない」— カードは UI アプリでありドキュメントではない(ネイティブアプリの画面は
+        // ズームしない)ので、ズーム自体を 1:1 にロックする。旧ボツ理由 (1) ピンチ a11y は「テキストが
+        // 小さすぎない UI を作る」(カード側の責務)で担保する方針に変更。(2) focus zoom 抑止の副作用は
+        // むしろ望ましい(16px 未満入力での勝手なズームインも UI アプリでは事故)。
+        lockZoom(of: webView.scrollView)
         disableDoubleTapGestures(in: webView.scrollView)
         // 背景を透過にしてカードの角丸/枠と馴染ませる(prefersBorder は P3)。
         webView.isOpaque = false
@@ -245,12 +252,25 @@ enum AppCardWebViewFactory {
         // 静的カードは size-changed 追従が無い(ブリッジ無し)ので、maxHeight 内に収めて
         // **内部スクロールを許す**(StaticCardView 側でクランプ・高さの判断はそちらのコメント)。
         webView.scrollView.isScrollEnabled = true
+        lockZoom(of: webView.scrollView)  // ライブカード(make)と同じ 1:1 ロック(2026-07-17 再改訂)。
         disableDoubleTapGestures(in: webView.scrollView)
         webView.isOpaque = false
         webView.backgroundColor = .clear
         // baseURL: nil = opaque origin(ライブと同じ)。ブリッジ無しなので transport.attach はしない。
         webView.loadHTMLString(html, baseURL: nil)
         return webView
+    }
+
+    /// ズームを 1:1 に固定する(2026-07-17 再改訂・ユーザー裁定「拡大いらない」)。
+    /// カードは UI アプリでありドキュメントではない — ネイティブアプリの画面がピンチで拡大しないのと
+    /// 同じ理屈で、ダブルタップズーム・ピンチズーム・focus zoom を根ごと封じる。
+    /// (旧ボツ判断「a11y のためピンチは残す」は、実機でダブルタップ拡大の取りこぼしが出たため上書き。
+    ///  経緯は make 内のコメント参照。)
+    private static func lockZoom(of scrollView: UIScrollView) {
+        scrollView.minimumZoomScale = 1
+        scrollView.maximumZoomScale = 1
+        scrollView.bouncesZoom = false
+        scrollView.pinchGestureRecognizer?.isEnabled = false
     }
 
     /// WKWebView(scrollView)に付いている「2回タップ要求」のジェスチャ認識器を無効化する。

@@ -95,6 +95,12 @@ final class InlineCardHost: Identifiable {
         self.fullscreenCoordinator = fullscreenCoordinator
     }
 
+    /// カード発 tools/call(=カード内のユーザー操作: done/undo・追加・削除等)の触覚フィードバック
+    /// (ユーザー要望 2026-07-17)。ChatBodyView が haptics コントローラの closure を差し込む。
+    /// カード内タップ自体はホストから不可視だが、操作は必ず bridge の tools/call 素通しを通るので、
+    /// Session の onCardToolCall フック経由で任意の MCP アプリに中立に効く(ビジョン2)。nil = 無効。
+    var onCardToolCall: (() -> Void)?
+
     /// `.sheet(item:)` 用の Identifiable 準拠。インスタンス同一性で識別する(host は registry で
     /// cardID キーに1つ、生存中は同一インスタンス)。
     nonisolated var id: ObjectIdentifier { ObjectIdentifier(self) }
@@ -239,6 +245,11 @@ final class InlineCardHost: Identifiable {
                 // @Observable の cardSupportsFullscreen に反映する。actor(Session)→ MainActor へ hop する。
                 onCardCapabilities: { [weak self] supports in
                     await MainActor.run { self?.cardSupportsFullscreen = supports }
+                },
+                // カード内操作(tools/call 素通し)の触覚(ユーザー要望 2026-07-17・host プロパティの
+                // onCardToolCall コメント参照)。actor(Session)→ MainActor へ hop して発火。
+                onCardToolCall: { [weak self] in
+                    await MainActor.run { self?.onCardToolCall?() }
                 })
             self.session = session
             await session.start()

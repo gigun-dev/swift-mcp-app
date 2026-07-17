@@ -99,6 +99,9 @@ public actor AppsBridgeSession {
     // Features が ⤢ の表示可否に使う。パース失敗・欠落は false(=⤢ を出さない)で安全側に倒す。
     private let onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)?
 
+    /// カード発 tools/call 素通しの開始フック(ハプティクス用・init コメント参照)。nil = 無効。
+    private let onCardToolCall: (@Sendable () async -> Void)?
+
     // request-display-mode を受けたとき、実際にどのモードへ遷移するかを決める注入点
     // (P4-DM・設計 04 §5 H3 + H4-F)。Features(H4)が sheet 器を持つかどうかを知っているのは
     // Features 側なので、Session 自身は「昇格してよいか」を判断しない。
@@ -164,7 +167,12 @@ public actor AppsBridgeSession {
         // 既定 nil = fullscreen を広告しない・request-display-mode は拒否(H4-F)。本番は Features が注入する。
         onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil,
         // 既定 nil = カード capability を Features へ通知しない(⤢ ボタン不要のホスト構成)。本番は Features が注入する。
-        onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil
+        onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil,
+        // カード発 tools/call(素通し)の開始フック(ユーザー要望 2026-07-17: カード内の done/undo 等の
+        // 操作にハプティクスを付ける)。カード内のタップ自体はホストから不可視だが、ユーザー操作は必ず
+        // tools/call 素通しとしてここを通るので、任意の MCP アプリに対して中立にフックできる(ビジョン2)。
+        // 既定 nil = 何もしない(スパイク/テストを壊さない)。
+        onCardToolCall: (@Sendable () async -> Void)? = nil
     ) {
         self.transport = transport
         self.proxy = proxy
@@ -176,6 +184,7 @@ public actor AppsBridgeSession {
         self.onSizeChanged = onSizeChanged
         self.onDisplayModeRequested = onDisplayModeRequested
         self.onCardCapabilities = onCardCapabilities
+        self.onCardToolCall = onCardToolCall
     }
 
     // MARK: - 起動 / 受信ループ
@@ -360,6 +369,13 @@ public actor AppsBridgeSession {
             // 受信ループが止まり、直後の size-changed が詰まる(実機 ~730ms)。Task 登録後は即 return し次メッセージへ。
             // [weak self]: 既存流儀(consumeTask)に合わせる。actor が Task を保持する構造で強参照でもリークしないが、
             // consumeTask と同じく弱参照で統一し「Session が Task を生かし続ける」誤読を避ける(自己参照の輪を作らない)。
+            // カード発 tools/call はユーザー操作(done/undo・追加等)の合図なのでハプティクスフックを叩く
+            // (2026-07-17 ユーザー要望)。resources/read はカードの内部都合(データ再取得)で操作ではない
+            // ため鳴らさない。応答待ちをしない fire-and-forget(触覚は「タップした瞬間」の確認であって
+            // 結果の成否ではない — 成否は楽観 UI とエラーバナーの担当)。
+            if method == "tools/call", let onCardToolCall {
+                Task { await onCardToolCall() }
+            }
             let key = UUID()
             let task = Task { [weak self] in
                 guard let self else { return }

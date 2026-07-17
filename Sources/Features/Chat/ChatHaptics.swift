@@ -66,6 +66,16 @@ final class ChatHapticsController {
         sendImpact.impactOccurred()
     }
 
+    /// カード内のユーザー操作(done/undo チェック・追加・削除等)で呼ぶ(ユーザー要望 2026-07-17)。
+    /// カードのタップ自体はホストから不可視だが、操作は必ず bridge の tools/call 素通しを通るため、
+    /// AppsBridgeSession.onCardToolCall → InlineCardHost.onCardToolCall 経由でここに届く
+    /// (任意の MCP アプリに中立に効く・ビジョン2)。send と同じ .light を共用する(チェックボックス系の
+    /// 標準的な感触。スロットルは不要 — 操作は人間のタップ律速で、streaming のような高頻度にならない)。
+    func cardAction() {
+        sendImpact.prepare()
+        sendImpact.impactOccurred()
+    }
+
     /// turn.toolSteps が変化したときに呼ぶ(ChatBodyView の `.onChange(of: turn.toolSteps)` の
     /// (oldValue, newValue) 版から配線する。SwiftUI が新旧を渡してくれるので、このコントローラ自身は
     /// 前回状態を保持する必要がない=状態を持たない薄いロジックのまま保てる)。
