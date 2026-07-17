@@ -73,6 +73,12 @@ struct ChatBodyView: View {
     // 1個を保持して generator を使い回す(prepare() の効果を活かすため・ChatHapticsController 冒頭コメント参照)。
     @State private var haptics = ChatHapticsController()
 
+    // 最下部にいるか(ChatGPT の ↓ フローティングボタンの出し分け・タスク指示2)。
+    // LazyVStack 末尾に置いた不可視センチネルの onAppear/onDisappear で切り替える(iOS 17 で動く素直な
+    // 「最下部検出」)。ボツ案: onScrollGeometryChange での offset 監視は iOS 18+ のため却下(iOS 17 優先)。
+    // 初期 true(空/1画面に収まるうちはボタンを出さない)。
+    @State private var isAtBottom: Bool = true
+
     var body: some View {
         VStack(spacing: 0) {
             messages
@@ -121,6 +127,25 @@ struct ChatBodyView: View {
                         turnView(turn, turnIndex: index)
                             .id(index)
                     }
+                    // 末尾の予約スペース(ChatGPT 式アンカーの前提条件)。scrollTo(.top) で「送信した
+                    // user メッセージを画面最上部へ」動かすには、その下にビューポート分のスクロール余地が
+                    // 必要になる(余地が無いと最下部で頭打ちになり user メッセージが中途半端な位置で止まる)。
+                    // AI の返事がまだ短いうちからでも user メッセージを天井まで運べるよう、可視高相当の
+                    // 余白を末尾に確保する。返事が伸びればこの余白は実コンテンツに置き換わっていく格好。
+                    // 【v1 の割り切り(親へ報告)】会話完了後もこの余白は残り、最下部までスクロールすると
+                    // 空白が見える。ChatGPT web も同様の余地を持つため許容するが、完了後に畳む最適化は
+                    // 未実装(visibleHeight>0 のときだけ確保し、レイアウト確定前は 0)。
+                    if visibleHeight > 0 && !chatVM.turns.isEmpty {
+                        Color.clear.frame(height: visibleHeight * 0.85)
+                    }
+                    // 最下部センチネル(不可視・高さ 1)。ChatGPT 式の「↓ ボタン」出し分け用の
+                    // 「最下部にいるか」検出に使う。可視領域に入れば isAtBottom=true・外れれば false。
+                    // ↓ ボタンのタップ先(scrollTo("bottom-sentinel"))も兼ねる。
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom-sentinel")
+                        .onAppear { isAtBottom = true }
+                        .onDisappear { isAtBottom = false }
                 }
                 // 幅測定は .padding の前に background で行い、カード列の内側幅(パディング差引後)を得る。
                 // この幅を InlineCardView の containerWidth に渡し、caldav カードがこの幅にレイアウトする。
@@ -144,25 +169,64 @@ struct ChatBodyView: View {
             .scrollDismissesKeyboard(.interactively)
             .onPreferenceChange(ColumnWidthKey.self) { columnWidth = $0 }
             .onPreferenceChange(VisibleHeightKey.self) { visibleHeight = $0 }
-            // 末尾ターンの text が伸びる(ストリーミング)たびに最下部へ追従する。
-            // turns.count だけでなく末尾 text の長さも監視して、ストリーミング中の追従を効かせる。
-            .onChange(of: chatVM.turns.count) { scrollToBottom(proxy) }
-            .onChange(of: chatVM.turns.last?.text) { scrollToBottom(proxy) }
+            // 【ChatGPT 式スクロールアンカー(ユーザー実機 FB 2026-07-17・添付スクショの挙動)】
+            // 旧実装は「ストリーミング中ずっと最下部へ強制追従(turns.count と末尾 text 双方を監視して
+            // scrollToBottom)」だった。これを ChatGPT のように「送信したユーザーメッセージが画面**最上部**に
+            // 来るようスクロールし、AI の返事はその下に流れ込む(強制追従しない)」へ変える。
+            // → 末尾 text 伸長での scrollToBottom 追従は廃止(この観測点はハプティクス tick 用にだけ残す)。
+            // → turns.count 変化のうち「新しい user ターンが積まれた」ときだけ、その user ターンを .top へ寄せる。
+            .onChange(of: chatVM.turns.count) { anchorLatestUserTurn(proxy) }
             // ストリーミング tick(ChatGPT アプリ風の刻まれてる感・ユーザー要望 2026-07-17)。
-            // 上のスクロール追従と同じ観測点(末尾ターンの text 伸長)に相乗りする。空文字→初回描画の
-            // ような「伸びていない」変化(turns.count の増加だけ)でも呼ばれるが、streamingThrottle が
+            // かつて scrollToBottom と同じ観測点(末尾ターンの text 伸長)に相乗りしていた。スクロール追従は
+            // 廃止したが、tick の観測点はそのまま残す(削るのはスクロールだけ・タスク指示)。streamingThrottle が
             // 実際に鳴らすかは内部で判定するので、ここでは間引かず素直に毎回呼ぶ。
             .onChange(of: chatVM.turns.last?.text) { haptics.streamingTick() }
+            // inline カード内の focus 要素がキーボードに隠れる問題への対処(InlineCardKeyboardAvoider・
+            // ユーザー実機 FB 2026-07-17)。keyboardWillShow を横流しするだけ(座標解決・スクロールは
+            // avoider が UIKit グローバルから辿って行う)。fullscreen カードや通常 TextField 入力は
+            // avoider 側のガードで対象外になる。
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+                InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
+            }
+            // ↓ フローティングボタン(ChatGPT の scroll-to-bottom 相当・タスク指示2)。最下部にいない
+            // ときだけ右下(composer の直上)に半透明で出し、タップで最下部センチネルへ寄せる。強制追従を
+            // 廃止した代わりに「読み終えたら手動で最新へ戻る」導線を1つ用意する(ユーザーの読み位置を奪わない)。
+            .overlay(alignment: .bottomTrailing) {
+                if !isAtBottom {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo("bottom-sentinel", anchor: .bottom)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay(Circle().stroke(Color(uiColor: .separator)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 10)
+                    .transition(.opacity)
+                    .accessibilityLabel("最新のメッセージへ")
+                }
+            }
         }
         // チャット画面が閉じるとき、カードのセッションをまとめて畳む(設計 §6・§4 の生存はここまで)。
         // スクロールアウトでは畳まない(InlineCardView は onDisappear で teardown しない)。
         .onDisappear { cardRegistry.teardownAll() }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        guard !chatVM.turns.isEmpty else { return }
-        withAnimation(.easeOut(duration: 0.15)) {
-            proxy.scrollTo(chatVM.turns.count - 1, anchor: .bottom)
+    /// 新しく積まれた末尾ターンが user なら、その user ターンを画面**最上部**へ寄せる(ChatGPT 式・
+    /// タスク指示2)。assistant ターンが積まれたとき(= LLM の応答開始)は何もしない(強制追従しない・
+    /// ユーザーの読み位置を奪わない)。ツール実行・カード出現でレイアウトが伸びても呼ばれない
+    /// (turns.count は増えないため)ので、読み位置は保たれる。
+    private func anchorLatestUserTurn(_ proxy: ScrollViewProxy) {
+        guard let last = chatVM.turns.last, last.role == .user else { return }
+        let index = chatVM.turns.count - 1
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(index, anchor: .top)
         }
     }
 
