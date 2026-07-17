@@ -69,12 +69,18 @@ struct ChatBodyView: View {
     //  介して inputFocused=false で resignFirstResponder 相当になる)。
     @FocusState private var inputFocused: Bool
 
+    // ハプティクフィードバック役(ChatHaptics.swift・ユーザー要望 2026-07-17)。画面の生存期間中
+    // 1個を保持して generator を使い回す(prepare() の効果を活かすため・ChatHapticsController 冒頭コメント参照)。
+    @State private var haptics = ChatHapticsController()
+
     var body: some View {
         VStack(spacing: 0) {
             messages
             Divider()
             composer
         }
+        // 画面表示直後に generator を prepare しておく(最初の発火遅延を減らす)。
+        .task { haptics.prepareAll() }
         // メッセージ領域をタップしたらキーボードを閉じる(タップ外しでの dismiss・ユーザー指摘)。
         // contentShape で余白タップも拾うが、simultaneousGesture にしてカード/ボタンのタップは妨げない。
         .simultaneousGesture(
@@ -142,6 +148,11 @@ struct ChatBodyView: View {
             // turns.count だけでなく末尾 text の長さも監視して、ストリーミング中の追従を効かせる。
             .onChange(of: chatVM.turns.count) { scrollToBottom(proxy) }
             .onChange(of: chatVM.turns.last?.text) { scrollToBottom(proxy) }
+            // ストリーミング tick(ChatGPT アプリ風の刻まれてる感・ユーザー要望 2026-07-17)。
+            // 上のスクロール追従と同じ観測点(末尾ターンの text 伸長)に相乗りする。空文字→初回描画の
+            // ような「伸びていない」変化(turns.count の増加だけ)でも呼ばれるが、streamingThrottle が
+            // 実際に鳴らすかは内部で判定するので、ここでは間引かず素直に毎回呼ぶ。
+            .onChange(of: chatVM.turns.last?.text) { haptics.streamingTick() }
         }
         // チャット画面が閉じるとき、カードのセッションをまとめて畳む(設計 §6・§4 の生存はここまで)。
         // スクロールアウトでは畳まない(InlineCardView は onDisappear で teardown しない)。
@@ -205,6 +216,13 @@ struct ChatBodyView: View {
                         .zoomSource(id: host.id, in: cardZoom)
                     }
                 }
+            }
+            // ツールステップの完了/失敗ハプティクス(ChatHaptics.swift・ユーザー要望 2026-07-17)。
+            // turn.toolSteps の変化を (oldValue, newValue) で受け取り、失敗/完了の判定は
+            // ChatHapticsController 側の diff ロジックに委ねる(この View は配線のみ)。VStack 全体への
+            // 修飾子として付け直した(ViewBuilder のコンテンツ列の途中に置くと構文エラーになるため)。
+            .onChange(of: turn.toolSteps) { old, new in
+                haptics.toolSteps(didChangeFrom: old, to: new)
             }
         case .system, .tool:
             // system / tool は wire 専用でありターン表示には現れない(ChatViewModel は
@@ -327,6 +345,7 @@ struct ChatBodyView: View {
         guard !text.isEmpty else { return }
         draft = ""
         inputFocused = false  // 送信したらキーボードを閉じる(応答を見やすく・出っぱなし対策)。
+        haptics.sent()  // 送信確定の軽い合図(タスク指示 2)。
         // ChatViewModel.send は throw しない(内部で errorMessage に載せる)。
         Task { await chatVM.send(text) }
     }
