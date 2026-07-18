@@ -339,6 +339,18 @@ public final class ChatHomeViewModel {
         displayMode = .live  // 履歴閲覧中なら抜ける。
         historyLoadError = nil
 
+        // 監査 2026-07-18 MEDIUM: 旧チャットの進行中送信(LLM ストリーミング・MCP tools/call)を
+        // 新チャット開始前に打ち切る。state を .ready(newVM) へ差し替えるだけでは旧 chatVM の
+        // activeSendTask は誰にもキャンセルされず裏で完走を続けてしまう(サーバー副作用のある
+        // tools/call が新チャット開始後も走り続ける実害)。ChatBodyView.onDisappear は
+        // ChatBodyView 自体が破棄される経路(タブ切り替え等)しか塞がず、newChat() は
+        // `.id(chatVM.currentSession.id)` で View を作り直すだけで、その onDisappear が
+        // このメソッドの完了より確実に先行する保証は無い(SwiftUI の再描画タイミング依存)ため、
+        // ここで明示的に呼ぶ(冒頭で行うのが「旧チャットとの決別」の意図に最も忠実)。
+        if case .ready(let oldChatVM) = state {
+            oldChatVM.cancelActiveSend()
+        }
+
         guard let context = connectionContext else {
             // まだ一度も接続していない(または失敗)。接続ゲートへ戻して接続を促す。
             state = .needsSetup

@@ -279,6 +279,12 @@ struct ChatBodyView: View {
         // カードを見た目上 inline に戻す意味は無く、teardownAll が直後に全 session を畳むので
         // restoreInline の host-context-changed 送信は無駄な往復になるだけ(最小修正)。
         .onDisappear {
+            // 監査 2026-07-18 MEDIUM: 画面破棄で進行中の送信(LLM ストリーミング・MCP tools/call)を
+            // 止める。newChat() 経路(ChatHomeViewModel.newChat 冒頭)とは別の破棄経路
+            // (タブ切り替え・ナビゲーション pop 等、ChatBodyView 自体が画面から外れるケース)を
+            // ここで塞ぐ。cancelActiveSend() は activeSendTask が無ければ no-op なので二重に
+            // 呼んでも安全。
+            chatVM.cancelActiveSend()
             cardRegistry.teardownAll()
             fullscreenCoordinator.activeHost = nil
         }
@@ -382,8 +388,16 @@ struct ChatBodyView: View {
                             // スナップショット到達で永続モデルへ書き戻す(T6・設計 §5)。identity は
                             // (turnIndex, cardIndex)。turns/cards は追記のみなのでこの index は安定
                             // (ChatViewModel.setCardSnapshot 側でも範囲外を安全に無視する)。
+                            // 【監査 2026-07-18 LOW】card.resourceUri をこの時点(body 評価時)で
+                            // closure に閉じ込めて渡す——onSnapshot は非同期に(size-changed 到達や
+                            // teardown を合図に)後から呼ばれるため、呼ばれた時点で同じ index に
+                            // 別カードが来ている可能性を setCardSnapshot 側で検証できるようにする。
                             onSnapshot: { html in
-                                chatVM.setCardSnapshot(turnIndex: turnIndex, cardIndex: cardIndex, html: html)
+                                chatVM.setCardSnapshot(
+                                    turnIndex: turnIndex,
+                                    cardIndex: cardIndex,
+                                    expectedResourceUri: card.resourceUri,
+                                    html: html)
                             }
                         )
                         // zoom source アンカー(拡大の起点=この inline カード枠)。destination の
@@ -455,7 +469,7 @@ struct ChatBodyView: View {
             // WKWebView が一瞬作り直しになる(往復状態が飛ぶ)」程度に留まる。キー走査 API を
             // 足す複雑さより、全畳みの単純さ・安全さを優先した(ボツ案として残す)。
             cardRegistry.teardownAll()
-            Task { await chatVM.retryLastTurn() }
+            chatVM.submitRetry()
         } label: {
             Image(systemName: "arrow.clockwise")
                 .font(.caption)
@@ -582,8 +596,9 @@ struct ChatBodyView: View {
         draft = ""
         inputFocused = false  // 送信したらキーボードを閉じる(応答を見やすく・出っぱなし対策)。
         haptics.sent()  // 送信確定の軽い合図(タスク指示 2)。
-        // ChatViewModel.send は throw しない(内部で errorMessage に載せる)。
-        Task { await chatVM.send(text) }
+        // ChatViewModel.submit は throw しない(内部の send が errorMessage に載せる)。VM 自身が
+        // Task を保持する形にしたので、View 側は Task { } で包まない(監査 2026-07-18 MEDIUM)。
+        chatVM.submit(text)
     }
 }
 

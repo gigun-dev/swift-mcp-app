@@ -254,6 +254,51 @@ actor StubToolExecutor: MCPToolExecuting {
         #expect(toolMsg?.content?.contains("todos") == true)
     }
 
+    // MARK: - 監査 2026-07-18 LOW: setCardSnapshot の card 同一性チェック
+
+    // expectedResourceUri がその位置の実カードと一致すれば書き戻せる(正常系)。
+    @Test func setCardSnapshot_resourceUriが一致すれば書き戻せる() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "list-todos", arguments: "{}")], usage(1, 1))],
+            [.completed(.stop, [], usage(1, 1))],
+        ])
+        let executor = StubToolExecutor(results: ["list-todos": .object([:])])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["list-todos": "ui://todos/list"])
+        await vm.send("todos 見せて")
+
+        let cardTurnIndex = vm.turns.firstIndex(where: { !$0.cards.isEmpty })!
+        vm.setCardSnapshot(
+            turnIndex: cardTurnIndex, cardIndex: 0,
+            expectedResourceUri: "ui://todos/list", html: "<html>snap</html>")
+
+        #expect(vm.turns[cardTurnIndex].cards[0].snapshotHTML == "<html>snap</html>")
+    }
+
+    // expectedResourceUri がその位置の実カードと不一致なら黙って捨てる(退避先が別カードに
+    // 入れ替わっていた場合の防御・監査 2026-07-18 LOW)。
+    @Test func setCardSnapshot_resourceUriが不一致なら無視する() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(.toolCalls, [toolCall(id: "c1", name: "list-todos", arguments: "{}")], usage(1, 1))],
+            [.completed(.stop, [], usage(1, 1))],
+        ])
+        let executor = StubToolExecutor(results: ["list-todos": .object([:])])
+        let vm = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["list-todos": "ui://todos/list"])
+        await vm.send("todos 見せて")
+
+        let cardTurnIndex = vm.turns.firstIndex(where: { !$0.cards.isEmpty })!
+        // 位置は合っているが、届いた identity(resourceUri)が違う=旧カードの遅延スナップショット
+        // が別カードへ書き込まれかけているケースを模す。
+        vm.setCardSnapshot(
+            turnIndex: cardTurnIndex, cardIndex: 0,
+            expectedResourceUri: "ui://agenda/view", html: "<html>stale-snap</html>")
+
+        #expect(vm.turns[cardTurnIndex].cards[0].snapshotHTML == nil)
+    }
+
     // 7) uiResourceURIs に無いツールはカードを作らない(UI を持たないツール)。
     @Test func UI資源を持たないツールはカードを作らない() async {
         let llm = ScriptedLLMClient(scripts: [
@@ -464,6 +509,40 @@ actor StubToolExecutor: MCPToolExecuting {
         #expect(vm.errorMessage == nil)
     }
 
+    // MARK: - 監査 2026-07-18 MEDIUM: newChat/画面破棄での send Task キャンセル
+
+    // submit() で始めた送信を cancelActiveSend() で打ち切ると、isRunning が false に落ち、
+    // errorMessage は(ストリーム失敗と誤認されず)nil のまま——タスク指示の固定要件。
+    // DelayedLLMClient は OpenAICompatClient.stream と同じ「onTermination で内部 Task を cancel する」
+    // 形にしてあるので、consumer Task のキャンセルが AsyncThrowingStream の for-await を実際に
+    // 打ち切ることまで込みで検証する(スタブが常に即完了する ScriptedLLMClient では検証できない経路)。
+    @Test func submit_cancelActiveSendで打ち切るとisRunningが落ちerrorMessageは出ない() async {
+        let llm = DelayedLLMClient()
+        let vm = ChatViewModel(llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "m", systemPrompt: nil)
+
+        vm.submit("やあ")
+        // submit() の Task 起動〜send() 内 isRunning=true までは MainActor 上の非同期ディスパッチを
+        // 挟むため、立ち上がりを少し待つ(ポーリング。即断定すると起動前に検査してしまい flaky になる)。
+        await waitUntil { vm.isRunning }
+        #expect(vm.isRunning == true)
+
+        vm.cancelActiveSend()
+        await waitUntil { vm.isRunning == false }
+
+        #expect(vm.isRunning == false)
+        #expect(vm.errorMessage == nil)
+    }
+
+    /// 条件が満たされるまで短い間隔でポーリングする(タイムアウト付き・テストの決定性のための小道具)。
+    /// MainActor 上の Task 起動タイミング依存の検証(上のキャンセルテスト)を sleep 決め打ちにせず、
+    /// 実際に条件が成立するまで待つことで flaky さを避ける。
+    private func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     // MARK: - T6 前半: TraceSink 注入 + currentSession(設計 03 §3・02 §5)
 
     // テキストのみのターン: turnStarted → llmCompleted → turnSettled の順で1回ずつ出る
@@ -597,6 +676,30 @@ private final class ThrowingLLMClient: LLMClient, @unchecked Sendable {
         }
     }
     enum ThrowingLLMClientError: Error { case boom }
+}
+
+/// 「呼ばれたらずっと完了しない(長く sleep する)」スタブ LLMClient(監査 2026-07-18 MEDIUM の
+/// cancel テスト用)。OpenAICompatClient.stream(_:) と同じ構造(内部 Task を onTermination で
+/// cancel する)を踏襲することで、「消費側 Task のキャンセルが AsyncThrowingStream の for-await を
+/// 実際に打ち切る」という本番と同じ経路をスタブでも再現する(ScriptedLLMClient は同期的に
+/// 完了してしまうためこの経路を検証できない)。
+private final class DelayedLLMClient: LLMClient, @unchecked Sendable {
+    func stream(_ request: ChatCompletionRequest) -> AsyncThrowingStream<LLMEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    // テストのタイムアウトより十分長い(cancel が来なければテストは確実に落ちる=
+                    // 「キャンセルが伝播しない」というレグレッションを検出できる)。
+                    try await Task.sleep(for: .seconds(10))
+                    continuation.yield(.completed(.stop, [], nil))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 /// emit された ChatTraceEvent を記録するスタブ TraceSink。

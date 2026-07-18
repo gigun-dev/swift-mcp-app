@@ -152,6 +152,16 @@ public final class ChatViewModel {
     /// LLM へ送る厳密な履歴(上のクラスコメント参照)。system をあれば先頭に据える。
     private var wireMessages: [ChatMessage] = []
 
+    /// 現在実行中の send/retryLastTurn を追跡する Task(監査 2026-07-18 MEDIUM 対応)。
+    ///
+    /// 【なぜ VM 自身が Task を持つ形に寄せたか(既存欠陥の機序)】従来は View 側が
+    /// `Task { await chatVM.send(text) }` で起動するだけで、その Task 自体は誰も保持しなかった。
+    /// newChat() で ChatHomeViewModel が新しい ChatViewModel を作って state を差し替えても、
+    /// 旧 chatVM の送信 Task は誰にもキャンセルされず裏で完走を続け、旧チャットの LLM ストリーミングと
+    /// MCP tools/call(サーバー副作用あり)が新チャット開始後も走り続けていた。ここで submit/submitRetry
+    /// が Task を自前で起こして保持し、cancelActiveSend() でキャンセルできるようにする。
+    private var activeSendTask: Task<Void, Never>?
+
     // MARK: - init
 
     /// - Parameters:
@@ -245,10 +255,21 @@ public final class ChatViewModel {
     /// ——落とさず黙って捨てる(履歴の見た目が1枚欠けるだけで、チャットは壊れない)。
     /// 同一 HTML の重複書き戻し(size-changed 到達時 + teardown 時の2回取得)は、値が同じなら
     /// 実質 no-op だが save は走る(冪等・コストは JSON 1ファイル書き込みぶんで許容・設計 §5)。
-    public func setCardSnapshot(turnIndex: Int, cardIndex: Int, html: String) {
+    ///
+    /// 【監査 2026-07-18 LOW: card 同一性チェックを追加した理由】index 範囲チェックだけでは
+    /// 「範囲内だが別のカード」を区別できない——retry で該当ターン以降が巻き戻された後、同じ
+    /// (turnIndex, cardIndex) の位置に**別のツールのカード**が新しく積まれるケースが理論上ありうる
+    /// (低確率レース・反証検証済み)。スナップショットは WKWebView 側から非同期に届くため、
+    /// 「呼び出し側が期待していたカード」と「今その位置に実際にあるカード」が index だけでは
+    /// 一致するとは限らない。呼び出し元(ChatBodyView)にその場で card.resourceUri を閉じ込めて
+    /// もらい、書き戻し直前に一致を確認する——不一致は範囲外 index と同じ思想で黙って捨てる
+    /// (旧カードの遅延スナップショットが別カードへ誤って書き込まれる事故を防ぐだけで、
+    /// 正常系である「同じ card が同じ位置にい続ける通常の書き戻し」には一切影響しない)。
+    public func setCardSnapshot(turnIndex: Int, cardIndex: Int, expectedResourceUri: String, html: String) {
         guard turns.indices.contains(turnIndex),
               turns[turnIndex].cards.indices.contains(cardIndex)
         else { return }
+        guard turns[turnIndex].cards[cardIndex].resourceUri == expectedResourceUri else { return }
         // 値が変わらないなら保存を走らせない(size-changed が複数回来ても DOM が同じなら無駄書きを避ける)。
         guard turns[turnIndex].cards[cardIndex].snapshotHTML != html else { return }
         turns[turnIndex].cards[cardIndex].snapshotHTML = html
@@ -267,10 +288,51 @@ public final class ChatViewModel {
 
     // MARK: - ループのエントリ
 
+    /// View から呼ぶ送信入口(監査 2026-07-18 MEDIUM 対応)。send() 自身を Task で包んで
+    /// activeSendTask に保持し、直前に走っていた send/retryLastTurn があればキャンセルしてから始める
+    /// (同一 VM への連打・retry→send の取り違え防止。newChat/画面破棄からの cancelActiveSend とも同じ
+    /// 変数を使うので、どちらが先でも二重実行にはならない)。
+    ///
+    /// send()/retryLastTurn() 自体は引き続き public のまま残す(既存の単体テストが
+    /// `await vm.send(...)` / `await vm.retryLastTurn()` を直接同期的に await する形に多数依存しており、
+    /// Task 経由に統一すると完了待ちの足場が別途要る=無用な変更コストになるため。View 側だけを
+    /// submit/submitRetry 経由に寄せ、キャンセル対象を1本の activeSendTask に揃えるのが最小の修正)。
+    public func submit(_ text: String) {
+        activeSendTask?.cancel()
+        activeSendTask = Task { [weak self] in
+            await self?.send(text)
+        }
+    }
+
+    /// View の再生成ボタンから呼ぶ入口。submit と同じ理由で Task を包んで activeSendTask に保持する。
+    public func submitRetry() {
+        activeSendTask?.cancel()
+        activeSendTask = Task { [weak self] in
+            await self?.retryLastTurn()
+        }
+    }
+
+    /// 進行中の send/retryLastTurn を打ち切る。newChat()(ChatHomeViewModel)や画面破棄
+    /// (ChatBodyView.onDisappear)から呼ぶ。activeSendTask が nil(実行中の送信が無い)なら no-op。
+    ///
+    /// キャンセルの伝播(実装確認 2026-07-18): AsyncThrowingStream(OpenAICompatClient.stream)は
+    /// 消費側 Task のキャンセルを言語機構として観測し、for-await ループが打ち切られる
+    /// (Swift の AsyncStream 系列は Task キャンセルと協調する——独自実装の AsyncSequence と違い
+    /// 明示チェック不要)。runToolCalls の withTaskGroup は構造化並行の子タスクなので、外側 Task の
+    /// キャンセルは自動的に子(tools/call)へ伝播する(URLSession 呼び出し自体がキャンセルされ中断する)。
+    /// send() 側にも Task.isCancelled の明示チェックを要所に置き、ループの継続判断を早める(下記参照)。
+    public func cancelActiveSend() {
+        activeSendTask?.cancel()
+    }
+
     /// ユーザー発話を1つ受けて、tool-use ループを .stop / 最大反復まで回す。
     ///
-    /// 例外を throw しない(UI から `Task { await vm.send(text) }` で気軽に叩ける)。
-    /// 失敗は errorMessage に載せる。
+    /// 例外を throw しない(UI からは `submit(text)` 経由で叩く。テストは `await vm.send(text)` を
+    /// 直接呼べる)。失敗は errorMessage に載せる——ただし **cancelActiveSend() 由来のキャンセルでは
+    /// errorMessage を出さない**(監査 2026-07-18 MEDIUM)。旧チャットが newChat/画面破棄で捨てられた後の
+    /// VM にエラー文言を積んでも誰にも見せられず意味が無く、「キャンセルされた」を「失敗した」と
+    /// 混同させないための判断。wire/turns の整合を巻き戻す必要も無い(旧 VM は破棄される運命——
+    /// 「それ以上進めない」だけで良い・タスク指示どおり)。
     public func send(_ userText: String) async {
         errorMessage = nil
         isRunning = true
@@ -300,6 +362,11 @@ public final class ChatViewModel {
         var settled = false
         var iterations = 0
         for _ in 0..<maxIterations {
+            // 周の頭でキャンセルを確認する(監査 2026-07-18 MEDIUM)。cancelActiveSend() が
+            // 前周の tool 実行中〜次周開始までの間に呼ばれた場合、ここで static に打ち切る
+            // ——新しい assistant ターンを起こさない・新しいストリームを開かない・エラーも出さない
+            // (「それ以上進めない」だけで良い・上のクラスコメント参照)。
+            if Task.isCancelled { return }
             iterations += 1
             // 今周の assistant 表示ターンを起こす(空テキストで append し、以降 index で書き換える)。
             let assistantIndex = turns.count
@@ -334,6 +401,13 @@ public final class ChatViewModel {
                         traceSink?.emit(.llmCompleted(turnId: turnId, finishReason: reason.wireValue, usage: turnUsage))
                     }
                 }
+            } catch is CancellationError {
+                // cancelActiveSend() 由来の打ち切り(監査 2026-07-18 MEDIUM)。上のクラスコメントどおり
+                // errorMessage は出さない——ユーザーが意図して離れた(newChat/画面破棄)後の旧 VM に
+                // エラーを積んでも誰にも見せられない。this周の途中テキストだけ turns に残して終える
+                // (turns の巻き戻しは行わない——旧 VM は破棄される運命なので復旧不要)。
+                turns[assistantIndex].text = accumulatedText
+                return
             } catch {
                 // ストリーム自体の失敗(ネットワーク・HTTP・デコード)。この周の assistant ターンに
                 // エラーを載せてループを止める(モデルに投げ返せる相手がいない = 継続不能)。
@@ -341,6 +415,11 @@ public final class ChatViewModel {
                 errorMessage = "LLM ストリームに失敗しました: \(error)"
                 return
             }
+
+            // ストリームは正常完了したが、その直後にキャンセルされていた場合(監査 2026-07-18 MEDIUM)。
+            // tool_calls を実行してしまうと副作用のある MCP 呼び出しが「捨てられたはずのチャット」で
+            // 走ってしまうため、次のツール実行に入る前にもう一度確認する。
+            if Task.isCancelled { return }
 
             // usage は分岐によらず毎ターン計上する(設計 §6)。
             if let usage {
@@ -364,7 +443,12 @@ public final class ChatViewModel {
             }
 
             // 5) 各 tool_call を並行実行し、結果を role:"tool" として wire に積み戻して次周へ。
+            // 【tools/call のキャンセル伝播(監査 2026-07-18 MEDIUM)】withTaskGroup の子タスクは
+            // 構造化並行の子なので、この send() の外側 Task がキャンセルされれば自動的に子(tools/call)へ
+            // 伝播し、URLSession 呼び出し自体が中断される(サーバー副作用が「もう見ていないチャット」で
+            // 走り続ける事故を防ぐ・タスク指示)。
             await runToolCalls(calls, assistantIndex: assistantIndex, turnId: turnId)
+            if Task.isCancelled { return }
             // continue(次の反復へ) — モデルがツール結果を見て次を判断する(設計 §3-5)。
         }
 

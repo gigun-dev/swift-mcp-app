@@ -24,9 +24,22 @@ WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 comp
 > 結果側は前方互換の防御のみ) ④セッション跨ぎカード混線(.id(session)+registry キーに resourceUri)。
 > caldav 側: done 退場一貫化・becoming タグ全廃(todos/agenda)・行タップ=詳細遷移・終日終了日既定・
 > 会議ブロック段落連結・bundle 非コミット化(wrangler build hook・再生成し忘れ根絶)。
-> **残 LOW(監査)**: newChat が旧 send() Task を非キャンセル・選択編集中の外部完了退場で編集消失・
-> fold キャッシュ×外部更新のメンバーシップずれ・snapshot 遅延書込レース(いずれも低頻度・詳細は
+> **残 LOW(監査)**: ~~newChat が旧 send() Task を非キャンセル~~・選択編集中の外部完了退場で編集消失・
+> fold キャッシュ×外部更新のメンバーシップずれ・~~snapshot 遅延書込レース~~(いずれも低頻度・詳細は
 > workflow 結果 wf_6fed5a50-035)。**実機未検証**: 右上ズレ解消・open-link・C3/C4 フォーム一式。
+> **2026-07-18 追更新:** 上記2件(A: send Task 非キャンセル・E: setCardSnapshot の card 同一性)
+> 修正済み ✅。ChatViewModel に `submit(_:)`/`submitRetry()`/`cancelActiveSend()` を追加し、
+> VM 自身が送信 Task を保持・追跡する形に寄せた(View 側の `Task { await vm.send(...) }` を
+> `vm.submit(...)` へ置換)。newChat() 冒頭と ChatBodyView.onDisappear の両方から
+> cancelActiveSend() を呼ぶ。cancel 由来(CancellationError)は errorMessage を出さない分岐を
+> send() に追加(AsyncThrowingStream は消費側 Task のキャンセルと協調して for-await を実際に
+> 打ち切ることをテストで確認済み)。setCardSnapshot は `expectedResourceUri` 引数を追加し、
+> 書き戻し直前に対象カードの resourceUri 一致を検証(不一致は黙って捨てる・範囲外 index ガードと
+> 同じ思想)。呼び出し元(ChatBodyView)は card.resourceUri を closure に閉じ込めて渡す。
+> テスト2件追加(cancel で isRunning が落ち errorMessage は nil のまま/setCardSnapshot の
+> 一致・不一致)。`make check`(141 tests green)・`make app`(BUILD SUCCEEDED)確認済み。
+> 変更ファイル: Sources/Services/Chat/ChatViewModel.swift・Sources/Features/Chat/ChatBodyView.swift・
+> Sources/Features/Chat/ChatHomeViewModel.swift・Tests/ServicesTests/ChatViewModelTests.swift。
 
 転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
 caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI
