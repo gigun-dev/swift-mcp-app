@@ -53,8 +53,16 @@ struct ChatBodyView: View {
     @Namespace private var cardZoom
 
     /// inline カードの実 maxHeight を可視高から算出する(P4-DM 決定1・設計 04 §5 H1)。
-    /// 可視高 × 0.65 を floor。可視高未確定(0)の間はカード構築が columnWidth==0 で保留されるため
-    /// フォールバック値(600)は実際にはほぼ使われないが、念のため 0 を避ける。
+    /// 可視高 × 0.65 を floor。
+    /// 【2026-07-18 訂正: フォールバック 600 は「ほぼ使われない」ではなく実際に構築に焼き付いていた】
+    /// 旧コメントは「columnWidth==0 で保留されるため実際にはほぼ使われない」と書いていたが、実際の
+    /// 構築ゲート(InlineCardView.task(id: containerWidth>0))は containerWidth だけを見ており
+    /// visibleHeight を見ていなかった。columnWidth の PreferenceKey が visibleHeight のそれより先に
+    /// 反映される SwiftUI 更新順が実機で起き、フォールバック 600 が AppsBridgeSession.maxHeight
+    /// (immutable)に焼き付いて inline カードの畳み判定を壊すバグを引いた(todos カード FAB クリップ
+    /// 再発・fold.ts/todos-entry.ts 側は無罪)。呼び出し側(ChatBodyView.body の `if let proxy,
+    /// visibleHeight > 0`)で構築自体を visibleHeight > 0 までブロックしたため、この関数が
+    /// フォールバックを返す状況では実際に子カードは1枚も構築されない(0 を避ける安全策としてのみ残す)。
     private var inlineMaxHeight: CGFloat {
         visibleHeight > 0 ? (visibleHeight * Self.inlineMaxHeightRatio).rounded(.down) : 600
     }
@@ -372,7 +380,25 @@ struct ChatBodyView: View {
                 // ツール結果の ui:// カード(あれば)。proxy と実測幅が揃っているときだけ描画する。
                 // cardID は (turnIndex, cardIndex) で安定(turns/cards は追記のみ)。この ID で
                 // registry から同じ host を引くことで、スクロール再生成でも往復状態が保たれる。
-                if let proxy {
+                //
+                // 【2026-07-18 実機バグ根治: visibleHeight > 0 も構築ゲートへ追加】従来は
+                // InlineCardView 側で containerWidth > 0(columnWidth 実測済み)だけを構築ゲートに
+                // していたが、inlineMaxHeight(可視高×0.65)は visibleHeight===0 のときフォールバック
+                // 600 を返す(inlineMaxHeight の doc コメント)。columnWidth の PreferenceKey
+                // (ColumnWidthKey・メッセージ列内側の background)が VisibleHeightKey
+                // (ScrollView 自身の background)より先に反映される SwiftUI の更新順は保証されておらず、
+                // 実機ではその順で発火することがあった — columnWidth 確定時点で visibleHeight がまだ 0 の
+                // まま InlineCardView.buildIfNeeded が走り、フォールバック 600 が
+                // AppsBridgeSession.maxHeight(immutable let)に焼き付く。以後 visibleHeight が正しい値
+                // (iPhone 12 mini 実機で ≈400)に更新されても、buildIfNeeded は buildTask!=nil で
+                // no-op のため再送されず、カード(todos-app.ts)は誤って maxHeight=600 で fold 判定する。
+                // 未完了5件(due/メモ込みで可変高)は 600 未満に収まるため fold されず、しかしホスト側の
+                // 実クランプは 400 前後なので下端の + FAB が物理的にクリップされ押せなくなる(実機再発の
+                // 真因)。fold.ts/todos-entry.ts 側の畳みロジック自体は正しく動いており、渡された
+                // maxHeight が実態と乖離していたのが根治点 —— columnWidth と同じ「実測前は保留」の扱いを
+                // visibleHeight にも及ぼし、両方揃うまでカード構築(=ui/initialize の maxHeight 確定)を
+                // 遅らせる。
+                if let proxy, visibleHeight > 0 {
                     ForEach(Array(turn.cards.enumerated()), id: \.offset) { cardIndex, card in
                         // host を先に束ねる: zoom source の id(host.id)を InlineCardView 本体と
                         // .matchedTransitionSource の両方に使うため(call site で参照が要る)。
