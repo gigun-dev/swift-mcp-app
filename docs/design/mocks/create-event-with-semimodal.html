@@ -1,0 +1,515 @@
+<!doctype html>
+<!--
+  ============================================================================
+  モック: agenda カードの「新規作成」fullscreen フォーム(vevent 版)
+           + 場所/会議セミモーダル(C4・既知の場所 C5・検索候補 C6 プレースホルダ)
+  ============================================================================
+  土台: docs/design/mocks/create-event-fullscreen.html(C3)をベースに、
+        docs/design/05-location-and-conference.md §5 の「場所または会議」多相入力 +
+        セミモーダルを組み込んだ版。既存モックは残す(このファイルが後継案)。
+
+  出典:
+  - §5(場所/会議セミモーダルの ASCII 図・要素構成)。
+  - §2(3スロット意味モデル: 場所 / 会議 / 参照URL)。
+  - §1-c(実データ decode: 会議は URL 直入れ or DESCRIPTION の
+    「----( ビデオ通話 )----」区切りブロック併存。参照URLは URL に message: 等の生値)。
+  - CSS トークン・grouped list 文法は create-event-fullscreen.html を完全踏襲
+    (出典は同ファイルの通り caldav/src/presentation/mcp/ui/todos-app.ts)。
+  - 参照 UI: Apple IMG_8132(iOS カレンダーの「場所または会議」focus 時セミモーダル)。
+
+  想定フロー:
+    agenda カードの + FAB → requestDisplayMode fullscreen → この作成フォーム(C3)
+    → 予定フォームの「場所または会議」行を focus/タップ → セミモーダル(C4)がカード内
+      オーバーレイとしてせり上がる(position:absolute で .frame 内、WKWebView 内の
+      CSS モーダルなのでネットワーク遮断・サンドボックスとは無関係)
+    → ビデオ通話 provider / 既知の場所 / 検索候補 のいずれかを選ぶ or 背景タップ/完了で閉じる
+    → 選択結果が「場所または会議」行に反映される。
+
+  実装(write)との対応 — どの UI が create-event 引数 / author 規約(§1-c・§8)にマップするか:
+  - 「既知の場所」「検索候補」から場所を選ぶ
+      → location(LOCATION テキスト)+ X-APPLE-STRUCTURED-LOCATION(X-TITLE/geo/半径)。
+  - 「ビデオ通話」provider チップ(Meet/Zoom/FaceTime)を選ぶ、または「その他URL」に入力
+      → 会議。単独なら url(URL 直入れ)、参照URLと併存する場合は notes(DESCRIPTION)内の
+        「----( ビデオ通話 )----」区切りブロックに書く(サーバー側 author 規約・C8)。
+      → NOTE: このモックの「場所または会議」は3スロットのうち「場所」「会議」の2つを畳み込む
+        多相入力。「参照URL」(message: 等・招待メールへのリンク)は本フォームでは別入力として
+        扱わない(§2 の3スロット中、参照URLは受信/read 側の解釈が主で、作成フォームでの
+        明示入力は今回スコープ外 — 必要になれば別行「参照URL(任意)」を足す設計判断が要る)。
+
+  修正点(既存 create-event-fullscreen.html との差分):
+  1. 予定(vevent)フォームの「場所」テキスト入力 + 「URL(会議リンクなど)」入力の2行を廃止し、
+     単一の「場所または会議」行(多相・セミモーダルのトリガ)に統合(§5)。
+  2. リマインダー(vtodo)フォームの「場所(テキストのみ)」行を削除
+     (テキスト場所は実装ごと廃止済み・ユーザー裁定。proximity 通知は別スコープ)。
+-->
+<html lang="ja">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mock: create-event fullscreen form + location/conference semimodal</title>
+<style>
+  :root {
+    --bg: var(--color-background-primary, #ffffff);
+    --fg: var(--color-text-primary, #1a1a1a);
+    --muted: var(--color-text-secondary, #767676);
+    --border: var(--color-border-secondary, rgba(128, 128, 128, 0.25));
+    --surface: var(--color-background-secondary, rgba(128, 128, 128, 0.12));
+    --accent: #007aff;
+    --danger: #ff3b30;
+    --radius: var(--border-radius-md, 8px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--color-background-primary, #1c1c1e);
+      --fg: var(--color-text-primary, #f2f2f2);
+      --muted: var(--color-text-secondary, #98989e);
+      --accent: #0a84ff;
+      --danger: #ff453a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #888; display: flex; justify-content: center; padding: 24px 0;
+    font-family: -apple-system, "Hiragino Sans", sans-serif;
+  }
+  /* iPhone 幅フレーム(モック用の枠。実カードでは body 直)。
+     position:relative にしてセミモーダルを .frame 内に絶対配置する。 */
+  .frame {
+    width: 390px; min-height: 760px; background: var(--bg); color: var(--fg);
+    border-radius: 16px; overflow: hidden; display: flex; flex-direction: column;
+    position: relative;
+  }
+  /* --- ヘッダ: キャンセル / タイトル / 追加(iOS モーダルシート文法) --- */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--border);
+  }
+  header .cancel { color: var(--accent); background: none; border: none; font-size: 16px; padding: 0; }
+  header .title { font-size: 16px; font-weight: 600; }
+  header .submit {
+    color: var(--accent); background: none; border: none; font-size: 16px; font-weight: 600; padding: 0;
+  }
+  header .submit:disabled { color: var(--muted); }
+  /* --- セグメント(予定 | リマインダー)。event 側フォームにのみ存在 --- */
+  .segment {
+    display: flex; margin: 12px 16px 4px; background: var(--surface);
+    border-radius: var(--radius); padding: 2px;
+  }
+  .segment button {
+    flex: 1; border: none; background: none; color: var(--fg); font-size: 14px;
+    padding: 7px 0; border-radius: 6px;
+  }
+  .segment button[aria-selected="true"] { background: var(--bg); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+  /* --- グループ化フィールド(iOS inset grouped list 風) --- */
+  main { flex: 1; overflow-y: auto; padding: 8px 16px 24px; }
+  .group {
+    background: var(--surface); border-radius: var(--radius); margin-top: 14px; overflow: hidden;
+  }
+  .row {
+    display: flex; align-items: center; gap: 10px; padding: 12px 14px; min-height: 46px;
+  }
+  .row + .row { border-top: 1px solid var(--border); }
+  .row label { flex: 1; font-size: 15px; }
+  .row .value { color: var(--muted); font-size: 15px; }
+  .row input[type="text"], .row input[type="url"], .row textarea {
+    flex: 1; border: none; background: none; color: var(--fg); font-size: 15px; outline: none;
+  }
+  .row input::placeholder, .row textarea::placeholder { color: var(--muted); }
+  .row select, .row input[type="datetime-local"], .row input[type="date"] {
+    border: none; background: none; color: var(--accent); font-size: 15px; text-align: right;
+  }
+  /* iOS 風トグルスイッチ(終日) */
+  .switch { position: relative; width: 48px; height: 29px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span {
+    position: absolute; inset: 0; background: rgba(128,128,128,.35); border-radius: 15px; transition: .15s;
+  }
+  .switch span::before {
+    content: ""; position: absolute; width: 25px; height: 25px; left: 2px; top: 2px;
+    background: #fff; border-radius: 50%; transition: .15s; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+  }
+  .switch input:checked + span { background: #34c759; }
+  .switch input:checked + span::before { transform: translateX(19px); }
+  textarea { resize: none; min-height: 64px; padding-top: 2px; }
+  .hint { font-size: 12px; color: var(--muted); margin: 6px 4px 0; }
+  [hidden] { display: none !important; }
+
+  /* --- 「場所または会議」行(多相入力トリガ) ---
+     修正1: 既存の「場所」テキスト入力 + 「URL(会議リンクなど)」入力の2行を統合。
+     未選択時はプレースホルダのみ・選択済みは絵文字+値を表示し × でクリア。 */
+  .row.location-trigger { cursor: pointer; }
+  .row.location-trigger .lt-icon { width: 18px; text-align: center; color: var(--muted); }
+  .row.location-trigger .lt-text { flex: 1; font-size: 15px; }
+  .row.location-trigger .lt-text.placeholder { color: var(--muted); }
+  .row.location-trigger .lt-clear {
+    border: none; background: none; color: var(--muted); font-size: 15px; padding: 2px 4px; line-height: 1;
+  }
+
+  /* ============================================================
+     セミモーダル(C4)。§5 の ASCII 図をそのまま UI 化。
+     カード内オーバーレイ = WKWebView 内の CSS モーダル(サンドボックス無関係・
+     ネットワーク遮断とは独立に動く純粋な DOM/CSS)。.frame 内に position:absolute
+     で下からスライドアップさせる(iOS シート文法: グラバー・完了ボタン・
+     背景タップ/下スワイプで閉じる)。
+     ============================================================ */
+  .dimmer {
+    position: absolute; inset: 0; background: rgba(0,0,0,.32);
+    opacity: 0; pointer-events: none; transition: opacity .2s ease; z-index: 10;
+  }
+  .dimmer.open { opacity: 1; pointer-events: auto; }
+
+  .semimodal {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    height: 72%; background: var(--bg); color: var(--fg);
+    border-radius: 16px 16px 0 0; box-shadow: 0 -4px 24px rgba(0,0,0,.25);
+    display: flex; flex-direction: column;
+    transform: translateY(100%); transition: transform .25s cubic-bezier(.32,.72,0,1);
+    z-index: 11;
+  }
+  .semimodal.open { transform: translateY(0); }
+  .semimodal .grabber {
+    width: 36px; height: 5px; border-radius: 3px; background: var(--border);
+    margin: 8px auto 4px;
+  }
+  .semimodal .sm-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 16px 8px;
+  }
+  .semimodal .sm-header .sm-title { font-size: 15px; font-weight: 600; color: var(--muted); }
+  .semimodal .sm-header .sm-done {
+    border: none; background: none; color: var(--accent); font-size: 15px; font-weight: 600; padding: 0;
+  }
+  .semimodal .sm-body { flex: 1; overflow-y: auto; padding: 0 16px 20px; }
+
+  /* 1. 検索欄(多相: 場所 or ビデオ通話 URL) */
+  .sm-search {
+    display: flex; align-items: center; gap: 8px; background: var(--surface);
+    border-radius: var(--radius); padding: 9px 12px; margin: 4px 0 16px;
+  }
+  .sm-search input {
+    flex: 1; border: none; background: none; color: var(--fg); font-size: 15px; outline: none;
+  }
+
+  /* セクション見出し共通(ビデオ通話 / 既知の場所 / 検索候補) */
+  .sm-section-title {
+    font-size: 12px; color: var(--muted); text-transform: none; margin: 0 4px 8px;
+  }
+  .sm-section { margin-bottom: 18px; }
+
+  /* 2. ビデオ通話 provider チップ */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    border: 1px solid var(--border); background: var(--surface); color: var(--fg);
+    font-size: 14px; padding: 7px 14px; border-radius: 999px;
+  }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip-url-input {
+    margin-top: 10px; display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border-radius: var(--radius); padding: 9px 12px;
+  }
+  .chip-url-input input {
+    flex: 1; border: none; background: none; color: var(--fg); font-size: 14px; outline: none;
+  }
+
+  /* 3/4. 既知の場所(C5)・検索候補(C6) の場所リスト */
+  .place-list { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+  .place-item {
+    display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; width: 100%;
+    border: none; background: none; text-align: left; color: var(--fg); font-size: 14px;
+  }
+  .place-item + .place-item { border-top: 1px solid var(--border); }
+  .place-item .pi-icon { color: var(--muted); }
+  .place-item .pi-text { flex: 1; }
+  .place-item .pi-title { font-size: 14.5px; }
+  .place-item .pi-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  /* 地図サムネのプレースホルダ枠(C6・C7 未着手。実装時は (a)静的サムネ or (b)ライブタイル) */
+  .pi-thumb {
+    width: 44px; height: 44px; border-radius: 6px; background: var(--border);
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: var(--muted);
+  }
+</style>
+<body>
+<div class="frame">
+  <header>
+    <button class="cancel">キャンセル</button>
+    <span class="title">新規</span>
+    <button class="submit" disabled>追加</button>
+  </header>
+
+  <!-- 予定/リマインダー切替(event フォームからのみ。逆方向は提供しない) -->
+  <div class="segment" role="tablist">
+    <button role="tab" aria-selected="true" id="seg-event">予定</button>
+    <button role="tab" aria-selected="false" id="seg-todo">リマインダー</button>
+  </div>
+
+  <main>
+    <!-- ===== 予定(vevent)フィールドセット → create-event 引数 ===== -->
+    <section id="form-event">
+      <div class="group">
+        <div class="row"><input type="text" placeholder="タイトル" /></div><!-- → title(SUMMARY) -->
+        <!--
+          修正1: 「場所」テキスト入力 + 「URL(会議リンクなど)」入力(既存2行)を統合した
+          多相トリガ行。tabindex を張って focus でもセミモーダルが開くようにする
+          (実装では input focus イベントで統一。モックはボタン的な row をクリック/フォーカス)。
+        -->
+        <div class="row location-trigger" id="loc-trigger" tabindex="0">
+          <span class="lt-icon" id="loc-icon">📍</span>
+          <span class="lt-text placeholder" id="loc-text">場所または会議</span>
+          <button class="lt-clear" id="loc-clear" hidden aria-label="クリア">×</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="row">
+          <label>終日</label><!-- 明示フラグは無い: start/end を "YYYY-MM-DD" 形式にする(create-event.ts の裁定) -->
+          <label class="switch"><input type="checkbox" id="allday" /><span></span></label>
+        </div>
+        <div class="row">
+          <label>開始</label><!-- → start + timeZone(Intl.resolvedOptions().timeZone を自動送信) -->
+          <input type="datetime-local" value="2026-07-17T10:00" />
+        </div>
+        <div class="row">
+          <label>終了</label><!-- → end(省略可・排他的終端・start より後) -->
+          <input type="datetime-local" value="2026-07-17T11:00" />
+        </div>
+        <div class="row">
+          <label>移動時間</label><!-- → travelMinutes(X-APPLE-TRAVEL-DURATION) -->
+          <select><option>なし</option><option>15分</option><option>30分</option><option>1時間</option></select>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="row">
+          <label>繰り返し</label><!-- → recurrence(daily/weekly/monthly/yearly。none=送らない) -->
+          <select><option>しない</option><option>毎日</option><option>毎週</option><option>毎月</option><option>毎年</option></select>
+        </div>
+        <div class="row">
+          <label>カレンダー</label><!-- → calendarId(list-calendars の VEVENT コレクションから選択) -->
+          <select><option>カレンダー</option></select>
+        </div>
+        <div class="row">
+          <label>通知</label><!-- → alarms[0](開始 n 分前。最大2件・iOS プリセット語彙) -->
+          <select><option>なし</option><option>予定の時刻</option><option selected>10分前</option><option>30分前</option><option>1時間前</option><option>1日前</option></select>
+        </div>
+        <div class="row">
+          <label>予備の通知</label><!-- → alarms[1](MAX_ALARMS=2 の2件目) -->
+          <select><option>なし</option><option>予定の時刻</option><option>10分前</option><option>1時間前</option></select>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="row"><textarea placeholder="メモ"></textarea></div><!-- → notes(DESCRIPTION。会議が参照URLと併存する場合はここに「----( ビデオ通話 )----」ブロックを書く・C8) -->
+      </div>
+      <p class="hint">出席予定者の招待には対応していません(サーバー側スコープ外)。</p>
+    </section>
+
+    <!-- ===== リマインダー(vtodo)フィールドセット → create-todo 引数 =====
+         修正2: 「場所(テキストのみ)」行は削除(テキスト場所は実装ごと廃止済み・
+         ユーザー裁定。proximity 通知(到着/出発)は別スコープでこのフォームには含めない)。 -->
+    <section id="form-todo" hidden>
+      <div class="group">
+        <div class="row"><input type="text" placeholder="タイトル" /></div><!-- → title -->
+        <div class="row"><textarea placeholder="メモ"></textarea></div><!-- → notes -->
+      </div>
+      <div class="group">
+        <div class="row">
+          <label>期日</label><!-- → due("YYYY-MM-DD" or 時刻付き + timeZone。時刻付きはサーバーが VALARM 自動生成) -->
+          <input type="datetime-local" value="2026-07-17T18:00" />
+        </div>
+        <div class="row">
+          <label>繰り返し</label><!-- → recurrence(due が RRULE アンカー。due 必須) -->
+          <select><option>しない</option><option>毎日</option><option>毎週</option><option>毎月</option><option>毎年</option></select>
+        </div>
+      </div>
+      <div class="group">
+        <div class="row">
+          <label>リスト</label><!-- → calendarId(VTODO コレクション。既定 "tasks") -->
+          <select><option>タスク</option><option>リーディングリスト</option></select>
+        </div>
+        <div class="row">
+          <label>優先順位</label><!-- → priority(iOS 準拠: 1=高 5=中 9=低) -->
+          <select><option>なし</option><option>低</option><option>中</option><option>高</option></select>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 背景ディマー(タップで閉じる) -->
+  <div class="dimmer" id="dimmer"></div>
+
+  <!-- ============================================================
+       セミモーダル(C4): 「場所または会議」focus/タップで開くカード内オーバーレイ。
+       §5 の並び: 1.検索欄 → 2.ビデオ通話 → 3.既知の場所(C5) → 4.検索候補(C6)。
+       「現在地」行は置かない(H-b 未実装・§5 明記)。
+       ============================================================ -->
+  <div class="semimodal" id="semimodal" role="dialog" aria-label="場所または会議">
+    <div class="grabber"></div>
+    <div class="sm-header">
+      <span class="sm-title">場所または会議</span>
+      <button class="sm-done" id="sm-done">完了</button>
+    </div>
+    <div class="sm-body">
+      <!-- 1. 多相検索欄(場所名 or ビデオ通話URLの両方を受け付ける自由入力) -->
+      <div class="sm-search">
+        <span>🔍</span>
+        <input type="text" id="sm-search-input" placeholder="場所またはビデオ通話を入力" />
+      </div>
+
+      <!-- 2. ビデオ通話: provider チップ(静的)+その他URLで任意 Join リンク -->
+      <div class="sm-section">
+        <p class="sm-section-title">ビデオ通話</p>
+        <div class="chip-row" id="chip-row">
+          <button class="chip" data-provider="Google Meet">Meet</button>
+          <button class="chip" data-provider="Zoom">Zoom</button>
+          <button class="chip" data-provider="FaceTime">FaceTime</button>
+          <button class="chip" data-provider="その他URL" id="chip-other">その他URL</button>
+        </div>
+        <!-- 「その他URL」選択時のみ表示。値がそのまま Join URL(会議)になる(§1-c: 任意ドメイン可)。 -->
+        <div class="chip-url-input" id="chip-url-row" hidden>
+          <span>🔗</span>
+          <input type="url" id="chip-url-input" placeholder="https://..." />
+        </div>
+      </div>
+
+      <!-- 3. 既知の場所(C5): caldav が過去の X-APPLE-STRUCTURED-LOCATION から集約した候補。
+           モックはダミー(実装では list-known-locations 的なツールの結果を描画)。 -->
+      <div class="sm-section">
+        <p class="sm-section-title">既知の場所</p>
+        <div class="place-list" id="known-places">
+          <button class="place-item" data-place="福登の自宅">
+            <span class="pi-icon">📍</span>
+            <span class="pi-text">
+              <div class="pi-title">福登の自宅</div>
+              <div class="pi-sub">過去の通知から</div>
+            </span>
+          </button>
+          <button class="place-item" data-place="岐阜大学">
+            <span class="pi-icon">📍</span>
+            <span class="pi-text">
+              <div class="pi-title">岐阜大学</div>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 4. 検索候補(C6・入力時): 入力に応じた地名候補。C6(geocode ツール)は未実装のため
+           「入力時に出る想定」の見せ方だけをダミー1件で示す。地図サムネはプレースホルダ枠
+           (C7 で (a)静的サムネ / (b)ライブタイルのどちらを採るか未決・§3-a)。 -->
+      <div class="sm-section" id="search-suggestions">
+        <p class="sm-section-title">検索候補</p>
+        <div class="place-list">
+          <button class="place-item" data-place="岐阜大学" data-sub="岐阜県岐阜市柳戸1-1">
+            <span class="pi-icon">📍</span>
+            <span class="pi-text">
+              <div class="pi-title">岐阜大学</div>
+              <div class="pi-sub">岐阜県岐阜市柳戸1-1</div>
+            </span>
+            <span class="pi-thumb" aria-hidden="true">🗺️</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  // --- セグメント切替(既存モックと同一) ---
+  const segE = document.getElementById("seg-event"), segT = document.getElementById("seg-todo");
+  const fE = document.getElementById("form-event"), fT = document.getElementById("form-todo");
+  function sel(evt) {
+    const isEvent = evt.currentTarget === segE;
+    segE.setAttribute("aria-selected", String(isEvent));
+    segT.setAttribute("aria-selected", String(!isEvent));
+    fE.hidden = !isEvent; fT.hidden = isEvent;
+  }
+  segE.addEventListener("click", sel); segT.addEventListener("click", sel);
+
+  // --- 「場所または会議」行 ⇔ セミモーダル(C4) ---
+  const locTrigger = document.getElementById("loc-trigger");
+  const locIcon = document.getElementById("loc-icon");
+  const locText = document.getElementById("loc-text");
+  const locClear = document.getElementById("loc-clear");
+  const dimmer = document.getElementById("dimmer");
+  const semimodal = document.getElementById("semimodal");
+  const smDone = document.getElementById("sm-done");
+  const smSearchInput = document.getElementById("sm-search-input");
+
+  function openSemimodal() {
+    dimmer.classList.add("open");
+    semimodal.classList.add("open");
+    smSearchInput.focus();
+  }
+  function closeSemimodal() {
+    dimmer.classList.remove("open");
+    semimodal.classList.remove("open");
+  }
+  locTrigger.addEventListener("click", (e) => {
+    // クリア × を押した場合はモーダルを開かない
+    if (e.target === locClear) return;
+    openSemimodal();
+  });
+  locTrigger.addEventListener("focus", openSemimodal);
+  dimmer.addEventListener("click", closeSemimodal);
+  smDone.addEventListener("click", closeSemimodal);
+
+  // 選択結果を「場所または会議」行へ反映する共通関数。
+  // - 場所を選んだ → 📍 + 場所名(→ location + X-APPLE-STRUCTURED-LOCATION)
+  // - 会議 provider を選んだ → 🎥 + provider 名(→ url or DESCRIPTION ブロック)
+  // - その他URL を確定した → 🔗 + URL(会議として Join 解釈・§1-c)
+  function setLocationValue(icon, text) {
+    locIcon.textContent = icon;
+    locText.textContent = text;
+    locText.classList.remove("placeholder");
+    locClear.hidden = false;
+  }
+  function clearLocationValue() {
+    locIcon.textContent = "📍";
+    locText.textContent = "場所または会議";
+    locText.classList.add("placeholder");
+    locClear.hidden = true;
+  }
+  locClear.addEventListener("click", (e) => {
+    e.stopPropagation();
+    clearLocationValue();
+  });
+
+  // 2. ビデオ通話 provider チップ
+  const chips = document.querySelectorAll(".chip");
+  const chipOther = document.getElementById("chip-other");
+  const chipUrlRow = document.getElementById("chip-url-row");
+  const chipUrlInput = document.getElementById("chip-url-input");
+  chips.forEach((chip) => {
+    chip.addEventListener("click", () => {
+      chips.forEach((c) => c.setAttribute("aria-pressed", "false"));
+      chip.setAttribute("aria-pressed", "true");
+      const provider = chip.dataset.provider;
+      if (chip === chipOther) {
+        // 「その他URL」は任意 URL 入力欄を出すだけで、まだ確定しない(§1-c: 任意ドメイン可)
+        chipUrlRow.hidden = false;
+        chipUrlInput.focus();
+        return;
+      }
+      chipUrlRow.hidden = true;
+      setLocationValue("🎥", provider);
+      closeSemimodal();
+    });
+  });
+  chipUrlInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !chipUrlInput.value.trim()) return;
+    setLocationValue("🔗", chipUrlInput.value.trim());
+    closeSemimodal();
+  });
+
+  // 3/4. 既知の場所(C5)・検索候補(C6 ダミー) — place-item 共通ハンドラ
+  document.querySelectorAll(".place-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      setLocationValue("📍", item.dataset.place);
+      closeSemimodal();
+    });
+  });
+
+  // 検索欄の入力で「検索候補」セクションの見え方が変わる想定(C6 未実装のためモックでは
+  // 常時ダミー1件を表示したまま・入力してもフィルタは行わない。実装時に geocode ツール
+  // 呼び出し + debounce を差し込む位置がここになる、という位置づけコメント)。
+</script>
+</body>
+</html>

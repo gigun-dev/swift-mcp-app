@@ -144,6 +144,14 @@ final class InlineCardHost: Identifiable {
     // 初期 nil = build 前(未確定)。updateColorScheme が build 後の変更で更新する。
     private var currentColorScheme: ColorScheme?
 
+    // fullscreen 昇格/inline 復帰の host-context-changed を「実際の reparent 完了後」まで遅延させる
+    // ための保留箱(監査 2026-07-18 HIGH #1)。requestFullscreenFromHost / restoreInline /
+    // Session.onDisplayModeRequested ハンドラは、寸法を直接送らずここへ積むだけにする。
+    // AppCardView.onAdopted(実際に webView が新コンテナへ載った瞬間)から notifyReparented() が
+    // 呼ばれ、ここに積まれていればそこで初めて session.notifyDisplayModeChanged を送る。
+    // nil のとき notifyReparented は何もしない(通常の再描画による adopt 呼び出しを無視する)。
+    private var pendingDisplayModeNotification: (mode: UIDisplayMode, dims: ContainerDimensions)?
+
     /// カードを1度だけ構築する。2回目以降(スクロール往復での再 .task)は no-op(既存 webView を維持)。
     /// - Parameters:
     ///   - proxy: 接続共有の AppsServerProxy(fetchAppHTML と tools/call 素通しの両方を担う・設計 §4)。
@@ -238,7 +246,16 @@ final class InlineCardHost: Identifiable {
                         // 推定寸法(large detent ≒ 可視高 − トップインセット・§5 H4-D)。sheet 実寸は提示
                         // 完了まで確定しないので、まずこの推定を返す(必要なら提示後に補正・§5 H4-E)。
                         let dims = self.estimatedFullscreenDimensions()
-                        return coordinator.requestFullscreen(self, estimatedDimensions: dims)
+                        let resolution = coordinator.requestFullscreen(self, estimatedDimensions: dims)
+                        // 【監査 2026-07-18 HIGH #1】ここでは host-context-changed をまだ送らない
+                        // (Session 側は応答だけを返す・AppsBridgeSession.swift の requestDisplayMode
+                        // ハンドラのコメント参照)。受理されたときだけ保留箱に積み、実際の reparent
+                        // 完了(FullscreenCardView 側 AppCardView.onAdopted)で notifyReparented() が
+                        // 拾って送る。拒否(.inline のまま)は何も変わっていないので積まない。
+                        if resolution.mode == .fullscreen {
+                            self.pendingDisplayModeNotification = (.fullscreen, dims)
+                        }
+                        return resolution
                     }
                 },
                 // カードが fullscreen を宣言しているか(⤢ ボタンの出し分け・UX #1・fable #1)を受け取り、
@@ -250,6 +267,19 @@ final class InlineCardHost: Identifiable {
                 // onCardToolCall コメント参照)。actor(Session)→ MainActor へ hop して発火。
                 onCardToolCall: { [weak self] in
                     await MainActor.run { self?.onCardToolCall?() }
+                },
+                // ui/open-link の配線(監査 2026-07-18 HIGH #2)。URL 検証は Session 側
+                // (Kernel.OpenLinkPolicy)で既に済んでいるので、ここでは開くだけに徹する。
+                // UIApplication.open はメインスレッド呼び出しが要るため main queue へ dispatch し、
+                // 完了ハンドラの成否をそのまま Session の応答(result:{} / error -32000)に反映する。
+                onOpenLink: { url in
+                    await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                        DispatchQueue.main.async {
+                            UIApplication.shared.open(url, options: [:]) { success in
+                                continuation.resume(returning: success)
+                            }
+                        }
+                    }
                 })
             self.session = session
             await session.start()
@@ -298,9 +328,11 @@ final class InlineCardHost: Identifiable {
         // requestFullscreen は host.displayMode=.fullscreen への更新も行う(占有中は .inline を返し何もしない)。
         let resolution = coordinator.requestFullscreen(self, estimatedDimensions: dims)
         guard resolution.mode == .fullscreen else { return }  // 別カードが占有中なら昇格しない。
-        // カードへ host-context-changed(fullscreen)を通知(apps.mdx:776・カード発と同じ終着点)。
-        let session = self.session
-        Task { await session?.notifyDisplayModeChanged(to: .fullscreen, containerDimensions: dims) }
+        // 【監査 2026-07-18 HIGH #1】host-context-changed をここで直接送らない(カード発経路の
+        // onDisplayModeRequested ハンドラと同じ理由・そちらのコメント参照)。保留箱に積み、
+        // FullscreenCardView 側の実際の reparent 完了(AppCardView.onAdopted)を待つ
+        // ——ホスト発とカード発を同じ終着点(notifyReparented)に揃える。
+        pendingDisplayModeNotification = (.fullscreen, dims)
     }
 
     /// fullscreen 昇格時にカードへ渡す推定寸法(§5 H4-D)。sheet の large detent は
@@ -328,9 +360,23 @@ final class InlineCardHost: Identifiable {
         if let webView { AppCardWebViewFactory.relockZoom(of: webView) }
     }
 
-    /// sheet dismiss で inline へ戻す一連の処理(P4-DM・設計 04 §5 H4-E の**固定順序**)。
-    /// 順序は「rehome → scrollEnabled=false → host-context-changed(inline)」で固定する
-    /// (寸法通知が rehome より先だとカードが旧寸法でレイアウトするため)。
+    /// sheet dismiss で inline へ戻す一連の処理(P4-DM・設計 04 §5 H4-E)。
+    ///
+    /// 【2026-07-18 監査 LOW 対応: 「固定順序」コメントの実態への訂正】旧コメントは「rehome →
+    /// scrollEnabled=false → host-context-changed」を**固定順序**と称していたが、実装は
+    /// displayMode 代入(同期)・setWebViewScrollEnabled(同期)のあとに Task {} で通知を投げるだけで、
+    /// rehome(SwiftUI の再アダプト)自体は次の描画サイクルまで非同期に起きる。つまり
+    /// 「host-context-changed が rehome より先に送られることはない」という主張は保証されておらず
+    /// (Task のスケジューリングと SwiftUI 再評価の先後は不定)、コメントが実態より強く言い過ぎていた
+    /// (CLAUDE.md「嘘コメントを残さない」)。
+    ///
+    /// 今回、監査 2026-07-18 HIGH #1(fullscreen 昇格順序バグ)の修正で導入した保留箱
+    /// (pendingDisplayModeNotification)+ notifyReparented(AppCardView.onAdopted フック)は、
+    /// この inline 復帰にもそのまま対称に適用できる(fullscreen→inline も「webView が新コンテナへ
+    /// 実際に載ってから寸法を通知する」という同じ要請を持つため)。よってここでも直接 Task で送らず
+    /// 保留箱へ積み、InlineCardView 側 AppCardView の実際の reparent 完了を待って送る形に統一した。
+    /// これで「host-context-changed は実際の reparent 後」が両方向とも機械的に保証される
+    /// (コメントの過大な主張の解消 = 監査 LOW 対応)。
     func restoreInline() {
         // 1. rehome: displayMode=.inline に戻すと、inline 側 AppCardView が再アダプトで webView を取り戻す
         //    (@Observable 観測で InlineCardView が再評価される。設計 04 §6-7 の rehomeToken 保険は
@@ -338,10 +384,23 @@ final class InlineCardHost: Identifiable {
         displayMode = .inline
         // 2. scrollEnabled=false: inline は高さ追従で内部スクロール不要(チャット全体でスクロールする)。
         setWebViewScrollEnabled(false)
-        // 3. host-context-changed(inline + inline 寸法): カードに inline へ戻ったことと寸法を通知。
+        // 3. host-context-changed(inline + inline 寸法)は保留箱に積むだけ。実送信は inline 側
+        //    AppCardView の実際の reparent 完了(onAdopted → notifyReparented)を待つ。
         let dims = ContainerDimensions(width: Double(containerWidth), maxHeight: Double(inlineMaxHeight))
+        pendingDisplayModeNotification = (.inline, dims)
+    }
+
+    /// AppCardView.onAdopted から呼ばれる: 実際に webView がどこかのコンテナへ再アダプトされた
+    /// **直後**に、保留中の displayMode 通知があればそこで初めて送る(監査 2026-07-18 HIGH #1)。
+    /// 保留が無ければ何もしない(通常の再描画による adopt 呼び出しをすべて無視する — displayMode
+    /// 遷移を伴わない adopt は頻繁に起きる: 例えばスクロールで InlineCardView が再生成されるたびに
+    /// updateUIView 経由で adoptIfOwned は呼ばれるが、shouldOwn かつ既に正しい container に居れば
+    /// adopt() 自体を呼ばない = onAdopted も呼ばれない。呼ばれるのは「本当に載せ替わった」ときだけ)。
+    func notifyReparented() {
+        guard let pending = pendingDisplayModeNotification else { return }
+        pendingDisplayModeNotification = nil
         let session = self.session
-        Task { await session?.notifyDisplayModeChanged(to: .inline, containerDimensions: dims) }
+        Task { await session?.notifyDisplayModeChanged(to: pending.mode, containerDimensions: pending.dims) }
     }
 
     // MARK: - テーマ(外観)変更(#5 ダークモード)
@@ -530,7 +589,13 @@ struct InlineCardView: View {
             // overlay の枠線)には一切手を入れない — オーバーレイ撤去に伴う変更はここだけに閉じる。
             VStack(spacing: 4) {
                 chromeRow
-                AppCardView(webView: webView, role: .inline, activeDisplayMode: host.displayMode)
+                AppCardView(
+                    webView: webView, role: .inline, activeDisplayMode: host.displayMode,
+                    // 監査 2026-07-18 HIGH #1: 実際に inline へ再アダプトされた直後に保留中の
+                    // host-context-changed(inline 復帰)があれば送る(InlineCardHost.notifyReparented
+                    // コメント参照)。
+                    onAdopted: { host.notifyReparented() }
+                )
                     .frame(height: cardState.desiredHeight)  // size-changed 追従(設計 §5・fullscreen 中は停止)。
                     .frame(maxWidth: .infinity)
                     // #5 ダークモード: 枠・背景はシステム意味カラーにして外観に追従する(旧: Color(white:) 固定は

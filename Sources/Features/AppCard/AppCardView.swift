@@ -55,6 +55,21 @@ struct AppCardView: UIViewRepresentable {
     /// host.displayMode の現在値。呼び出し側が host.displayMode をそのまま渡す。値型で受け取ることで
     /// SwiftUI が差分を検知し、displayMode 変化時に必ず updateUIView を呼ぶ(再アダプトの発火点)。
     let activeDisplayMode: UIDisplayMode
+    /// 実際に webView を自分の container へ再アダプトした**瞬間**(superview 差し替え完了直後)に
+    /// 呼ばれるフック(監査 2026-07-18 HIGH #1・fullscreen 昇格順序バグの修正)。
+    ///
+    /// 【なぜこのフックが要るか】displayMode の切替(host.displayMode 変更)から実際に webView が
+    /// 新しいコンテナへ載る(このファイル冒頭コメントの「再アダプト方式」)までは SwiftUI の
+    /// 非同期な再評価を挟む。host-context-changed(fullscreen 寸法)がこの再アダプトより先に
+    /// カードへ届くと、カードはまだ旧コンテナ幅のままフルスクリーン寸法でリフローし、遷移中に
+    /// 見た目が右上へズレる実機不具合の根因になっていた(反証検証済み・AppsBridgeSession.swift の
+    /// requestDisplayMode ハンドラのコメント参照)。「実際に載せ替わった後」を機械的に捉えられる
+    /// 唯一の地点はこの adopt 完了時点なので、ここにフックを置く。呼び出し側(InlineCardHost)は
+    /// これを受けて初めて session.notifyDisplayModeChanged を呼ぶ(応答/通知の分離)。
+    ///
+    /// 既定 nil = 何もしない(StaticCardView・TodosCardSpikeView 等 displayMode 遷移を持たない
+    /// 呼び出し元を壊さない)。冪等に呼ばれること前提(呼び出し側が pending 判定で二重発火を吸収する)。
+    var onAdopted: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
@@ -88,6 +103,9 @@ struct AppCardView: UIViewRepresentable {
             webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
+        // 実際の再アダプトが起きた瞬間だけ呼ぶ(shouldOwn だが既に正しい container に居るだけの
+        // no-op 経路では呼ばない — 上の adoptIfOwned の if 節がこの adopt() 自体をガードしている)。
+        onAdopted?()
     }
 }
 

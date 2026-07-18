@@ -128,8 +128,17 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
 
     // MARK: - 昇格受理
 
-    @Test("request-display-mode(fullscreen)受理: result.mode=fullscreen 応答 → host-context-changed 通知の順")
+    @Test("request-display-mode(fullscreen)受理: 応答は即返す・host-context-changed はここでは送らない(監査 2026-07-18 HIGH #1)")
     func requestDisplayModeAccepted() async throws {
+        // 【2026-07-18 テスト改訂の背景】旧実装は Session が resolution 決定直後に応答 + 寸法通知の
+        // 両方を自分で送っていた。この「resolution 後に即 host-context-changed」が、実機で
+        // WKWebView の fullscreen コンテナへの reparent(SwiftUI 側の非同期処理)より先に寸法通知が
+        // 届いてしまい、カードが旧コンテナ幅のまま全画面寸法でリフローする不具合の根因だった
+        // (監査 2026-07-18 HIGH #1・反証検証済み)。修正で Session は「応答(結果のモード)だけ」を
+        // 即返すようにし、寸法を運ぶ host-context-changed は Features 側が実際の reparent 完了を
+        // 検知してから明示的に session.notifyDisplayModeChanged を呼ぶ形に一本化した
+        // (InlineCardHost.notifyReparented・AppCardView.onAdopted 参照)。このテストは Session
+        // 単体としての新しい契約(応答のみ即時・通知は別呼び出し)を検証する。
         let transport = MockTransport()
         let session = await makeReadySession(
             transport: transport,
@@ -137,23 +146,25 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
 
         let beforeCount = transport.sentRawJSON.count
         transport.push(#"{"jsonrpc":"2.0","id":42,"method":"ui/request-display-mode","params":{"mode":"fullscreen"}}"#)
-        await waitUntil { transport.sentRawJSON.count >= beforeCount + 2 }
+        await waitUntil { transport.sentRawJSON.count >= beforeCount + 1 }
+        try? await Task.sleep(for: .milliseconds(30))  // host-context-changed が追い遅れで来ないことも確認する猶予。
 
+        // 応答1本だけが送られ、host-context-changed はまだ送られていない。
         let newMessages = transport.sentRawJSON[beforeCount...]
-        #expect(newMessages.count == 2)
-
-        // (a) 応答が先: result.mode == "fullscreen"。
-        let responseJSON = newMessages[newMessages.startIndex]
-        let response = try JSONDecoder().decode(JSONRPCResponse.self, from: Data(responseJSON.utf8))
+        #expect(newMessages.count == 1)
+        let response = try JSONDecoder().decode(JSONRPCResponse.self, from: Data(newMessages.first!.utf8))
         #expect(response.id == .int(42))
         #expect(response.result?["mode"] == .string("fullscreen"))
 
-        // (b) その後 host-context-changed が displayMode:fullscreen + 寸法つきで送出される。
-        let notificationJSON = newMessages[newMessages.startIndex + 1]
-        let notification = try JSONDecoder().decode(JSONRPCNotification.self, from: Data(notificationJSON.utf8))
+        // Features 側の reparent 完了フックに相当する明示呼び出しで、初めて host-context-changed が出る。
+        let afterNotifyCount = transport.sentRawJSON.count
+        await session.notifyDisplayModeChanged(to: .fullscreen, containerDimensions: ContainerDimensions(width: 390, maxHeight: 700))
+        let notificationMessages = transport.sentRawJSON[afterNotifyCount...]
+        #expect(notificationMessages.count == 1)
+        let notification = try JSONDecoder().decode(JSONRPCNotification.self, from: Data(notificationMessages.first!.utf8))
         #expect(notification.method == AppsMethod.hostContextChanged)
         #expect(notification.params?["displayMode"] == .string("fullscreen"))
-        #expect(notification.params?["containerDimensions"]?["width"] == .int(340))
+        #expect(notification.params?["containerDimensions"]?["width"] == .int(390))
 
         await session.close()
     }

@@ -102,6 +102,13 @@ public actor AppsBridgeSession {
     /// カード発 tools/call 素通しの開始フック(ハプティクス用・init コメント参照)。nil = 無効。
     private let onCardToolCall: (@Sendable () async -> Void)?
 
+    // ui/open-link(カード発の外部 URL オープン要求)の実行フック(監査 2026-07-18 HIGH #2)。
+    // UIApplication.open は UIKit 依存で Services/actor には持ち込めないため、実行は Features
+    // (InlineCardHost)に委譲する注入点(onDisplayModeRequested と同型)。戻り値は「実際に開けたか」
+    // (ユーザーが拒否した・システムがハンドラを持たない等で false もありうる)。
+    // nil(既定)= 機能未配線のホスト構成では常に拒否応答(-32000)を返す(スパイク/テストを壊さない)。
+    private let onOpenLink: (@Sendable (URL) async -> Bool)?
+
     // request-display-mode を受けたとき、実際にどのモードへ遷移するかを決める注入点
     // (P4-DM・設計 04 §5 H3 + H4-F)。Features(H4)が sheet 器を持つかどうかを知っているのは
     // Features 側なので、Session 自身は「昇格してよいか」を判断しない。
@@ -172,7 +179,9 @@ public actor AppsBridgeSession {
         // 操作にハプティクスを付ける)。カード内のタップ自体はホストから不可視だが、ユーザー操作は必ず
         // tools/call 素通しとしてここを通るので、任意の MCP アプリに対して中立にフックできる(ビジョン2)。
         // 既定 nil = 何もしない(スパイク/テストを壊さない)。
-        onCardToolCall: (@Sendable () async -> Void)? = nil
+        onCardToolCall: (@Sendable () async -> Void)? = nil,
+        // ui/open-link の実行フック(既定 nil = 常に拒否)。本番は Features が UIApplication.open へ配線する。
+        onOpenLink: (@Sendable (URL) async -> Bool)? = nil
     ) {
         self.transport = transport
         self.proxy = proxy
@@ -185,6 +194,7 @@ public actor AppsBridgeSession {
         self.onDisplayModeRequested = onDisplayModeRequested
         self.onCardCapabilities = onCardCapabilities
         self.onCardToolCall = onCardToolCall
+        self.onOpenLink = onOpenLink
     }
 
     // MARK: - 起動 / 受信ループ
@@ -407,12 +417,35 @@ public actor AppsBridgeSession {
             }
 
         case let .openLink(id, params):
-            // open-link は「実装1行」の約束(設計 §3-2)。ただし UIApplication.open は UIKit 依存で
-            // Services には持ち込めない。ここでは受理応答({})だけ返し、実際に開くのは Features 側の
-            // 責務にする余地を残す(スパイクでは todos カードは外部リンクを踏まないので未配線)。
-            // TODO(P3): open-link を Features のハンドラへ委譲する注入点を足す。
-            logger.notice("open-link 受信 url=\(params.url, privacy: .public)(スパイクでは受理のみ)")
-            await deliver(response: JSONRPCResponse(id: id, result: .object([:])))
+            // ui/open-link の配線(監査 2026-07-18 HIGH #2)。出典 apps.mdx:965-985:
+            //   成功 → result:{}(空オブジェクト)、失敗/拒否 → error{code:-32000, message}。
+            // URL 検証は Kernel の純関数(OpenLinkPolicy)に切り出す(サンドボックス脱出経路の
+            // 入口になりうるため — javascript:/file: 等を拒否・OpenLinkPolicy.swift 冒頭コメント参照)。
+            guard let url = OpenLinkPolicy.resolve(urlString: params.url) else {
+                logger.error("open-link: 不正な URL を拒否 url=\(params.url, privacy: .public)")
+                await deliver(response: JSONRPCResponse(
+                    id: id, error: JSONRPCError(code: -32000, message: "Invalid URL")))
+                break
+            }
+            guard let onOpenLink else {
+                // ハンドラ未配線(nil)のホスト構成。仕様上「拒否」として振る舞う(既定 nil の設計は
+                // onDisplayModeRequested と同じ考え方 — 死にボタンにはならない。open-link は結果を
+                // 返すだけで広告フラグが無いのでボタンにはならないが、機能していないことを誠実に
+                // エラーで伝える)。
+                logger.notice("open-link: ハンドラ未注入のため拒否 url=\(params.url, privacy: .public)")
+                await deliver(response: JSONRPCResponse(
+                    id: id, error: JSONRPCError(code: -32000, message: "Link opening not supported")))
+                break
+            }
+            let opened = await onOpenLink(url)
+            if opened {
+                logger.notice("open-link: オープン成功 url=\(params.url, privacy: .public)")
+                await deliver(response: JSONRPCResponse(id: id, result: .object([:])))
+            } else {
+                logger.notice("open-link: オープン失敗/拒否 url=\(params.url, privacy: .public)")
+                await deliver(response: JSONRPCResponse(
+                    id: id, error: JSONRPCError(code: -32000, message: "Link opening denied by user")))
+            }
 
         case let .requestDisplayMode(id, params):
             // カード発のモード変更要求。Features(H4)が実モードを決めて返す。既定は拒否(inline)。
@@ -420,19 +453,24 @@ public actor AppsBridgeSession {
             let resolution = await onDisplayModeRequested?(params.mode)
                 ?? DisplayModeResolution(mode: currentDisplayMode)
             // apps.mdx:787 MUST: 変えなかった場合も「結果のモード」を必ず返す。
+            // ここでは**応答だけ**を即返す(このタイミングで JSON-RPC 応答を出すこと自体は
+            // apps.mdx:965-985 の request/response 契約に沿う正当な即時応答 — 遅らせて良いのは
+            // 寸法を運ぶ host-context-changed の方であって応答そのものではない)。
             let result = RequestDisplayModeResult(mode: resolution.mode)
             await deliver(response: JSONRPCResponse(
                 id: id, result: (try? JSONValue(encoding: result)) ?? .object([:])))
-            // モードが実際に変わったときだけ host-context-changed で通知(apps.mdx:776)。
-            if resolution.mode != currentDisplayMode {
-                currentDisplayMode = resolution.mode
-                let dims = resolution.containerDimensions
-                    ?? ContainerDimensions(width: containerWidth, maxHeight: maxHeight)
-                let patch = HostContext(displayMode: resolution.mode, containerDimensions: dims)
-                await deliver(notification: JSONRPCNotification(
-                    method: AppsMethod.hostContextChanged, params: try? JSONValue(encoding: patch)))
-                logger.notice("displayMode 変更 → \(String(describing: resolution.mode)) を host-context-changed で通知")
-            }
+            // 【host-context-changed(寸法)をここで送らない理由(監査 2026-07-18 HIGH #1)】
+            // 昇格時、この通知が WKWebView の fullscreen コンテナへの reparent(SwiftUI
+            // fullScreenCover の提示・数百 ms かかりうる)より先に届くと、カードはまだ inline 幅の
+            // コンテナに載ったまま全画面寸法で DOM リフローし、遷移中に見た目が右上へズレる実機不具合の
+            // 根因になっていた(反証検証済み)。応答(above)と通知(host-context-changed)は apps.mdx 上
+            // 別個の配送であり、通知を遅らせても「結果のモードを返す」MUST は満たしたまま守れる。
+            // よって寸法通知は Session からは送らず、Features 側(InlineCardHost)が実際の reparent
+            // 完了(AppCardView.onAdopted フック)を検知してから session.notifyDisplayModeChanged を
+            // 呼ぶ形に一本化する(ホスト発 fullscreen 昇格・inline 復帰と同じ終着点 — InlineCardHost.swift
+            // の requestFullscreenFromHost / restoreInline / notifyReparented コメント参照)。
+            // currentDisplayMode(Session 内の「影」)も、実際に通知を送る notifyDisplayModeChanged 側で
+            // 更新する(このハンドラでは更新しない — 二重更新や「まだ送っていない値」を先取りしない)。
         }
     }
 

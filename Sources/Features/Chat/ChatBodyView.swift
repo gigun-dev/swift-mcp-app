@@ -267,7 +267,21 @@ struct ChatBodyView: View {
         }
         // チャット画面が閉じるとき、カードのセッションをまとめて畳む(設計 §6・§4 の生存はここまで)。
         // スクロールアウトでは畳まない(InlineCardView は onDisappear で teardown しない)。
-        .onDisappear { cardRegistry.teardownAll() }
+        //
+        // 【監査 2026-07-18 LOW: fullscreenCoordinator.activeHost の強参照を画面破棄経路で断つ】
+        // FullscreenCoordinator.activeHost は「今 fullscreen 昇格中のカード」への強参照(@Observable の
+        // var)。newChat / 画面破棄で ChatBodyView 自体が捨てられても、activeHost が生きていれば
+        // その InlineCardHost(webView/session を強参照で抱える大きなオブジェクト)は解放されない
+        // (fullscreenCoordinator 自体は @State でこの View と寿命を共にするので通常は問題にならないが、
+        // 反証検証で「retry 経路での混線」は成立しないと判明した一方、画面破棄そのものの経路は
+        // 塞がれていなかった)。cardRegistry.teardownAll() と同じ場所で activeHost を明示的に nil にし、
+        // 強参照を断つ。dismiss()(= restoreInline の順序復帰)は呼ばない —— 画面ごと消える以上、
+        // カードを見た目上 inline に戻す意味は無く、teardownAll が直後に全 session を畳むので
+        // restoreInline の host-context-changed 送信は無駄な往復になるだけ(最小修正)。
+        .onDisappear {
+            cardRegistry.teardownAll()
+            fullscreenCoordinator.activeHost = nil
+        }
     }
 
     /// 送信された user ターン(index 指定)を画面上部へ寄せる(ChatGPT 式・2026-07-17 再設計・Fable)。

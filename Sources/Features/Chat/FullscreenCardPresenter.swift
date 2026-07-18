@@ -84,7 +84,13 @@ struct FullscreenCardView: View {
                 if let webView = host.webView {
                     // role:.fullscreen + host.displayMode を渡す。fullscreen 中は host.displayMode==.fullscreen
                     // なので、この AppCardView が webView を adopt する(inline 側は displayMode ガードで奪わない)。
-                    AppCardView(webView: webView, role: .fullscreen, activeDisplayMode: host.displayMode)
+                    // onAdopted: 監査 2026-07-18 HIGH #1 — 実際に fullscreen コンテナへ再アダプトされた
+                    // 直後に、保留中の host-context-changed(fullscreen 昇格)があればここで初めて送る
+                    // (InlineCardHost.notifyReparented コメント参照)。これが「WebView の reparent より
+                    // 寸法通知が先に届く」順序バグの直接の修正点。
+                    AppCardView(
+                        webView: webView, role: .fullscreen, activeDisplayMode: host.displayMode,
+                        onAdopted: { host.notifyReparented() })
                 } else {
                     // 通常来ない(昇格は webView 構築後にしか起きない)が、防御的にプレースホルダ。
                     ProgressView()
