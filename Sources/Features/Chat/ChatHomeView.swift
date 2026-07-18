@@ -63,7 +63,7 @@ struct ChatHomeView: View {
                     store: home.chatStore,
                     activeSessionID: activeSessionID,
                     onSelect: { id in home.openHistory(id: id) },
-                    onNewChat: { home.newChat() },
+                    onNewChat: { Task { await home.newChat() } },
                     onClose: { closeSidebar() }
                 )
                 .frame(width: revealWidth)
@@ -193,7 +193,7 @@ struct ChatHomeView: View {
         ToolbarItem(placement: .topBarTrailing) {
             HStack(spacing: 2) {
                 Button {
-                    home.newChat()
+                    Task { await home.newChat() }
                 } label: {
                     Image(systemName: "square.and.pencil")
                 }
@@ -313,10 +313,29 @@ struct ChatHomeView: View {
         case .ready(let chatVM):
             // proxy は .ready で必ず非 nil(runConnect が state=.ready の直前に生成)。カード構築
             //(InlineCardView)に渡す。防御的に if let で受け、万一 nil ならカード無しで本体だけ出す。
+            // 【混線バグ修正(実機報告「list-todos カードに vevent(agenda)が一時表示された」の原因A)】
+            // ChatBodyView は cardRegistry(InlineCardHost の台帳)を @State で持つ。@State は
+            // "同じ位置に居続ける View" に紐づくため、newChat() で home.state が
+            // .ready(oldVM) → .ready(newVM) に切り替わっても、SwiftUI は enum の同じ case として
+            // ChatBodyView を**同一 View 扱い**し続け、cardRegistry(旧チャットの WKWebView/
+            // AppsBridgeSession を保持したまま)が生き残ってしまっていた。新チャット最初のツール
+            // 結果カードが (turnIndex:0, cardIndex:0) に積まれると、cardRegistry.host(for: "0-0")
+            // が **旧チャットの別ツールの host**(例: agenda カードの webView)をそのまま返し、
+            // buildIfNeeded の guard(buildTask != nil)で再構築もスキップされる — 新カードの
+            // resourceUri/引数を送らないまま旧 HTML がそのまま表示される、という経路が実在した。
+            // `.id(chatVM.currentSession.id)` でセッションごとに View identity を切ることで、
+            // chatVM が入れ替わるたびに ChatBodyView(と cardRegistry を含む @State 一式)を
+            // 強制的に作り直させる(旧 registry は参照が切れて破棄され、新チャットは必ず空の
+            // registry から始まる)。teardown() 呼び出しを挟まないので旧 WKWebView は明示の
+            // ui/notifications/request-teardown を送らずに deinit されるが、チャット切り替えの
+            // 低頻度さと「誤ったカードを見せ続けるより安全」を優先した(1B の cardRegistry.teardownAll()
+            // が既に同種のトレードオフを採っているのと同じ判断)。
             if let proxy = home.proxy {
                 ChatBodyView(chatVM: chatVM, proxy: proxy)
+                    .id(chatVM.currentSession.id)
             } else {
                 ChatBodyView(chatVM: chatVM, proxy: nil)
+                    .id(chatVM.currentSession.id)
             }
         case .failed(let message):
             failedView(message)

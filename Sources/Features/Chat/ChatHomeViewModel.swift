@@ -326,7 +326,16 @@ public final class ChatHomeViewModel {
     /// 新しい sessionId で空の ChatViewModel を組み直す**(makeChatViewModel。connectionContext を
     /// 使うので OAuth は走らない)。これで「まっさらなチャット」を軽量に実現できる。
     /// 未接続(connectionContext なし)なら接続ゲートに戻すだけ(まず接続してもらう)。
-    public func newChat() {
+    ///
+    /// 【#12 staleness 修正: ここで tools/list を取り直す】以前は connect() 時点の
+    /// `uiResourceURIs`(toolName→ui:// URI マップ)を接続が生きている限りずっと使い回していたため、
+    /// サーバーを再デプロイしてカード HTML(= caldav ではハッシュ化 URI)が変わっても、
+    /// アプリを再起動するまで古いカードが出続けていた。「新規チャット」という自然な区切りで
+    /// `AppsServerProxy.refreshToolsAndInvalidateHTMLCache()` を呼び、tools/list を取り直して
+    /// マップと htmlCache を両方最新化する(鮮度方針の詳細は同メソッドのコメント参照)。
+    /// 失敗時(ネットワーク瞬断等)は握りつぶさず `.failed` に落とす——新規チャットを古い
+    /// マップのまま黙って始めると、また同じ staleness 症状に戻ってしまうため。
+    public func newChat() async {
         displayMode = .live  // 履歴閲覧中なら抜ける。
         historyLoadError = nil
 
@@ -336,10 +345,26 @@ public final class ChatHomeViewModel {
             return
         }
         do {
-            let chatVM = try makeChatViewModel(using: context)
+            let tools = try await context.proxy.refreshToolsAndInvalidateHTMLCache()
+            let toolDefs = try toolDefinitions(from: tools)
+            var uiResourceURIs: [String: String] = [:]
+            for tool in tools {
+                if let uri = context.proxy.resolveUIResourceURI(for: tool) {
+                    uiResourceURIs[tool.name] = uri
+                }
+            }
+            let refreshedContext = ConnectionContext(
+                proxy: context.proxy,
+                toolDefs: toolDefs,
+                uiResourceURIs: uiResourceURIs,
+                serverURL: context.serverURL
+            )
+            self.connectionContext = refreshedContext
+
+            let chatVM = try makeChatViewModel(using: refreshedContext)
             state = .ready(chatVM)
             applyPricingToCurrentChatVM()  // T7: 新規チャットでもモデル単価を引き直す(モデル変更後の新規チャットに追従)。
-            logger.notice("新規チャットを開始(接続再利用・新 sessionId)")
+            logger.notice("新規チャットを開始(接続再利用・tools/list 再取得・新 sessionId)")
         } catch {
             logger.error("新規チャットの構築に失敗: \(String(reflecting: error), privacy: .public)")
             state = .failed(String(describing: error))

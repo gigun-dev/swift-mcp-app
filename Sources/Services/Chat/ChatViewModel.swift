@@ -492,7 +492,7 @@ public final class ChatViewModel {
         // カードが結果を見せるので、LLM へは短い要約(件数等)で足りる可能性がある。ただし要約の
         // 正しさ担保が要る(モデルが結果本体を参照して回答するケースがある)ので T5 ではやらず候補に留める。
         for r in results.sorted(by: { $0.index < $1.index }) {
-            guard !r.failed, let uri = uiResourceURIs[r.toolName] else { continue }
+            guard !r.failed, let uri = Self.resourceURI(forResult: r.result, toolName: r.toolName, fallback: uiResourceURIs) else { continue }
             // 【設計 03 §2 決定2】isError:true の CallToolResult ではカードを起こさない。
             // caldav が使う TS SDK は失敗を throw ではなく `isError:true` の**正常応答**として
             // 返す(zod バリデーション失敗など・一次資料は設計 03 §1)。r.failed(throw 由来)
@@ -520,6 +520,45 @@ public final class ChatViewModel {
                 name: r.toolName
             ))
         }
+    }
+
+    /// カードの resourceUri を解決する: **tools/call 結果 JSONValue の `_meta.ui.resourceUri`
+    /// (後方互換キー `_meta["ui/resourceUri"]` も見る)を優先し、無ければ事前計算マップ
+    /// (`uiResourceURIs`・接続時の tools/list 由来)へフォールバック**する。
+    ///
+    /// 【一次資料の確認結果(2026-07-18・タスク指示の前提を検証)】ext-apps 仕様
+    /// (`~/ghq/github.com/modelcontextprotocol/ext-apps/specification/2026-01-26/apps.mdx`
+    /// "Resource Discovery" 節・行 321-388)と caldav の実装(`registerAppTool` = ext-apps
+    /// `src/server/index.js` の `K3`)を確認したところ、**`_meta.ui.resourceUri` は
+    /// `tools/list` が返す `Tool` 定義に載る値であって、個々の `tools/call` の `CallToolResult`
+    /// には載らない**(caldav の `toTodosToolResponse` 等・server.ts 1758 行は
+    /// `{content, structuredContent}` のみを返し `_meta` を付けない)。つまり
+    /// 「ツール結果の _meta から優先解決する」という当初の前提は caldav 実装上は成立しない
+    /// ——**実際の staleness 原因は「マップの再解決タイミング」**(ChatHomeViewModel が
+    /// 接続時に一度だけ resolve し、以降アプリ再起動まで使い回していたこと)だった。これは
+    /// `ChatHomeViewModel.newChat()` が `AppsServerProxy.refreshToolsAndInvalidateHTMLCache()` で
+    /// tools/list を取り直すよう修正済み(そちらが本丸の修正)。
+    ///
+    /// このメソッドはそれでも**仕様の拡張余地に対して前方互換**にしておく: apps.mdx は
+    /// `CallToolResult` の `_meta` フィールド自体は "Additional metadata... not intended for
+    /// model context"(apps.mdx 1475 行)とだけ定義しており、将来 or 他サーバーが
+    /// `_meta.ui.resourceUri` を結果側にも載せてくる可能性を否定していない。載っていれば
+    /// それを信頼する(サーバーが「この呼び出し結果は別のカードで描画してほしい」と明示的に
+    /// 上書きしてきた、と解釈できる)方が自然なので、優先順位はそちらを先にする。
+    /// caldav 実運用では常にフォールバック(事前計算マップ)側が使われる——今はこの経路が
+    /// 実質 no-op であることを承知の上での前方互換コードである。
+    static func resourceURI(forResult result: JSONValue?, toolName: String, fallback: [String: String]) -> String? {
+        if let meta = result?["_meta"] {
+            // 新形式: _meta.ui.resourceUri(AppsServerProxy.resolveUIResourceURI と同じ優先順位)。
+            if let uri = meta["ui"]?["resourceUri"]?.stringValue {
+                return uri
+            }
+            // 後方互換: フラットキー _meta["ui/resourceUri"](apps.mdx 342 行「deprecated」表記)。
+            if let uri = meta["ui/resourceUri"]?.stringValue {
+                return uri
+            }
+        }
+        return fallback[toolName]
     }
 
     /// 1本の tool_call を実行して結果文字列に落とす(TaskGroup の子タスク本体)。

@@ -79,6 +79,43 @@ public actor AppsServerProxy {
         self.toolsForVisibility = tools
     }
 
+    // MARK: - 鮮度: tools/list 再取得 + HTML キャッシュ無効化(#12 staleness 修正)
+
+    /// `tools/list` を再取得し、visibility 判定用の一覧を更新した上で、resources/read の
+    /// HTML キャッシュ(`htmlCache`)を丸ごと無効化して返す(呼び出し側が新しい tools から
+    /// toolName→resourceUri マップを組み直す)。
+    ///
+    /// 【なぜ要るか(#12 の実害)】従来は `connect()` 時に一度 `tools/list` を取っただけの結果
+    /// (`ChatHomeViewModel.connectionContext.uiResourceURIs`)を、アプリを再起動するまで
+    /// **ずっと使い回していた**。caldav 側は resourceUri を HTML の内容ハッシュから作る
+    /// (`ui://caldav/todos.<hash>.html` — server.ts/todos-app.ts)ので、サーバーを再デプロイして
+    /// カード HTML が変わると URI 自体が変わるが、ホストは古い URI を握ったままなので、
+    /// 新しい HTML には一生辿り着けない(「デプロイしたのに新機能が出ない」の直接原因)。
+    ///
+    /// 【鮮度方針(タスク指示「毎回読み直しは避けつつ、再起動必須よりは改善」)】
+    /// 「1チャットメッセージごとに tools/list を取り直す」は tools/list 自体は軽いとはいえ
+    /// 常時のレイテンシ・トークン以外のコスト(往復1つ)が乗るので避け、代わりに
+    /// **「新規チャット」を切る境界(ChatHomeViewModel.newChat)でだけ再取得する**方針を採る。
+    /// これなら「アプリを起動しっぱなしでも、新しい会話を始めれば最新カードが出る」という
+    /// 現実的な鮮度が手に入り、実装も呼び出し側1箇所(newChat)に閉じる。真にリアルタイムな
+    /// 鮮度(デプロイ直後に今の会話へ反映)が要るなら、resources/list_changed 通知の購読や
+    /// TTL 方式への拡張が要るが、それは検証コストに見合わないため今回のスコープ外
+    /// (apps.mdx は「Host MAY prefetch and cache」としか要求していない = 積極キャッシュ自体は許容)。
+    ///
+    /// - Returns: 再取得した `tools/list` の結果。呼び出し側(ChatHomeViewModel)が
+    ///   `resolveUIResourceURI` で toolName→URI マップと LLM ツール定義を組み直す。
+    public func refreshToolsAndInvalidateHTMLCache() async throws -> [Tool] {
+        let (tools, _) = try await client.listTools()
+        self.toolsForVisibility = tools
+        // URI が変わっていれば新 URI で自然に再取得されるが(htmlCache は URI キー)、
+        // **同一 URI のまま中身だけ差し替わる**サーバー(caldav のようにハッシュ化URIを
+        // 徹底しない任意の MCP Apps サーバー — ホストは caldav 固有の実装を仮定できない・
+        // CLAUDE.md ビジョン2)にも備え、この境界(新規チャット開始)では無条件に空にする。
+        htmlCache.removeAll()
+        logger.notice("tools/list 再取得 tools=\(tools.count, privacy: .public)・htmlCache 無効化")
+        return tools
+    }
+
     // MARK: - 発見: tools/list から ui:// URI を解決
 
     /// 指定ツールの UI リソース URI を `_meta` から解決する(設計 §4・app-bridge.ts:126-133)。

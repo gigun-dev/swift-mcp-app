@@ -340,7 +340,22 @@ struct ChatBodyView: View {
                     ForEach(Array(turn.cards.enumerated()), id: \.offset) { cardIndex, card in
                         // host を先に束ねる: zoom source の id(host.id)を InlineCardView 本体と
                         // .matchedTransitionSource の両方に使うため(call site で参照が要る)。
-                        let host = cardRegistry.host(for: "\(turnIndex)-\(cardIndex)", coordinator: fullscreenCoordinator)
+                        // 【混線バグ修正(原因B・防御的多重化)】キーに resourceUri を含める。
+                        // 従来は "(turnIndex)-(cardIndex)" のみ = **ツールの同一性を含まない
+                        // 位置キー**だった。ChatHomeView 側で `.id(chatVM.currentSession.id)` を
+                        // 足してセッション跨ぎの混線(実機で踏んだ経路)は塞いだが、それは
+                        // 「View identity が変わればどのみち registry ごと作り直る」という
+                        // 外側の防御であり、registry 自体は今後も位置キーのままでは
+                        // 同種の事故(将来 retry のピンポイント削除実装・巻き戻し後の再送で
+                        // 同じ index に別ツールが来るケース等)に弱い。URI を key に混ぜておけば、
+                        // 万一 index が一致しても内容(ツール)が違えば別 host になり、
+                        // 誤って旧 webView/HTML を再利用することがなくなる(get-or-create の
+                        // 「同一」の定義を「位置」から「位置+内容」へ強めるだけで、
+                        // 正常系(同じ card が同じ index に来る通常のスクロール再描画)は
+                        // 従来どおり同一 host を引き続ける)。
+                        let host = cardRegistry.host(
+                            for: "\(turnIndex)-\(cardIndex)-\(card.resourceUri)",
+                            coordinator: fullscreenCoordinator)
                         // カード内操作(done/undo 等の tools/call)の触覚を配線(ユーザー要望 2026-07-17)。
                         // body 評価のたびに同じ closure を再代入するが冪等・軽量(ChatHaptics.cardAction 参照)。
                         let _ = { host.onCardToolCall = { haptics.cardAction() } }()
@@ -409,12 +424,15 @@ struct ChatBodyView: View {
             haptics.sent()  // 送信と同じ軽い合図(タスク指示・「もう一度投げる」操作として自然)。
             // 【なぜ teardownAll(全カード畳み)にしたか(タスク指示で裁量とされた点・ボツ案を残す)】
             // retry は「最後の user ターン以降」を丸ごと巻き戻す(ChatViewModel.retryLastTurn)。
-            // このとき削除される turns に紐づく CardEmbed も消えるが、registry のキーは
-            // "\(turnIndex)-\(cardIndex)" で **turn の内容を含まない**。もしピンポイント削除
-            // (該当 turnIndex 以降のキーだけ teardown)にとどめると、再送後に同じ index へ
-            // *別内容の* カードが積まれたとき、registry.host(for:) が「index が一致する」という
-            // だけの理由で古い WKWebView/AppsBridgeSession を再利用してしまう(古いセッションに
-            // 新しい tool 結果を送りつける事故になりうる)。
+            // このとき削除される turns に紐づく CardEmbed も消える。registry のキーは
+            // 2026-07-18 の混線バグ修正で resourceUri を含めたため(上の host(for:) 呼び出し
+            // コメント参照)、同じ index に別ツールが来ても host 取り違えは起きなくなったが、
+            // それでも teardownAll を維持するのは「巻き戻された過去カードの WKWebView/
+            // AppsBridgeSession を retry のたびに律儀に生かし続ける理由が無い」ため
+            // (低頻度操作・作り直しコストは小さい)。もしピンポイント削除
+            // (該当 turnIndex 以降のキーだけ teardown)にとどめる場合でも、今は key に
+            // resourceUri が要るため単純な turnIndex プレフィックス走査では済まない
+            // (「host(for:) が index 一致だけで取り違える」という旧来の懸念自体は解消済み)。
             // ピンポイント削除も不可能ではない(registry に「turnIndex プレフィックスで選択削除」
             // API を足せばよい)が、retry は低頻度操作であり、巻き戻されない過去ターンのカードも
             // host(for:) がオンデマンドで作り直す(InlineCardHost.swift の InlineCardRegistry.host(for:)
