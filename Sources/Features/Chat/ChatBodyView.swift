@@ -239,6 +239,14 @@ struct ChatBodyView: View {
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
                 InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
             }
+            // 【2026-07-18 実機 FB「追加(ドラフト)行がキーボードに隠れる」の二段構え】WillShow 時点は
+            // SwiftUI の下端インセット付与前でスクロール上限が過小になりうる(avoider 側でも将来分を
+            // 織り込むよう改訂したが、レイアウト系のタイミングは端末/OS 差が残る)。DidShow(キーボード
+            // 提示完了・インセット反映後)にもう一度同じ処理を通す。avoider の amount 計算は
+            // 「既に見えていれば 0」なので二重実行は no-op(冪等)— 一発目で足りていた場合の副作用なし。
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { note in
+                InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
+            }
             // ↓ フローティングボタン(ChatGPT の scroll-to-bottom 相当・タスク指示2)。最下部にいない
             // ときだけ半透明で出し、タップで最下部センチネル(=その時点のコンテンツの一番下)へ寄せる。
             // 強制追従を廃止した代わりに「読み終えたら手動で最新へ戻る」導線を1つ用意する(読み位置を奪わない)。

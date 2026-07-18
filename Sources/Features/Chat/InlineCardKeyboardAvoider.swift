@@ -142,15 +142,21 @@ enum InlineCardKeyboardAvoider {
         guard amount > 0 else { return }  // 既に見えている。
 
         // 目標 offset を計算。上限(コンテンツ末尾)でクランプする。
-        // 【タイミングの但し書き】keyboardWillShow 時点では SwiftUI の自動キーボード回避
-        // (ScrollView 下端インセット付与)がまだ反映されていない場合があり、contentSize/インセットが
-        // 過小評価されてクランプが厳しすぎることがある。JS 評価の非同期分だけ実質遅延が入るため多くの場合は
-        // 問題にならないが、取りこぼす場合は「出現時1回」の v1 仕様(タスク指示)の範囲で許容する。
+        // 【2026-07-18 実機 FB「追加行がキーボードに隠れる」で旧クランプを改訂】旧実装は
+        // adjustedContentInset.bottom(現在値)をそのまま使っていたが、keyboardWillShow 時点では
+        // SwiftUI の自動キーボード回避(下端インセット付与)がまだ反映されておらず、リスト最下部の
+        // 行(FAB で生やすドラフト行がまさにここ)では上限が過小評価されて必要量までスクロール
+        // できなかった(旧コメントの「取りこぼしは許容」の但し書きが実機で顕在化した)。
+        // キーボードは最終的に scrollView 下端と keyboardTop の重なりぶんのインセットを生む
+        // (SwiftUI の自動回避と同じ量)ので、その将来値を先取りして上限に織り込む。
+        let scrollFrameInWindow = outerScrollView.convert(outerScrollView.bounds, to: window)
+        let keyboardOverlap = max(0, scrollFrameInWindow.maxY - keyboardTop)
+        let effectiveBottomInset = max(outerScrollView.adjustedContentInset.bottom, keyboardOverlap)
         let maxOffsetY = max(
             0,
             outerScrollView.contentSize.height
                 - outerScrollView.bounds.height
-                + outerScrollView.adjustedContentInset.bottom)
+                + effectiveBottomInset)
         let targetY = min(outerScrollView.contentOffset.y + amount, maxOffsetY)
         // 既に目標以上にスクロール済みなら動かさない(下スクロール方向へは動かさない)。
         guard targetY > outerScrollView.contentOffset.y else { return }
