@@ -15,6 +15,19 @@ WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 comp
 > MCP アプリ画面の最大化)**。設計は docs/design/04 に確定・最大リスクは reparent スパイクで
 > 実測クリア済み。着手は下記「優先順位」5 の実装ステップから(H1+C2 先行 → H2〜H4 + C1〜C3)。
 
+> **2026-07-18 更新:** **P4-DM 完了 ✅ / 設計05 の C0〜C5+C8 実装済み**(C6+C7=geocode+地図と
+> H-a/H-b が残)。チャット UX 大幅改善(送信アンカー再設計=Fable・↓ボタン・retry・ハプティクス・
+> pulse dot)。**多角監査(25 agent workflow・反証検証済み)で 17 件確定 → HIGH/MEDIUM は修正済み**:
+> ①fullscreen 昇格の順序欠陥(host-context-changed が reparent 先行=「右上ズレ」根因)を
+> onAdopted フック+保留箱で3経路対称化 ②ui/open-link 配線(OpenLinkPolicy・caldav 側 app.openLink
+> 化と対) ③カード staleness(#12)= newChat で tools/list 再取得(_meta は tools/list 側と判明・
+> 結果側は前方互換の防御のみ) ④セッション跨ぎカード混線(.id(session)+registry キーに resourceUri)。
+> caldav 側: done 退場一貫化・becoming タグ全廃(todos/agenda)・行タップ=詳細遷移・終日終了日既定・
+> 会議ブロック段落連結・bundle 非コミット化(wrangler build hook・再生成し忘れ根絶)。
+> **残 LOW(監査)**: newChat が旧 send() Task を非キャンセル・選択編集中の外部完了退場で編集消失・
+> fold キャッシュ×外部更新のメンバーシップずれ・snapshot 遅延書込レース(いずれも低頻度・詳細は
+> workflow 結果 wf_6fed5a50-035)。**実機未検証**: 右上ズレ解消・open-link・C3/C4 フォーム一式。
+
 転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
 caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI
 (ext-apps 製・計約7,500行)がサーバー側に存在する今、ネイティブ再描画は二重実装になる。
