@@ -236,7 +236,14 @@ struct ChatBodyView: View {
             // ユーザー実機 FB 2026-07-17)。keyboardWillShow を横流しするだけ(座標解決・スクロールは
             // avoider が UIKit グローバルから辿って行う)。fullscreen カードや通常 TextField 入力は
             // avoider 側のガードで対象外になる。
+            // 【2026-07-18 fullscreen ズームの「中心が右上へ流れる」ブレへのガード】fullscreen 昇格中
+            // (activeHost 非 nil)は avoider を発火させない。昇格フロー(折り畳み + → fullscreen →
+            // ドラフト行 focus)ではキーボード出現がズーム遷移と同時に走り、avoider がチャットを
+            // スクロールすると **zoom transition の source(インラインカード)の矩形が飛行中に動く** →
+            // システムの spring が再ターゲットして最大化の中心軸がズレる、という機序の一因を断つ。
+            // fullscreen 中は WKWebView の内部スクロール+標準のキーボード回避が効くので avoider 不要。
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+                guard fullscreenCoordinator.activeHost == nil else { return }
                 InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
             }
             // 【2026-07-18 実機 FB「追加(ドラフト)行がキーボードに隠れる」の二段構え】WillShow 時点は
@@ -245,6 +252,7 @@ struct ChatBodyView: View {
             // 提示完了・インセット反映後)にもう一度同じ処理を通す。avoider の amount 計算は
             // 「既に見えていれば 0」なので二重実行は no-op(冪等)— 一発目で足りていた場合の副作用なし。
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { note in
+                guard fullscreenCoordinator.activeHost == nil else { return }
                 InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
             }
             // ↓ フローティングボタン(ChatGPT の scroll-to-bottom 相当・タスク指示2)。最下部にいない

@@ -79,66 +79,42 @@ enum InlineCardKeyboardAvoider {
 
         guard let window = webView.window else { return }
 
-        // focus 要素の矩形を JS で取得(input/textarea/contenteditable のときだけ返す)。
-        // 内部スクロール無効なので getBoundingClientRect の viewport 原点 = webView 左上。
-        let js = """
-        (function(){\
-        var e=document.activeElement;\
-        if(!e){return null;}\
-        var t=e.tagName?e.tagName.toLowerCase():'';\
-        if(t==='input'||t==='textarea'||e.isContentEditable){\
-        var r=e.getBoundingClientRect();\
-        return JSON.stringify({x:r.left,y:r.top,w:r.width,h:r.height});\
-        }\
-        return null;})()
-        """
-        webView.evaluateJavaScript(js) { result, _ in
-            // 完了ハンドラはメインスレッド。@MainActor へ渡すため Task で包む(evaluateJavaScript の
-            // completion は @Sendable 非分離クロージャで、@MainActor 隔離の UIView を直接触れない)。
-            guard let json = result as? String,
-                  let data = json.data(using: .utf8),
-                  let rect = try? JSONDecoder().decode(FocusRect.self, from: data)
-            else { return }
-            Task { @MainActor in
-                applyScroll(
-                    webView: webView,
-                    outerScrollView: outerScrollView,
-                    window: window,
-                    focusRect: rect,
-                    keyboardEndFrame: endFrame)
-            }
-        }
+        // 【2026-07-18 ユーザー指示で方針転換: focus 要素の矩形 → カード(webView)の下端基準へ】
+        // 旧実装は JS(getBoundingClientRect)で focus 要素の矩形を取り「その要素が見えるまで」
+        // 持ち上げていた。ユーザーの意図は「mcp-app の描画の**最下端**が、swift 側チャット描画領域の
+        // 下端(=キーボード上端)からはみ出さない位置までスクロールする」— カードは inline で
+        // 可視高 0.65 倍にクランプ済みなので、下端を収めればカード全体が視野に入り、追加ドラフト行
+        // (カード最下部に生える)も自然にキーボード直上へ来る。JS 往復・focus 矩形の座標変換が
+        // 丸ごと不要になり、レイアウト確定タイミングへの依存も減る(ボツ案として旧方式を記す:
+        // 要素単位の最小移動は「カードの途中の行を編集」時に移動量最小という利点があったが、
+        // クランプ済みカードでは下端基準でも全体が見えるため利点が実質消えた)。
+        applyScroll(
+            webView: webView,
+            outerScrollView: outerScrollView,
+            window: window,
+            keyboardEndFrame: endFrame)
     }
 
-    /// JS が返す focus 要素矩形(webView ローカル座標・pt)。
-    private struct FocusRect: Decodable {
-        let x: CGFloat
-        let y: CGFloat
-        let w: CGFloat
-        let h: CGFloat
-    }
-
-    /// 実際に外側 ScrollView を持ち上げる。座標変換 → scrollUpAmount → contentOffset 更新。
+    /// 実際に外側 ScrollView を持ち上げる。カード下端 → scrollUpAmount → contentOffset 更新。
     @MainActor
     private static func applyScroll(
         webView: WKWebView,
         outerScrollView: UIScrollView,
         window: UIWindow,
-        focusRect: FocusRect,
         keyboardEndFrame: CGRect
     ) {
-        // webView ローカル矩形 → window 座標へ変換(内部スクロール無効なので origin 補正は不要)。
-        let localRect = CGRect(x: focusRect.x, y: focusRect.y, width: focusRect.w, height: focusRect.h)
-        let rectInWindow = webView.convert(localRect, to: window)
+        // カード(webView)全体の矩形を window 座標で取る。下端 maxY が基準(上の方針コメント)。
+        let cardRectInWindow = webView.convert(webView.bounds, to: window)
 
         // キーボード終端フレームは画面座標。window 座標へ変換して上端 Y を得る。
         let keyboardInWindow = window.convert(keyboardEndFrame, from: window.screen.coordinateSpace)
         let keyboardTop = keyboardInWindow.minY
 
-        // 要素とキーボードの間に残す余白(pt)。QuickType バー相当も含め少しゆとりを持たせる。
-        let margin: CGFloat = 24
+        // カード下端とキーボードの間に残す余白(pt)。カード下端基準なので旧 24pt ほどの
+        // ゆとりは不要(カード枠自体に padding がある)。8pt で「接していない」ことだけ示す。
+        let margin: CGFloat = 8
         let amount = scrollUpAmount(
-            elementMaxY: rectInWindow.maxY, keyboardTop: keyboardTop, margin: margin)
+            elementMaxY: cardRectInWindow.maxY, keyboardTop: keyboardTop, margin: margin)
         guard amount > 0 else { return }  // 既に見えている。
 
         // 目標 offset を計算。上限(コンテンツ末尾)でクランプする。
