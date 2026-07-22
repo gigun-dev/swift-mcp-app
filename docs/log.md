@@ -799,3 +799,16 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   到達して501を返すところまで確認。ATS通過後、probe登録とserverは削除した。Debug/Release生成plistの
   主要key一致、Release ATSなし、IPv6 `[::1]`もtest確認。`make check`は196 tests / 20 suites、
   SwiftFormat 0/117、SwiftLint 0/116、Debug/Release Simulator buildともgreen。
+
+## 2026-07-23: L-01/M-01 main独立再実行とcomposer picker設計監査
+
+- L-01は専用Simulator Aで一時local MCPを登録し、server詳細の「失敗」＋
+  `[-32603] Internal error: Server error: 501`をunified logの同一501と照合した。初回はlo0接続後に
+  一時timeout、再試行でPOST/501へ到達。probe削除後は一覧から失敗状態が消え、一時server停止とport閉鎖も確認した。
+- M-01はA/Dが同時bootedの状態で`make run SIMULATOR_UDID=<A>`を実行。build/install/launch/snapshotを
+  Aへ固定し、非対象Dのapp container pathとbinary SHA-256
+  `c22148f54717ec26202cd29d9a1fb43875ee1388313b8578254f8465d4fb734a`が前後一致した。
+- composer tool pickerをread-only監査し、chat単位freeze、接続設定との分離、同一選択集合から
+  definitions/routes/attributionを原子的生成する案を`docs/design/06-composer-tool-picker.md`へ整理した。
+  監査中、modelへ非広告のapp-only toolも名前を推測すればexecutorが実行できるHIGH不整合を発見。
+  picker UIの合意を待たず、広告集合と実行許可集合をfail-closedで一致させる修正を先行する。

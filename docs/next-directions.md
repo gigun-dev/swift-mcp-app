@@ -132,6 +132,9 @@
   > UIと接続境界の両方で許可し、LAN/public HTTPは拒否。Debug plistだけ`NSAllowsLocalNetworking`を持ち、
   > ArbitraryLoads系は不使用。専用Simulator Aから127.0.0.1への実POST到達を確認し、probeは削除済み。
 - [ ] composer側のtool pickerを設計し、server/tool単位の有効化と状態表示を集約する。
+  > **2026-07-23 設計案:** [`docs/design/06-composer-tool-picker.md`](design/06-composer-tool-picker.md)。
+  > 永続「自動接続」とchat単位「このチャットで使用」を分離し、最初の送信でfreezeする案を推奨。
+  > UXの4選択はユーザー合意待ち。監査で見つけたapp-only toolのmodel executor迂回は独立HIGHとして先に修正する。
 - [ ] reasoning表示、宣言型network permission、geolocationは将来sliceとして維持する。
 
 ## 5. caldavと連携する次slice

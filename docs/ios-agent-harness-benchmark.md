@@ -192,6 +192,10 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
   > 作成時の安定focusをscreenshotとunified logで照合した。semantic helperが背後の検索欄を
   > 誤選択した2回は誤操作として記録し、composer固有patternへ修正した。
 - [ ] L-01とM-01をA/B/Dで各1回実行する。
+  > **2026-07-23 main独立再実行:** L-01はAでlocal HTTP MCPの501をserver詳細とunified logで照合し、
+  > probe削除・port閉鎖・失敗状態消滅まで確認。M-01はA/D同時bootedでAの明示UDIDだけへ
+  > build/install/launch/snapshotし、非対象Dのcontainer pathとbinary SHA-256が前後一致した。
+  > 正式blind A/B/D比較には含めない。
 - [ ] Bの失敗が依存version由来の場合だけCで該当試験を再実行する。
 - [ ] mainがraw traceを採点し、採用候補のO-01/W-01を独立再実行する。
 
@@ -238,6 +242,8 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 | K-01 | A | **Pass** | 約6分30秒 | 39 / 3 | 日本語clipboard、誤URL、backspace、Select All/Paste、blur、Cancel後に未保存を確認 |
 | K-01 | D | **Local pass / blind pending** | 非blind | 未集計 | XcodeBuildMCP 2.6.2へlocal JSON-RPC直結しsemantic refsを検証。最終blind scoreには含めない |
 | W-01 | D | **Main independent pass / blind pending** | 非blind | 未集計 | 実Appの操作往復・同一WebView状態保持・fullscreen作成focusを画面/logで確認。正式各2回には含めない |
+| L-01 | A | **Main independent pass / blind pending** | 非blind | 未集計 | UI詳細の501とunified logを照合し、probe削除・一時server停止後の復旧まで確認 |
+| M-01 | A（Dを非対象） | **Main independent pass / blind pending** | 非blind | 未集計 | 全工程をA UDIDへ固定し、Dのapp container path/binary SHA-256不変を確認 |
 
 ### H-01 Aの証拠
 
