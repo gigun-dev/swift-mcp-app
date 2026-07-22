@@ -822,3 +822,27 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   汎用executorの既定legacy fallbackは保存済み利用者との互換用に維持し、ChatHomeだけstrict policyを指定する。
 - ready connectionはregistry登録順へ安定化。`make check`は201 tests / 21 suites、
   SwiftFormat 0/119、SwiftLint 0/118、`make app`もgreen。
+
+## 2026-07-23: next-directions第4版へ棚卸し
+
+- SessionStartのカタログ計測が117行・更新block 18個となり、更新block閾値8を超えたため棚卸しを実施した。
+- 第3版全文を`docs/archive/next-directions-v3-2026-07-23.md`へ退避し、第4版は現在地、4つの承認gate、
+  composer picker、harness正式比較、caldav残E2E、後続sliceだけに圧縮した。第2版・第3版とも最新docから辿れる。
+- 圧縮後はカタログ53行・更新block 0個。Claude/Codex共有のSessionStart symlink経由でheadだけが出力され、
+  肥大化警告が消えること、`bash -n`と`git diff --check`が通ることを確認した。
+
+## 2026-07-23: sidebarとMCP Appの横gestureを分離
+
+- ChatHomeのdrawerからswipe-open / swipe-closeを含む全`DragGesture`を除去した。開閉は左上の履歴アイコン、
+  sidebar内の明示close、退いたmain cardのtapだけに限定し、WKWebViewのcarousel・graph・sliderなどの
+  横操作をhost navigationが奪うrecognizer自体を置かない。
+- 履歴行の左swipe deleteを廃止し、長押しcontext menuへpin / rename / deleteを集約した。deleteは確認を挟み、
+  pin順・custom title・旧index互換を`ChatStore`へ永続化する。VoiceOverには同じ操作をcustom actionとして公開する。
+- 履歴行は大きな横dragをactivate扱いする`Button`をやめ、明示tapだけで選択する通常Viewにした。active背景と
+  context-menu previewは同一角丸Shapeとinsetを共有し、長押し時と選択時のhighlight範囲を一致させた。
+- 過去履歴を開いても左上を不自然な「liveへ戻る」chevronへ変えず、常にsidebar triggerを表示する。
+  sidebarは常時mountのため、開くたびにindexを再読込し、直前に保存されたsessionも表示する。
+- 専用Simulator Aで長押しメニュー、pin、rename、一覧再読込を確認した。Aはcaldavが要認証だったため、
+  `What time is it?`は`get-current-time`を広告できずgeneric回答になった。これはtool context破損ではなく接続状態で、
+  caldav接続済みの専用Simulator Dでは同tool成功を既に確認済み。最終`make verify`は206 tests / 21 suites、
+  SwiftFormat 0/120、SwiftLint 0 violations / 119 files、generic iOS Simulator build成功。

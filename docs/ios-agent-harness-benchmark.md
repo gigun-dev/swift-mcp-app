@@ -1,6 +1,7 @@
 # iOS エージェントハーネス正式評価
 
-> **状態:** Phase 0完了・Codex AのH-01/K-01完走・Dのlocal probeとmain O-01完走
+> **状態:** Phase 0完了。AのH-01/K-01、Dのlocal probe、main独立のO-01/W-01、
+> AでのL-01/M-01再実行まで完走。構成間blind比較と採用判断は承認待ち。
 > **正典の範囲:** Claude Code / Codex から `swift-mcp-app` を build・操作・E2E 検証する
 > plugin / skill / MCP / CLI の比較と採否。製品ロードマップ自体は `docs/next-directions.md` を正とする。
 > **更新方法:** 結果を上書きせず、各試験のチェックボックスと結果表を更新する。生の経緯は
