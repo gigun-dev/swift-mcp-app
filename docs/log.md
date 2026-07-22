@@ -782,3 +782,20 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   semantic snapshotが閉じたdrawerの検索欄も返すためcomposer固有patternを使うこと、fullscreen作成focusは
   display-mode request/context logと安定した入力focusを突き合わせることを追記した。
 - 構成A/B/Dの採否は正式blind比較が未完了なのでskillへ固定せず、確定済みのproject固有知識だけ反映した。
+
+## 2026-07-23: spike接続先をregistryへ統一しDebug loopback HTTPを限定許可
+
+- `TodosCardSpikeView`だけが持っていたcaldav実URL直書きを除去し、通常画面と同じ永続
+  `ServerRegistryStore`の有効な登録順先頭をViewModelへ注入する。全OFF/空では暗黙fallbackせず明示エラー、
+  `list-todos`非対応serverは既存tool解決エラーに任せ、caldav固有の選択分岐を作らない。
+- endpoint policyへ`allowInsecureLoopback`を明示注入できる純関数境界を追加。既定false/ReleaseはHTTPS必須、
+  Debugだけ`localhost`、`127.0.0.1`、`::1`のHTTPを許可し、LAN IP、`.local`、dotless、公開HTTPは拒否する。
+  フォーム、旧debug画面、ConnectionsManager、spikeに同じbuild policyを渡し、`MCPConnection.connect`冒頭でも
+  再検証して保存済み旧値や直接APIによる迂回を防ぐ。
+- Debugだけ明示Info.plistで`NSAllowsLocalNetworking=true`とし、Releaseは生成plistのままATS例外なし。
+  `NSAllowsArbitraryLoads`/WebContent例外は使わない。XcodeGen App targetが`DEBUG`条件を自動付与しないことを
+  実probeで発見し、Debug configへ明示した。
+- 専用Simulator Aで`http://127.0.0.1:18787/mcp`を保存し、実transportの`POST /mcp`が一時Python serverへ
+  到達して501を返すところまで確認。ATS通過後、probe登録とserverは削除した。Debug/Release生成plistの
+  主要key一致、Release ATSなし、IPv6 `[::1]`もtest確認。`make check`は196 tests / 20 suites、
+  SwiftFormat 0/117、SwiftLint 0/116、Debug/Release Simulator buildともgreen。

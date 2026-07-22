@@ -81,6 +81,21 @@ import Testing
         #expect(restored.servers[0].enabled == false)
     }
 
+    @Test("enabledServers は無効項目を除外し、登録順を保持する")
+    func enabledServersFiltersWithoutReordering() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ServerRegistryStore(defaults: defaults)
+        let seedID = store.servers[0].id
+        store.setEnabled(id: seedID, enabled: false)
+        let firstEnabled = store.add(name: "first", url: URL(string: "https://first.example.com/mcp")!)
+        let secondEnabled = store.add(name: "second", url: URL(string: "https://second.example.com/mcp")!)
+
+        // TodosCardSpikeView は先頭を選ぶため、filter が元配列の順序を維持する契約を固定する。
+        #expect(store.enabledServers.map(\.id) == [firstEnabled.id, secondEnabled.id])
+    }
+
     @Test("enabled キーの無い旧 JSON は有効(true)にデコードされる(後方互換)")
     func legacyServersDecodeEnabledTrue() {
         let (defaults, suite) = makeDefaults()

@@ -34,7 +34,13 @@ final class TodosCardSpikeViewModel: ObservableObject {
     // カード高さ(size-changed 追従)。session の onSizeChanged からここへ流し込む。
     let cardState = AppCardState()
 
-    private let serverURLString = "https://caldav.gigun-dev.workers.dev/mcp"
+    /// このスパイクが接続する登録済みサーバー。
+    ///
+    /// 【なぜ ViewModel 内で既定 URL を決めないか】通常画面では ServerRegistryStore が
+    /// ユーザーの接続先を管理している。スパイクだけが別の実 URL を持つと、登録先を変更・無効化
+    /// しても古い caldav へ接続し続けて汎用ホストの中立性を破る。View 側が登録簿から選んだ URL を
+    /// 注入し、ViewModel は「与えられた接続先を検証する」役割だけに限定する。
+    let selectedServerURL: URL?
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "todoscard")
 
     // 生存させ続ける必要があるオブジェクト群(手放すと delegate が nil 化 / セッションが停止する)。
@@ -43,6 +49,10 @@ final class TodosCardSpikeViewModel: ObservableObject {
     private var session: AppsBridgeSession?
     private var proxy: AppsServerProxy?
     private var setupTask: Task<Void, Never>?
+
+    init(serverURL: URL?) {
+        self.selectedServerURL = serverURL
+    }
 
     /// 画面表示時に一度だけ全フローを走らせる。
     func startIfNeeded() {
@@ -54,14 +64,19 @@ final class TodosCardSpikeViewModel: ObservableObject {
         do {
             // --- 1. OAuth 接続(P1 フローの再利用)-------------------------------------
             setStatus("接続中…(ブラウザのシートが出ます・パスワード changeme)")
-            guard let url = URL(string: serverURLString) else {
-                fail("URL 不正: \(serverURLString)"); return
+            // 接続先ゼロを既定 URL へ暗黙フォールバックさせない。全サーバーを OFF にしたユーザーの
+            // 意思を尊重し、設定画面で有効化すべきことが分かるエラーにする。
+            guard let url = selectedServerURL else {
+                fail("有効な MCP サーバーがありません。設定で1件以上を有効にしてください")
+                return
             }
             let delegate = LoopbackOAuthAuthorizationDelegate()
             let redirectURI = try delegate.prepareRedirectURI()
             logger.notice("S4 接続開始 \(url.absoluteString, privacy: .public)")
             let connection = try await MCPConnection.connect(
-                serverURL: url, redirectURI: redirectURI, authorizationDelegate: delegate
+                serverURL: url, redirectURI: redirectURI,
+                authorizationDelegate: delegate,
+                allowInsecureLoopback: MCPHostBuildPolicy.allowInsecureLoopback
             )
             logger.notice("S4 接続成功 tools=\(connection.tools.count)")
             setStatus("接続成功(tools=\(connection.tools.count))。カード準備中…")
@@ -165,7 +180,22 @@ final class TodosCardSpikeViewModel: ObservableObject {
 }
 
 struct TodosCardSpikeView: View {
-    @StateObject private var viewModel = TodosCardSpikeViewModel()
+    @StateObject private var viewModel: TodosCardSpikeViewModel
+
+    /// 通常画面と同じ永続化済み登録簿を正典にし、有効な登録順の先頭をスパイクへ注入する。
+    /// list-todos を持たないサーバーなら既存の tool 解決エラーを表示するため、ここで caldav の
+    /// 名前・URL・tool を特別扱いしない。テストは使い捨て registry を注入できる。
+    @MainActor
+    init() {
+        self.init(registry: ServerRegistryStore())
+    }
+
+    @MainActor
+    init(registry: ServerRegistryStore) {
+        _viewModel = StateObject(
+            wrappedValue: TodosCardSpikeViewModel(serverURL: registry.enabledServers.first?.url)
+        )
+    }
 
     var body: some View {
         VStack(spacing: 12) {

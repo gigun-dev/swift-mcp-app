@@ -5,6 +5,7 @@
 // 本番想定のエラー分類(トークン失効/ネットワーク/ユーザーキャンセル等の出し分け)は
 // チャット機能(P3)以降、実際に困ってから設計する。
 import Foundation
+import Kernel
 import OSLog
 import Services  // MCPConnection・Tool(@_exported import MCP 経由)
 
@@ -54,8 +55,7 @@ final class ConnectionViewModel: ObservableObject {
     }
 
     private func startConnecting() {
-        guard let url = URL(string: serverURLString), url.scheme == "https" || url.scheme == "http"
-        else {
+        guard let url = try? MCPHostBuildPolicy.resolveEndpoint(serverURLString).get() else {
             state = .failed("URL が不正です: \(serverURLString)")
             return
         }
@@ -78,7 +78,8 @@ final class ConnectionViewModel: ObservableObject {
                 let result = try await MCPConnection.connect(
                     serverURL: url,
                     redirectURI: redirectURI,
-                    authorizationDelegate: delegate
+                    authorizationDelegate: delegate,
+                    allowInsecureLoopback: MCPHostBuildPolicy.allowInsecureLoopback
                 )
                 logger.info("接続成功: tools=\(result.tools.count)")
                 self.state = .connected(tools: result.tools)

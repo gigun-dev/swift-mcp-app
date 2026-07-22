@@ -57,3 +57,14 @@ targets:
         # 毎回作り直されるため、ここに書かないと generate のたびに設定が消える。
         DEVELOPMENT_TEAM: KK42DL23GH
         CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          # ローカル HTTP MCP は Debug の exact loopback に限る。Release へ入れないこと、
+          # NSAllowsArbitraryLoads / NSAllowsArbitraryLoadsInWebContent を使わないことが安全境界。
+          # Xcode の INFOPLIST_KEY_* は入れ子 dictionary を生成できないため、Debug だけ明示 plist を使う。
+          # Release は base の GENERATE_INFOPLIST_FILE=YES のままで ATS 例外を一切持たない。
+          GENERATE_INFOPLIST_FILE: NO
+          INFOPLIST_FILE: Config/Info-Debug.plist
+          # XcodeGen の素の target は DEBUG 条件を自動付与しない。これが無いと plist だけ緩み、
+          # MCPHostBuildPolicy は Release 相当 false のままという片側設定になる。
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG"

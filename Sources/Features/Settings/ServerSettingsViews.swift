@@ -154,7 +154,7 @@ struct ServerFormSheet: View {
     }
 
     private var urlValidation: Result<URL, MCPEndpointPolicy.Rejection> {
-        MCPEndpointPolicy.resolve(urlString: urlString)
+        MCPHostBuildPolicy.resolveEndpoint(urlString)
     }
 
     private var validURL: URL? { try? urlValidation.get() }
@@ -225,7 +225,10 @@ struct ServerFormSheet: View {
         switch rejection {
         case .empty: return "エンドポイント URL を入力してください。"
         case .doubleScheme: return "URL にスキーム(https:// など)が2つ含まれています。URL 全体を貼り直してください。"
-        case .notHTTPS: return "https:// で始まる URL を入力してください(http は使えません)。"
+        case .notHTTPS:
+            return MCPHostBuildPolicy.allowInsecureLoopback
+                ? "https://、または開発用の localhost URL を入力してください。"
+                : "https:// で始まる URL を入力してください(http は使えません)。"
         case .invalidHost: return "URL のホスト名が正しくありません。"
         case .malformed: return "有効な URL を入力してください。"
         }

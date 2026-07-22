@@ -174,7 +174,8 @@ public final class ConnectionsManager {
             let connection = try await MCPConnection.connect(
                 serverURL: entry.url,
                 redirectURI: redirectURI,
-                authorizationDelegate: delegate
+                authorizationDelegate: delegate,
+                allowInsecureLoopback: MCPHostBuildPolicy.allowInsecureLoopback
             )
             let ready = try await makeReady(entry: entry, slug: slug, connection: connection)
             guard !Task.isCancelled else { return }
@@ -223,7 +224,8 @@ public final class ConnectionsManager {
             let connection = try await MCPConnection.connect(
                 serverURL: entry.url,
                 redirectURI: redirectURI,
-                authorizationDelegate: delegate
+                authorizationDelegate: delegate,
+                allowInsecureLoopback: MCPHostBuildPolicy.allowInsecureLoopback
             )
             let ready = try await makeReady(entry: entry, slug: slug, connection: connection)
             guard !Task.isCancelled else { return }

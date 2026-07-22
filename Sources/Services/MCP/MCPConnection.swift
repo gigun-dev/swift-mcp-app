@@ -11,6 +11,7 @@
 // Features 側(iOS のみの XcodeGen ターゲット)の責務とし、ここでは「出来上がった delegate と
 // redirect URI を受け取って接続する」ところまでを引き受ける。
 import Foundation
+import Kernel
 import MCP
 
 /// MCP サーバーへの接続結果。
@@ -47,8 +48,16 @@ public enum MCPConnection {
         serverURL: URL,
         redirectURI: URL,
         authorizationDelegate: any OAuthAuthorizationDelegate,
-        clientName: String = "MCPHost"
+        clientName: String = "MCPHost",
+        allowInsecureLoopback: Bool = false
     ) async throws -> MCPConnectionResult {
+        // UI の保存時検証だけには頼らない。旧 UserDefaults、直接 API、デバッグ画面などどの入口から
+        // URL が来ても、token storage や transport を作る前に同じ policy を再適用する。
+        // 既定 false なので、明示注入を忘れた新しい呼び出し経路は HTTPS 必須へ安全に倒れる。
+        let serverURL = try validatedEndpoint(
+            serverURL,
+            allowInsecureLoopback: allowInsecureLoopback
+        )
         let tokenStorage = KeychainTokenStorage(serverURL: serverURL)
 
         // 認証方式は `.none(clientID: "")` から開始する。空の clientID は
@@ -83,5 +92,17 @@ public enum MCPConnection {
 
         let (tools, _) = try await client.listTools()
         return MCPConnectionResult(client: client, tools: tools)
+    }
+
+    /// 接続境界の policy をネットワーク無しで単体テストできるよう切り出した内部関数。
+    /// `connect` が必ず最初に呼ぶため、フォーム検証を迂回した保存済み URL にも効く。
+    static func validatedEndpoint(
+        _ serverURL: URL,
+        allowInsecureLoopback: Bool
+    ) throws -> URL {
+        try MCPEndpointPolicy.resolve(
+            urlString: serverURL.absoluteString,
+            allowInsecureLoopback: allowInsecureLoopback
+        ).get()
     }
 }

@@ -15,7 +15,7 @@
 - **検証基盤:** `make check`はSwift build/test/lintの高速gate、`make app`はSwiftUIを含むiOS全体build、
   `make verify`は両方を束ねたpush前の最終gate。`make hooks`でtrackedなpre-push hookを有効化すると、
   通常のmain pushだけ`make verify`が走る（意図的な`--no-verify`は非常口として維持）。
-  baselineなしSwiftLint strict 0件、189 tests、generic iOS Simulator app buildまでgreen。
+  baselineなしSwiftLint strict 0件、196 tests、generic iOS Simulator app buildまでgreen。
   iPhone 12 miniへのbuild/install/launchとプロセス生存も確認済み。Simulator操作は汎用
   `ios-simulator`、MCPHost固有検証はproject `ios-e2e-verify`を併用する。
 - **lint整理:** 既存baselineを撤去し、UI・chat orchestration・AppsBridge・test suitesを
@@ -124,8 +124,13 @@
 - [x] ~~ToolStepRowと履歴詳細でslugをserver表示名へ逆引きし、日本語名serverも区別できるようにする。~~ ✅
   > **2026-07-23 更新:** 実行時のserver表示名とhash短縮前tool名を`ToolCallStep`へadditive保存。
   > ライブ/履歴は保存値を優先し、rename前履歴は当時名、新chatは新名。旧JSONはslug/URLへfallbackする。
-- [ ] TodosCardSpikeViewのhard-coded URLを低優先で除去する。
-- [ ] local HTTP MCPを許可する必要性を決める。許可時はscheme検証だけでなくATSも扱う。
+- [x] ~~TodosCardSpikeViewのhard-coded URLを低優先で除去する。~~ ✅
+  > **2026-07-23 更新:** 通常画面と同じ`ServerRegistryStore`を正典にし、有効な登録順先頭をDIする。
+  > 全OFF/空は既定caldavへ戻さず明示エラー、非対応serverは既存tool解決エラーへ寄せて固有分岐を持たない。
+- [x] ~~local HTTP MCPを許可する必要性を決める。許可時はscheme検証だけでなくATSも扱う。~~ ✅
+  > **2026-07-23 更新:** ReleaseはHTTPS必須。Debugだけexact loopback（localhost/127.0.0.1/::1）HTTPを
+  > UIと接続境界の両方で許可し、LAN/public HTTPは拒否。Debug plistだけ`NSAllowsLocalNetworking`を持ち、
+  > ArbitraryLoads系は不使用。専用Simulator Aから127.0.0.1への実POST到達を確認し、probeは削除済み。
 - [ ] composer側のtool pickerを設計し、server/tool単位の有効化と状態表示を集約する。
 - [ ] reasoning表示、宣言型network permission、geolocationは将来sliceとして維持する。
 

@@ -34,6 +34,42 @@ import Testing
         #expect(MCPEndpointPolicy.resolve(urlString: "http://example.com/mcp") == .failure(.notHTTPS))
     }
 
+    @Test("開発許可を明示したときだけ exact loopback HTTP を通す", arguments: [
+        "http://localhost:8787/mcp",
+        "http://127.0.0.1:8787/mcp",
+        "http://[::1]:8787/mcp"
+    ])
+    func acceptsExplicitlyAllowedLoopbackHTTP(_ rawURL: String) throws {
+        #expect(
+            try MCPEndpointPolicy.resolve(
+                urlString: rawURL,
+                allowInsecureLoopback: true
+            ).get().absoluteString == rawURL
+        )
+    }
+
+    @Test("Release 相当の既定 false は loopback HTTP も拒否", arguments: [
+        "http://localhost:8787/mcp",
+        "http://127.0.0.1:8787/mcp",
+        "http://[::1]:8787/mcp"
+    ])
+    func rejectsLoopbackHTTPWithoutExplicitOptIn(_ rawURL: String) {
+        #expect(MCPEndpointPolicy.resolve(urlString: rawURL) == .failure(.notHTTPS))
+    }
+
+    @Test("開発許可は LAN・公開・dotless host の HTTP へ広がらない", arguments: [
+        "http://192.168.1.10:8787/mcp",
+        "http://10.0.0.5:8787/mcp",
+        "http://example.com/mcp",
+        "http://mcpbox:8787/mcp"
+    ])
+    func rejectsNonLoopbackHTTPEvenWhenDevelopmentOptInIsEnabled(_ rawURL: String) {
+        #expect(
+            MCPEndpointPolicy.resolve(urlString: rawURL, allowInsecureLoopback: true)
+                == .failure(.notHTTPS)
+        )
+    }
+
     @Test("スキーム無しは拒否")
     func rejectsMissingScheme() {
         #expect(MCPEndpointPolicy.resolve(urlString: "example.com/mcp") == .failure(.notHTTPS))

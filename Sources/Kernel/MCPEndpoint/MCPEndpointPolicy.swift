@@ -44,7 +44,14 @@ public enum MCPEndpointPolicy {
     /// `urlString` を検証し、登録してよい `URL` を返す。前後の空白・改行はトリムする
     /// (iOS のペーストやソフトウェアキーボードは末尾に空白/改行を混ぜやすく、
     /// これを弾くとユーザーには理由が分からない。従来の SettingsSheet の挙動を踏襲)。
-    public static func resolve(urlString: String) -> Result<URL, Rejection> {
+    /// - Parameter allowInsecureLoopback: `true` のときだけ、開発用の exact loopback
+    ///   (`localhost` / `127.0.0.1` / `::1`)に限って平文 HTTP を許す。呼び出し側が build
+    ///   configuration を明示注入する設計にして、Kernel 自身は `#if DEBUG` や iOS に依存しない。
+    ///   既定は `false`。引数を渡し忘れた経路や Release 相当の利用が安全側へ倒れる。
+    public static func resolve(
+        urlString: String,
+        allowInsecureLoopback: Bool = false
+    ) -> Result<URL, Rejection> {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(.empty) }
 
@@ -65,13 +72,20 @@ public enum MCPEndpointPolicy {
         // scheme 無し("example.com/mcp")もここで .notHTTPS に落とす。ユーザーへの案内は
         // どちらも「https:// で始めてください」で同じなので、理由を分ける実益が無い。
         //
-        // 【http を拒む理由(既存 SettingsSheet のコメントを引き継ぐ)】MCP Apps の接続は
+        let normalizedHost = url.host?.lowercased()
+        let isExactLoopback = normalizedHost == "localhost"
+            || normalizedHost == "127.0.0.1"
+            || normalizedHost == "::1"
+
+        // 【http を原則拒む理由(既存 SettingsSheet のコメントを引き継ぐ)】MCP Apps の接続は
         // OAuth 2.1 前提で、本番エンドポイントは https(caldav も Workers 上の https)。
-        // 平文 http を許すとトークンが平文で流れる。**将来ローカル開発サーバー
-        // (http://localhost:8787/mcp など)に繋ぎたくなったら、この条件を
-        // 「https、または host が localhost/127.0.0.1 のときは http も可」に緩める**
-        // (iOS 側は ATS の例外設定も併せて必要になる点に注意)。既定は安全側の https 必須。
-        guard let scheme = url.scheme?.lowercased(), scheme == "https" else {
+        // 平文 http を許すとトークン・tool 引数・tool 結果が平文で流れる。唯一の例外は、
+        // Simulator から Mac 上の開発 MCP を検証するため呼び出し側が明示許可した exact loopback。
+        // LAN IP、`.local`、公開 host は DEBUG でも許さない。iOS 側の ATS 例外も Debug app の
+        // `NSAllowsLocalNetworking` だけに限定し、Release の安全な既定を崩さない。
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "https" || (scheme == "http" && allowInsecureLoopback && isExactLoopback)
+        else {
             return .failure(.notHTTPS)
         }
 
@@ -85,8 +99,7 @@ public enum MCPEndpointPolicy {
         // 今のうちに例外として通しておく(ここで弾くと、その時に「なぜ保存できない」を
         // もう一度デバッグする羽目になる)。IPv6 リテラルなど他の dotless host は
         // 現状ユースケースが無いため拒否側に倒す — 必要になったら緩める。
-        let isLocalhost = host.lowercased() == "localhost"
-        guard isLocalhost || host.contains(".") else { return .failure(.invalidHost) }
+        guard isExactLoopback || host.contains(".") else { return .failure(.invalidHost) }
 
         return .success(url)
     }
