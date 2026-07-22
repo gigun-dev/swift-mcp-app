@@ -174,6 +174,11 @@ enum AppCardWebViewFactory {
         coordinator: AppCardWebCoordinator,
         scrollEnabled: Bool = false
     ) async -> WKWebView {
+        // プログラム的 focus() でのキーボード表示を許可(初回のみ適用・詳細は
+        // WebViewProgrammaticFocus のコメント)。カードの「fullscreen 昇格 → 遅延 focus」フローが
+        // iOS の userIsInteracting ゲートに落ちるのを防ぐ(2026-07-18 実機 FB)。
+        WebViewProgrammaticFocus.enableKeyboardWithoutUserAction()
+
         // インターセプタ + 弱参照ハンドラを含む config(WebViewTransport が組む)を土台にする。
         let configuration = transport.makeConfiguration()
 
