@@ -15,6 +15,10 @@ import SwiftUI
 import Services  // ServerRegistryStore(サーバー登録簿・M1)
 
 struct ChatHomeView: View {
+    /// 閉じた drawer を開くために host が予約する物理左端。中央の WKWebView には recognizer を
+    /// 一切置かず、iOS の edge-pan と同じ限定領域だけで navigation intent を判定する。
+    private static let sidebarEdgeWidth: CGFloat = 24
+
     // 設定は Home と Sheet で共有する1インスタンス。@State で所有(@Observable を SwiftUI が観測)。
     // 初期値は init で注入する(settings を home にも渡す必要があるため既定式は置かない)。
     @State private var settings: LLMSettingsStore
@@ -25,6 +29,9 @@ struct ChatHomeView: View {
     // 履歴サイドバーの開閉(committed 状態)。実際の見せ方は「メイン画面を右へスライドして
     // 下層のサイドバーを露出する」方式(body 参照)。
     @State private var showingSidebar = false
+    // committed 状態と指追従を分ける。onEnded で showingSidebar と同じ animation transaction 内に
+    // 0へ戻すことで、指を離した瞬間の一フレーム跳ねを防ぐ。
+    @State private var sidebarDragTranslation: CGFloat = 0
 
     init() {
         // settings を先に作り、それを home に注入する。@State の init 直接代入は
@@ -41,14 +48,12 @@ struct ChatHomeView: View {
         // 手本は「drawer がコンテンツの上に被さる」のではなく、**サイドバーが下層にいて、
         // メイン画面(角丸カード + ドロップシャドウ)が右へスライドして退く**方式。
         // → 下層 = ChatHistorySidebar(左 revealWidth・全高)、上層 = メインを角丸カード化して
-        //   x オフセット。開閉は ☰ / 明示 close / 退いたメインカードのタップだけで決める。
-        // 【2026-07-23 MCP App 横操作を host から完全分離】drawer の DragGesture は、左端限定でも
-        // WKWebView の carousel / graph / slider と recognizer が競合し得る。MCP App が所有する横操作を
-        // host navigation が奪わないことを優先し、drawer の swipe-open / swipe-close は設けない。
+        //   x オフセット。☰に加え、閉時は物理左端だけを右drag、開時は右へ退いたmain cardだけを
+        //   tap/左dragできる。sidebar本体とWKWebView中央にはhostの横 recognizer を置かない。
         GeometryReader { geo in
             // 露出幅: 画面の 84%(上限 330)。手本はカードの左端 ~15% が右に残る = reveal ~85%。
             let revealWidth = min(geo.size.width * 0.84, 330)
-            let offset: CGFloat = showingSidebar ? revealWidth : 0
+            let offset = sidebarOffset(revealWidth: revealWidth)
             // safe area の実測 inset(geo はまだ safe area を尊重した測定)。下でサイドバー内容を
             // これで寄せる。ZStack 全体は下の .ignoresSafeArea() で全画面へ広げる(カード bleed)。
             let topInset = geo.safeAreaInsets.top
@@ -112,13 +117,27 @@ struct ChatHomeView: View {
                 // 動き、サイドバー領域には何も残らない(タップキャッチャは「退いたカードの見えている
                 // 部分だけ」を覆う=本来の意図どおり)。
                 .overlay {
-                    if offset > 1 {
+                    if showingSidebar {
                         Color.black.opacity(0.0001)
                             .contentShape(Rectangle())
                             .onTapGesture { closeSidebar() }
+                            // overlay は .offset 前なのでmain cardと一緒に右へ退き、sidebar/listには
+                            // 被らない。開状態の見えているcard上だけがinteractive close領域になる。
+                            .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .close))
                     }
                 }
                 .offset(x: offset)
+
+                // 閉状態のopen gestureは物理左端24ptだけ。中央のMCP App carousel/slider/graphは
+                // recognizer treeに入らないので、横操作をhost drawerが横取りしない。
+                if !showingSidebar {
+                    Color.clear
+                        .frame(width: Self.sidebarEdgeWidth)
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .open))
+                        .accessibilityHidden(true)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // paper を全画面へ(サイドバーのステータスバー下も埋める)+ ZStack ごと物理端まで広げる
@@ -217,8 +236,62 @@ struct ChatHomeView: View {
 
     // MARK: - 引き出し(メイン画面を右へスライドして下層サイドバーを露出する方式)
 
+    private enum SidebarDragIntent {
+        case open
+        case close
+    }
+
+    /// committed offset と live translation の和を物理範囲へ収める。open は0から右へ、closeは
+    /// revealWidthから左へ0へ戻るため、指とcardの移動方向が常に一致する。
+    private func sidebarOffset(revealWidth: CGFloat) -> CGFloat {
+        let committed: CGFloat = showingSidebar ? revealWidth : 0
+        return min(max(committed + sidebarDragTranslation, 0), revealWidth)
+    }
+
+    /// Drawer のinteractive open/close。取り付け先を left edge / exposed main card に限定することが
+    /// 中央WKWebViewとの競合を避ける本質であり、方向判定だけに依存しない。
+    private func sidebarDragGesture(revealWidth: CGFloat, intent: SidebarDragIntent) -> some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else {
+                    sidebarDragTranslation = 0
+                    return
+                }
+                switch intent {
+                case .open:
+                    sidebarDragTranslation = max(value.translation.width, 0)
+                case .close:
+                    sidebarDragTranslation = min(value.translation.width, 0)
+                }
+            }
+            .onEnded { value in
+                let isHorizontal = abs(value.translation.width) > abs(value.translation.height)
+                let moved = value.translation.width
+                let projectedVelocity = value.predictedEndTranslation.width - moved
+                // 長距離を要求せず、幅22%または軽いflickで確定する。open/closeを対称に扱う。
+                let positionThreshold = revealWidth * 0.22
+                let velocityThreshold: CGFloat = 100
+                let reachedTarget: Bool
+                switch intent {
+                case .open:
+                    reachedTarget = isHorizontal
+                        && (moved > positionThreshold || projectedVelocity > velocityThreshold)
+                case .close:
+                    reachedTarget = isHorizontal
+                        && (moved < -positionThreshold || projectedVelocity < -velocityThreshold)
+                }
+                withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                    showingSidebar = intent == .open ? reachedTarget : !reachedTarget
+                    sidebarDragTranslation = 0
+                }
+            }
+    }
+
     private func closeSidebar() {
-        withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) { showingSidebar = false }
+        withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+            showingSidebar = false
+            sidebarDragTranslation = 0
+        }
     }
 
     /// サイドバーの .active ハイライト対象。ライブ時は現在セッション、履歴閲覧時は閲覧中セッション。

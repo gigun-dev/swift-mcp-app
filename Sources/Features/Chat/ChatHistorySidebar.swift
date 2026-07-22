@@ -88,21 +88,9 @@ struct ChatHistorySidebar: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("swift-mcp-app")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Spacer()
-                // drawer の横ドラッグ開閉を廃止しても戻り方が常に見える、明示的な close affordance。
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(SidebarPalette.paperSubtle))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("履歴を閉じる")
-            }
+            Text("swift-mcp-app")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
             // 検索フィールド(モックの .search-field)。角丸の薄い箱 + 虫眼鏡。
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")

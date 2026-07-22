@@ -833,11 +833,15 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 
 ## 2026-07-23: sidebarとMCP Appの横gestureを分離
 
-- ChatHomeのdrawerからswipe-open / swipe-closeを含む全`DragGesture`を除去した。開閉は左上の履歴アイコン、
-  sidebar内の明示close、退いたmain cardのtapだけに限定し、WKWebViewのcarousel・graph・sliderなどの
-  横操作をhost navigationが奪うrecognizer自体を置かない。
+- 初版ではChatHomeのdrawerから全`DragGesture`を除去したが、実機フィードバックで操作を削りすぎと判明した。
+  最終形は閉状態の物理左端24ptだけにinteractive open、開状態で右へ退いたmain cardだけにtap / drag closeを
+  置く。中央WKWebViewとsidebar/listはhost recognizerの対象外なので、carousel・graph・sliderと競合しない。
+- sidebar headerの×はdrawerの標準導線と重複するため削除した。履歴選択（検索結果を含む）、露出main cardのtap、
+  main cardを元位置へ戻すdragがclose導線で、左上の履歴アイコンは表示modeを問わずopen triggerとして残す。
 - 履歴行の左swipe deleteを廃止し、長押しcontext menuへpin / rename / deleteを集約した。deleteは確認を挟み、
   pin順・custom title・旧index互換を`ChatStore`へ永続化する。VoiceOverには同じ操作をcustom actionとして公開する。
+- 長押し時間は独自`LongPressGesture`や`minimumDuration`で上書きせず、SwiftUI標準`.contextMenu`に任せる。
+  これにより実機のHaptic Touch durationとAccessibility設定を尊重する。
 - 履歴行は大きな横dragをactivate扱いする`Button`をやめ、明示tapだけで選択する通常Viewにした。active背景と
   context-menu previewは同一角丸Shapeとinsetを共有し、長押し時と選択時のhighlight範囲を一致させた。
 - 過去履歴を開いても左上を不自然な「liveへ戻る」chevronへ変えず、常にsidebar triggerを表示する。

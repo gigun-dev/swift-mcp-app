@@ -19,9 +19,9 @@
   main pushで`make verify`を実行する。複数端末では`make run SIMULATOR_UDID=<UDID>`を必須とする。
 - **Simulator skill:** 汎用CLI操作は`ios-simulator`、MCPHost固有のbuild・認証・ログ・カードE2Eは
   project `ios-e2e-verify`を使い分ける。どちらも必要で、一方へ統合しない。
-- **横操作の所有権:** drawerは明示アイコン・close・退いたmain cardのtapだけで開閉し、host側の
-  横gestureを持たない。履歴管理は長押し（pin・rename・確認付きdelete）へ集約し、履歴閲覧中も
-  左上triggerは常にsidebarを開く。MCP App内の横操作はWKWebViewが所有する。
+- **横操作の所有権:** drawerのopen gestureは物理左端24pt、close gestureは開状態で露出する
+  main cardだけに限定する。中央WKWebViewとsidebar/listにはhost横gestureを置かず、MCP App内の
+  横操作はWKWebViewが所有する。履歴管理は標準context menu（pin・rename・確認付きdelete）へ集約する。
 - **現在の主要slice:** composer tool picker、iOS agent harness正式比較、caldav本番を使う残E2E。
 - **承認待ち:** pickerの4 UX判断、外部`codex exec`へrepo文脈を渡すblind、固定版stock Bの実行、
   caldav本番の一時書込と専用SimulatorへのCalDAV account追加。実credentialは入力せず、ユーザーが
