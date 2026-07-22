@@ -4,9 +4,8 @@
 // `URL(string:)` + `scheme == "https"` + `host != nil` の3条件だけ書いていた。これが
 // シミュレータ実機検証(2026-07-22)で実バグとして噴いた:
 //
-//   フォームの URL 欄は初期値 "https://" をプリフィルしている(入力の手間を減らす種)。
-//   ユーザーがフル URL("http://tdr-concierge.gigun-dev.workers.dev/mcp")をそのまま
-//   ペーストすると種の後ろに連結され "https://http://tdr-concierge..." になる。
+//   フォームの URL 欄にあった初期値 "https://" と、ユーザーが貼り付けたフル URL が
+//   連結され "https://http://tdr-concierge..." になった。
 //   ところが `URL(string:)` はこれを「scheme=https, host=http, path=//tdr-...」と
 //   解釈するので、上の3条件を**全部満たして通ってしまう**。保存ボタンが有効化され、
 //   壊れたエントリが ServerRegistry に永続化され、接続時に NSURLErrorDomain -1003
@@ -32,7 +31,7 @@ public enum MCPEndpointPolicy {
     public enum Rejection: Error, Equatable, Sendable {
         /// 空文字(トリム後)。まだ何も入力していない状態。
         case empty
-        /// "://" が2回以上現れる。プリフィル "https://" にフル URL を貼った典型パターン。
+        /// "://" が2回以上現れる。複数 URL の連結や貼り付け事故を示す。
         case doubleScheme
         /// scheme が https でない(http や scheme 無しを含む)。
         case notHTTPS

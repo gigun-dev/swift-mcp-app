@@ -610,3 +610,16 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 最終`make check`はgreen: Swift build、177 tests / 18 suites、SwiftFormat 0/83、
   SwiftLint 0 violations / 82 files。Codex migration validatorもconfig、xcode MCP command、project skill、
   root/Sources/Tests instructionsの全項目green。SessionStart注入は2,856 bytesに収まる。
+
+## 2026-07-23: remote MCP追加フォームの初期状態と検証表示を整理
+
+- 新規serverのname/URLを空で開始するよう変更。URL欄の`https://`プリフィルはフルURLのペーストを
+  邪魔し、未操作なのに不正状態を作るため廃止した。
+- `caldav`や`https://example.com/mcp`のような実データ風placeholderも廃止し、フィールドの役割だけを
+  示す`表示名` / `URL`へ変更。正常時の説明footerは表示しない。
+- URLエラーは、非空の入力を終えてURL fieldからfocusを外した後だけ表示する。再編集のfocus中は隠し、
+  入力前・入力途中にフォームから叱られる状態を避ける。保存は従来どおり表示名と有効なhttps URLが
+  揃うまで無効で、`MCPEndpointPolicy`の二重スキーム等の防御は維持する。
+- iPhone 17 Simulatorへ`make run`でinstall/launchし実画面を確認。新規フォームは空の`表示名` / `URL`
+  だけで、初期エラー・正常footerとも無し、保存は無効。不正な非空値を入力して別欄へ移ると赤字が現れ、
+  URL欄へ再focusすると消えることをアクセシビリティツリーとスクリーンショットで裏取りした。

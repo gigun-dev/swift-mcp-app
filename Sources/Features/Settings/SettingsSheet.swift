@@ -411,15 +411,19 @@ private struct ServerFormSheet: View {
 
     @State private var name: String
     @State private var urlString: String
+    @State private var hasURLFieldBlurred = false
+    @FocusState private var isURLFieldFocused: Bool
 
     init(registry: ServerRegistryStore, target: ServerFormTarget) {
         self.registry = registry
         self.target = target
-        // 編集なら既存値を初期表示、新規なら空(URL は https:// を種として置き、入力の手間を減らす)。
+        // 編集なら既存値を初期表示し、新規はどちらも空から始める。
+        // URL の一部を先回りして埋めると、フル URL のペーストを邪魔するうえ、未操作なのに
+        // エラー状態を作ってしまう。入力欄はユーザーの値だけを保持し、要件は保存可否で示す。
         switch target {
         case .add:
             _name = State(initialValue: "")
-            _urlString = State(initialValue: "https://")
+            _urlString = State(initialValue: "")
         case .edit(let entry):
             _name = State(initialValue: entry.name)
             _urlString = State(initialValue: entry.url.absoluteString)
@@ -430,7 +434,7 @@ private struct ServerFormSheet: View {
     ///
     /// 判定ロジックは Kernel の純関数 `MCPEndpointPolicy` に移した(2026-07-22)。ここに
     /// インラインで `URL(string:) + scheme == "https" + host != nil` を書いていた頃、
-    /// プリフィルの "https://" にフル URL を貼って出来る "https://http://..." が
+    /// 二重スキームの "https://http://..." が
     /// **バリデーションを通過して保存できてしまう**バグを実機で踏んだため
     /// (経緯の詳細は MCPEndpointPolicy.swift 冒頭)。UI から切り離してテストで固定する。
     private var urlValidation: Result<URL, MCPEndpointPolicy.Rejection> {
@@ -447,21 +451,21 @@ private struct ServerFormSheet: View {
 
     /// 拒否理由 → ユーザーに出す日本語。文言は UI の関心なので Kernel には置かず
     /// (Kernel は Rejection の列挙までが責務)、ここで対応付ける。
-    /// 二重スキームだけは「何をしてしまったか」を名指しする — 汎用文
-    /// (旧「https:// で始まる有効な URL を入力してください。」)では、種の "https://" の後ろに
-    /// 貼り付けた自覚が無いユーザーは自分の入力の何が悪いのか永久に気づけない。
+    /// 二重スキームだけは「何をしてしまったか」を名指しする。フォーム側でプリフィルは
+    /// 廃止したが、キーボード編集や外部からのコピーで不正 URL が入る可能性は残るため、
+    /// Policy の防御と具体的な案内は維持する。
     private static func message(for rejection: MCPEndpointPolicy.Rejection) -> String {
         switch rejection {
         case .empty:
             return "エンドポイント URL を入力してください。"
         case .doubleScheme:
-            return "URL にスキーム(https:// など)が2つ含まれています。入力欄の \"https://\" の後ろに URL 全体を貼り付けていませんか? 欄をすべて消してから貼り直してください。"
+            return "URL にスキーム(https:// など)が2つ含まれています。URL 全体を貼り直してください。"
         case .notHTTPS:
             return "https:// で始まる URL を入力してください(http は使えません)。"
         case .invalidHost:
-            return "ホスト名が正しくありません(例: https://example.com/mcp)。"
+            return "URL のホスト名が正しくありません。"
         case .malformed:
-            return "URL として解釈できません。https://example.com/mcp の形式で入力してください。"
+            return "有効な URL を入力してください。"
         }
     }
 
@@ -469,27 +473,40 @@ private struct ServerFormSheet: View {
         NavigationStack {
             Form {
                 Section("名前") {
-                    TextField("caldav", text: $name)
+                    TextField("表示名", text: $name)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
                 Section {
-                    TextField("https://example.com/mcp", text: $urlString)
+                    TextField("URL", text: $urlString)
                         .font(.callout.monospaced())
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .focused($isURLFieldFocused)
+                        .submitLabel(.done)
+                        .onSubmit { isURLFieldFocused = false }
+                        .onChange(of: isURLFieldFocused) { wasFocused, isFocused in
+                            // 入力前・入力途中に赤字を出さない。非空の値をいったん入力し、
+                            // URL 欄を離れた時点ではじめて保存不可の理由を知らせる。
+                            if wasFocused,
+                               !isFocused,
+                               !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                hasURLFieldBlurred = true
+                            }
+                        }
                 } header: {
                     Text("エンドポイント URL")
                 } footer: {
-                    // 失敗理由をその場で名指しする(保存ボタンが押せない理由の手掛かり)。
-                    // 空欄(.empty)のときは赤字を出さない — 入力を始める前から怒られるのは
-                    // ノイズでしかないため(旧実装の `!urlString.isEmpty` ガードの趣旨を維持)。
-                    if case .failure(let rejection) = urlValidation, rejection != .empty {
+                    // 正常時の補足説明は置かない。エラーも「非空のまま blur 済み」に限り、
+                    // 保存ボタンが無効な理由が必要になったときだけ表示する。
+                    if hasURLFieldBlurred,
+                       !isURLFieldFocused,
+                       !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       case .failure(let rejection) = urlValidation,
+                       rejection != .empty {
                         Text(Self.message(for: rejection))
                             .foregroundStyle(.red)
-                    } else {
-                        Text("MCP サーバーの /mcp エンドポイント。https 必須。")
                     }
                 }
             }

@@ -13,6 +13,10 @@
 - **この dirty の内容**: MCP URL の二重スキーム拒否(`MCPEndpointPolicy` + 11 tests)、接続状態を
   平時は非表示・異常時だけ警告アイコンにする header UX、Makefile/direnv の開発環境整理、
   Claude Code / Codex 共有ハーネス。既存変更を破棄せず引き継ぐ。
+  **2026-07-23 追更新:** remote MCP追加フォームは新規name/URLを空にし、placeholderも
+  `表示名` / `URL`という役割だけに限定。URLエラーは非空の入力を終えてfieldを離れた後だけ表示し、
+  正常時footerは廃止した。保存可否と`MCPEndpointPolicy`の堅牢な検証は維持。iPhone 17 Simulatorで
+  空の初期状態・blur後のエラー表示・再focus中の非表示まで実動作確認済み。
 - **検証済み**: Swift build/test は通る。既存SwiftLint違反はbaselineに固定し、SwiftFormatは
   意図コメントを壊さない字句ルールへ限定したため、`make check`は今後の新規違反だけを検出する。
   **2026-07-23 実機**: iPhone 12 miniへ自動署名build・install・launch成功。起動後も
@@ -132,6 +136,9 @@ WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 comp
 > — 今回は実機側で正しい URL に直っていたため実害なし。②事故の根本原因である
 > プリフィル `"https://"` を placeholder に変えるかは**挙動変更なので保留**(要判断)。
 > ③`make app` は subagent 環境の PATH に xcodegen が無く失敗する(Makefile に fallback 検討)。
+> **2026-07-23 更新:** 上記②の保留を解消 ✅。新規フォームのプリフィルと実データ風placeholderを
+> 廃止し、空の初期状態に変更。未操作・入力中にはエラーを出さず、非空のURL fieldをblurした後だけ
+> 拒否理由を表示する。正常時の説明footerも置かない。
 
 転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
 caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI

@@ -13,7 +13,7 @@ import Testing
         #expect(url.absoluteString == "https://caldav.gigun-dev.workers.dev/mcp")
     }
 
-    @Test("プリフィル https:// にフル URL を貼った二重スキームは拒否(実機で踏んだ本命)")
+    @Test("連結された二重スキームは拒否(実機で踏んだ本命)")
     func rejectsDoubleScheme() {
         #expect(
             MCPEndpointPolicy.resolve(urlString: "https://http://tdr-concierge.gigun-dev.workers.dev/mcp")
