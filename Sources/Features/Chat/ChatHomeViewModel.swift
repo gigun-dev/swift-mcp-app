@@ -61,9 +61,17 @@ public final class ChatHomeViewModel {
     /// 接続時にここから OpenAICompatClient と model を組む。
     public let settings: LLMSettingsStore
 
-    /// 接続先 MCP サーバー URL。既定は caldav 本番だが固定しない(汎用ホスト・設定で変更可)。
-    /// P3-T4 では設定 UI に露出しないが、コードとしては差し替え可能に保つ(将来サーバー選択 UI)。
-    public var serverURLString = "https://caldav.gigun-dev.workers.dev/mcp"
+    /// MCP サーバー登録簿(M1)。接続先 URL の唯一の出所。**ハードコード URL を廃止**し、
+    /// 「選択中サーバー」を registry.selectedEntry から取る(SettingsSheet で登録・ChatHomeView の
+    /// サーバー選択メニューで切替)。SettingsSheet と共有する参照(登録の追加がすぐ選択肢に反映される)。
+    public let registry: ServerRegistryStore
+
+    /// 接続先 MCP サーバー URL 文字列。**registry の選択中サーバーから導出する read-only 値**
+    /// (M1 でハードコードを廃止)。ChatHomeView のタイトル短縮名・runConnect の接続先が参照する。
+    /// 選択が無ければ空文字(runConnect が URL 不正として弾く=接続ゲートに留まる)。
+    public var serverURLString: String {
+        registry.selectedEntry?.url.absoluteString ?? ""
+    }
 
     // 接続で生成したオブジェクトは手放すと delegate が nil 化してフローが壊れるため保持する
     // (TodosCardSpikeView と同じ理由)。proxy は ChatViewModel 内にも保持されるが、
@@ -107,8 +115,9 @@ public final class ChatHomeViewModel {
     /// `Application Support/pricing/` に本番キャッシュを置く(ChatStore と対称のディレクトリ設計)。
     private let pricingStore = PricingStore(baseDirectory: ChatHomeViewModel.defaultPricingDirectory())
 
-    public init(settings: LLMSettingsStore) {
+    public init(settings: LLMSettingsStore, registry: ServerRegistryStore) {
         self.settings = settings
+        self.registry = registry
         // pricing ロードは接続をブロックしない(タスク指示「ロードは接続をブロックしない・
         // 失敗してもチャットは動く」)。init 時点で1回 fire-and-forget で走らせておき、
         // 完了時に「今 .ready なら」その chatVM へ反映する(接続前に終われば connect() 側の
@@ -381,6 +390,38 @@ public final class ChatHomeViewModel {
             logger.error("新規チャットの構築に失敗: \(String(reflecting: error), privacy: .public)")
             state = .failed(String(describing: error))
         }
+    }
+
+    // MARK: - サーバー切替(M1)
+
+    /// チャットのサーバー選択メニューから呼ぶ。選択中サーバーを別 id に切り替え、新 URL で接続し直す。
+    ///
+    /// 【なぜ丸ごと再接続するか】1チャット=1サーバーモデル(M1 の前提)なので、サーバーが変われば
+    /// 接続(swift-sdk Client・OAuth トークン・tools/list・ui:// 資源マップ)は全て別物になる。
+    /// 既存の connection/proxy/connectionContext を破棄し、connect() で新 URL の接続フローを
+    /// 最初からやり直す(OAuth 対話が再度必要になるのは接続先が変わる以上避けられない・許容)。
+    ///
+    /// 進行中の送信(旧サーバーへの LLM/tools/call)は cancelActiveSend で確実に打ち切ってから
+    /// 破棄する(newChat と同じ「旧チャットとの決別」の作法・監査 2026-07-18 と一貫)。
+    /// 同じ id への切替は no-op(無駄な再接続=OAuth 再対話を起こさない)。
+    public func switchServer(to id: UUID) {
+        guard registry.selectedServerID != id else { return }
+
+        // 旧接続の進行中送信を止める(サーバー副作用のある tools/call を切替後に走らせない)。
+        if case .ready(let oldChatVM) = state {
+            oldChatVM.cancelActiveSend()
+        }
+
+        // 選択を移す(永続化=次回起動の既定にもなる)。serverURLString はこの選択から導出される。
+        registry.select(id)
+
+        // 接続由来の材料を破棄(新 URL の接続で作り直す。connect→runConnect が再生成する)。
+        connectionContext = nil
+        proxy = nil
+        displayMode = .live  // 履歴閲覧中なら抜ける(新サーバーのライブへ)。
+
+        logger.notice("サーバー切替 → \(self.serverURLString, privacy: .public)")
+        connect()
     }
 
     /// 既定 system プロンプト。**痩せさせる理由 = コスト**(設計 §6):

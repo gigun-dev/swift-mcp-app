@@ -20,7 +20,9 @@ final class ConnectionViewModel: ObservableObject {
     // caldav 本番 /mcp を既定値にしておく(タスク指示: 「サーバー URL 入力欄(既定値 caldav 本番)」)。
     // ただし固定はしない ——「汎用ホスト」方針(CLAUDE.md)を体現するため、テキストフィールドで
     // 任意の MCP サーバー URL に差し替えられるようにしてある。
-    @Published var serverURLString = "https://caldav.gigun-dev.workers.dev/mcp"
+    // M1: ハードコード URL 文字列を廃し、レジストリのシード定数を参照する(挙動不変・URL は同じ)。
+    // P1 デバッグ画面は登録簿と独立(任意 URL を手打ちする検証用)なので、既定値だけ揃える。
+    @Published var serverURLString = ServerRegistryStore.caldavSeedURLString
     @Published private(set) var state: State = .idle
 
     private var connectionTask: Task<Void, Never>?

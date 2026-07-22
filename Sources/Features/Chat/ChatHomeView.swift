@@ -12,11 +12,14 @@
 // タスク指示で要求されている(接続ボタン + 設定ボタン / プログレス)。デバッグ画面ではなく
 // 本番導線なので、SwiftUI 標準の素直な見た目にする(モックのトーンから逸脱しない範囲)。
 import SwiftUI
+import Services  // ServerRegistryStore(サーバー登録簿・M1)
 
 struct ChatHomeView: View {
     // 設定は Home と Sheet で共有する1インスタンス。@State で所有(@Observable を SwiftUI が観測)。
     // 初期値は init で注入する(settings を home にも渡す必要があるため既定式は置かない)。
     @State private var settings: LLMSettingsStore
+    // MCP サーバー登録簿(M1)。Home / SettingsSheet / サーバー選択メニューで共有する1インスタンス。
+    @State private var registry: ServerRegistryStore
     @State private var home: ChatHomeViewModel
     @State private var showingSettings = false
     // 履歴サイドバーの開閉(committed 状態)。実際の見せ方は「メイン画面を右へスライドして
@@ -33,8 +36,10 @@ struct ChatHomeView: View {
         // settings を先に作り、それを home に注入する。@State の init 直接代入は
         // _settings/_home を使う(SwiftUI の @State init パターン)。
         let settings = LLMSettingsStore()
+        let registry = ServerRegistryStore()
         _settings = State(initialValue: settings)
-        _home = State(initialValue: ChatHomeViewModel(settings: settings))
+        _registry = State(initialValue: registry)
+        _home = State(initialValue: ChatHomeViewModel(settings: settings, registry: registry))
     }
 
     var body: some View {
@@ -135,7 +140,7 @@ struct ChatHomeView: View {
         // iPad の非対応(ハプティクス無し)は考慮不要。
         .sensoryFeedback(.impact(weight: .medium), trigger: showingSidebar)
         .sheet(isPresented: $showingSettings) {
-            SettingsSheet(store: settings)
+            SettingsSheet(store: settings, registry: registry)
         }
         // 履歴読み込み失敗(タスク指示・握りつぶさない)。VM が historyLoadError に載せたら見せる。
         .alert(
@@ -399,18 +404,47 @@ struct ChatHomeView: View {
 
     // MARK: - タイトル + model chip(モックの h1 + .model-chip を縦に合成)
 
-    /// 中央タイトル領域。上段=接続先(サーバー短縮名)、下段=接続状態ドット + モデル名の chip。
-    /// 全体を Button にして、タップで設定(モデル変更含む)を開く(chip に機能を持たせる)。
+    /// 中央タイトル領域。上段=接続先サーバー名(切替メニューの入口)、下段=接続状態ドット + モデル名。
+    ///
+    /// 【M1: iOS 標準の Menu でサーバー切替 + 設定への導線を1つにまとめる】以前は全体を「設定を開く
+    /// Button」にしていたが、汎用クライアント化(複数サーバー登録)で「今どのサーバーに繋いでいるか /
+    /// 別サーバーへ切り替える」導線が主画面に要る。カスタム UI は作らず iOS 標準 Menu で十分
+    /// (タスク指示)。登録済みサーバーを列挙し、選択中にはチェック、タップで home.switchServer(再接続)。
+    /// 末尾に「サーバーを管理…」で SettingsSheet(登録の追加/編集/削除 + モデル設定)へ抜ける。
     private var titleAndModel: some View {
-        Button {
-            showingSettings = true
+        Menu {
+            // 登録済みサーバー(現在選択中はチェックマーク)。同じサーバーの選択は switchServer 側で no-op。
+            ForEach(registry.servers) { entry in
+                Button {
+                    home.switchServer(to: entry.id)
+                } label: {
+                    // 選択中だけ checkmark を出す(Label の systemImage を出し分け)。
+                    if entry.id == registry.selectedServerID {
+                        Label(entry.name, systemImage: "checkmark")
+                    } else {
+                        Text(entry.name)
+                    }
+                }
+            }
+            Divider()
+            // サーバーの追加/編集/削除・モデル設定は設定シートに集約(二重の管理 UI を作らない)。
+            Button {
+                showingSettings = true
+            } label: {
+                Label("サーバーを管理・設定", systemImage: "gearshape")
+            }
         } label: {
             VStack(spacing: 1) {
-                // 上段: 接続先の短縮名(サーバー URL の host 先頭ラベル。今は caldav)。
-                Text(serverShortName)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                // 下段: 状態ドット + モデル名(フル表示・potato にならないよう十分な幅の principal に置く)。
+                // 上段: 選択中サーバーの表示名(ユーザーが付けた name。未選択なら "MCP")+ 切替の合図。
+                HStack(spacing: 3) {
+                    Text(serverShortName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                // 下段: 状態ドット + モデル名(フル表示)。
                 HStack(spacing: 4) {
                     Circle()
                         .fill(isReady ? Color.green : Color.gray)
@@ -419,19 +453,18 @@ struct ChatHomeView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    // タップできる合図(モデル切替への導線)。
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.tertiary)
                 }
             }
         }
+        // Menu 既定のシェブロン/装飾を抑え、自前ラベルだけを見せる(principal をすっきりさせる)。
+        .menuStyle(.button)
         .buttonStyle(.plain)
     }
 
-    /// 接続先サーバー URL の host 先頭ラベル(例: caldav.gigun-dev.workers.dev → "caldav")。
-    /// 解析できないときは素の文字列を短く出す(汎用ホストなので任意 URL を許す)。
+    /// 中央タイトルに出す選択中サーバーの表示名。**登録簿の name を優先**(ユーザーが付けた名前)。
+    /// 選択が無いとき(全削除直後など)は URL host 先頭にフォールバックし、それも無ければ "MCP"。
     private var serverShortName: String {
+        if let name = registry.selectedEntry?.name, !name.isEmpty { return name }
         guard let host = URL(string: home.serverURLString)?.host else { return "MCP" }
         return host.split(separator: ".").first.map(String.init) ?? host
     }
