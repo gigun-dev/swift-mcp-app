@@ -187,13 +187,47 @@ public struct ChatSessionSummary: Codable, Equatable, Sendable {
     public var updatedAt: Date
     public var serverURL: URL
     public var model: String
+    /// 履歴一覧の先頭へ固定するユーザー操作メタデータ。古い index.json にはキーが無いため、
+    /// 独自 Decodable 実装で false を既定値にする(既存履歴を一括移行せず読めることを優先)。
+    public var isPinned: Bool
+    /// title が自動生成値ではなくユーザーによる明示名かを表す。ChatStore.save が後から古い
+    /// ChatSession を保存してもユーザー名を上書きしないための区別であり、title の複製ではない。
+    public var hasCustomTitle: Bool
 
-    public init(id: UUID, title: String, preview: String, updatedAt: Date, serverURL: URL, model: String) {
+    public init(
+        id: UUID,
+        title: String,
+        preview: String,
+        updatedAt: Date,
+        serverURL: URL,
+        model: String,
+        isPinned: Bool = false,
+        hasCustomTitle: Bool = false
+    ) {
         self.id = id
         self.title = title
         self.preview = preview
         self.updatedAt = updatedAt
         self.serverURL = serverURL
         self.model = model
+        self.isPinned = isPinned
+        self.hasCustomTitle = hasCustomTitle
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, preview, updatedAt, serverURL, model, isPinned, hasCustomTitle
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        preview = try container.decode(String.self, forKey: .preview)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        serverURL = try container.decode(URL.self, forKey: .serverURL)
+        model = try container.decode(String.self, forKey: .model)
+        // 2026-07-23 追加: decodeIfPresent により旧 index.json をそのまま読める。
+        isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        hasCustomTitle = try container.decodeIfPresent(Bool.self, forKey: .hasCustomTitle) ?? false
     }
 }

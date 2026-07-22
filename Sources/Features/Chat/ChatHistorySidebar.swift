@@ -25,6 +25,8 @@ struct ChatHistorySidebar: View {
 
     /// 現在ライブ表示 or 閲覧中のセッション ID(.active ハイライト用)。無ければ(未接続等)nil。
     var activeSessionID: UUID?
+    /// ZStack 下層に常時 mount されるため、画面の appear ではなく実際の pane 開閉を親から受け取る。
+    let isPresented: Bool
 
     /// 行タップ = 「この id を開く」を親へ通知(親が store.load → .viewingHistory へ)。
     let onSelect: (UUID) -> Void
@@ -39,6 +41,13 @@ struct ChatHistorySidebar: View {
     // 検索クエリ(title/preview の部分一致・ローカルフィルタ・設計 §5「一覧の title/preview の部分一致で足りる」)。
     // preview は表示から外した(実装メモ3)が、検索対象には引き続き残す(実装メモ3・ボツ案メモ(d))。
     @State private var query: String = ""
+    // 長押しメニューから開く破壊操作/文字入力は、即時実行せず native confirmation/prompt を挟む。
+    // 対象 ID と入力値を明示的に保持し、List の並べ替え後も別行へ作用しないようにする。
+    @State private var deleteTargetID: UUID?
+    @State private var showingDeleteConfirmation = false
+    @State private var renameTargetID: UUID?
+    @State private var renameTitle = ""
+    @State private var showingRenamePrompt = false
 
     private static let logger = Logger(subsystem: "dev.gigun.mcphost", category: "sidebar")
 
@@ -48,18 +57,52 @@ struct ChatHistorySidebar: View {
             listOrEmpty
         }
         .background(SidebarPalette.paper)
-        // 初回表示で一覧を読む。サイドバーは開くたびに再マウントされる想定(drawer の
-        // offset 表示ではなく条件付き生成にしているため)なので、開くたびに最新の index を読む。
-        .task { reload() }
+        // サイドバーは ZStack の下層へ常時 mount され、`.task` はアプリ起動時に一度しか走らない。
+        // turn settlement 後に初めて pane を開いた場合も最新 index を見せるため、false→true の
+        // presentation transition を正にする。initial=true は将来最初から開く構成でも読み漏らさない。
+        .onChange(of: isPresented, initial: true) { _, presented in
+            if presented { reload() }
+        }
+        .alert("名前を変更", isPresented: $showingRenamePrompt) {
+            TextField("チャット名", text: $renameTitle)
+            Button("キャンセル", role: .cancel) {}
+            Button("保存") { commitRename() }
+                // 空白だけの名前は ChatStore も拒否するが、UI でも実行前に理由が見える形にする。
+                .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("履歴に表示する名前を入力してください。")
+        }
+        .confirmationDialog(
+            "チャットを削除しますか？",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("削除", role: .destructive) { commitDelete() }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("この操作は取り消せません。")
+        }
     }
 
     // MARK: - ヘッダ(ワードマーク + 検索。モックの .side-head)
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("swift-mcp-app")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+            HStack {
+                Text("swift-mcp-app")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                // drawer の横ドラッグ開閉を廃止しても戻り方が常に見える、明示的な close affordance。
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(SidebarPalette.paperSubtle))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("履歴を閉じる")
+            }
             // 検索フィールド(モックの .search-field)。角丸の薄い箱 + 虫眼鏡。
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
@@ -141,67 +184,65 @@ struct ChatHistorySidebar: View {
 
     private func historyRow(_ summary: ChatSessionSummary) -> some View {
         let isActive = summary.id == activeSessionID
-        return Button {
-            onSelect(summary.id)
-            onClose()
-        } label: {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(summary.title.isEmpty ? "新規チャット" : summary.title)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    // 実装メモ4: preview は表示しない(検索対象としては filteredSummaries で残す)。
-                    HStack(spacing: 7) {
-                        Text(relativeTime(summary.updatedAt))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        // 実装メモ5: 複数サーバー接続歴があるときだけ chip を出す(一覧単位で判定)。
-                        if showsServerChip {
-                            Text(serverShortName(summary.serverURL))
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 1.5)
-                                .background(Capsule().fill(SidebarPalette.paperSubtle))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())  // 余白部分のタップも拾う。
+        // active 背景と context-menu preview の正典を同じ Shape 値にする。外側 8x3 / 内側
+        // 8x11 の二段 padding は、従来の content inset 16x14 と active 背景 inset 8x3 を保つ。
+        let rowShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return ChatHistoryRowLabel(
+            summary: summary,
+            serverName: showsServerChip ? serverShortName(summary.serverURL) : nil
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 11)
+        .background {
+            if isActive { rowShape.fill(SidebarPalette.pillActive) }
         }
-        .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
-        // 実装メモ6: アクティブ行は柔らかい角丸ピル塗り(accent は使わない・手本準拠)。
-        // 背景 View は行サイズへ引き伸ばされるので padding で内側に寄せてピル状にする。
-        .listRowBackground(historyRowBackground(isActive: isActive))
+        // interaction と preview の hit/highlight geometry を active の灰色背景と完全に揃える。
+        .contentShape(.interaction, rowShape)
+        .contentShape(.contextMenuPreview, rowShape)
+        // List 内の Button は大きな横 swipe の終了を activate と解釈する場合があり、削除 swipe を
+        // 廃止しても onSelect + onClose が発火した。通常 View + TapGesture なら移動量の大きい gesture は
+        // tap として成立しないため、「明示 tap のみ選択」という drawer 競合排除の契約になる。
+        .onTapGesture { select(summary.id) }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(SidebarPalette.paper)
         // アクティブ行はピルとヘアラインが衝突するため区切り線を消す(モックの .hrow.active::before)。
         .listRowSeparator(isActive ? .hidden : .visible)
         .listRowSeparatorTint(SidebarPalette.hairline)
-        // スワイプ削除(既存踏襲)。削除後は一覧を読み直す。
-        .swipeActions(edge: .trailing) {
+        // 左スワイプは drawer の開閉と競合するため使わない。破壊操作を含む管理メニューは
+        // iOS 標準の長押し context menu へ集約し、誤操作時の削除はさらに確認を挟む。
+        .contextMenu {
+            Button {
+                togglePinned(summary)
+            } label: {
+                Label(
+                    summary.isPinned ? "ピン留めを解除" : "ピン留め",
+                    systemImage: summary.isPinned ? "pin.slash" : "pin"
+                )
+            }
+            Button {
+                beginRename(summary)
+            } label: {
+                Label("名前を変更", systemImage: "pencil")
+            }
             Button(role: .destructive) {
-                delete(summary.id)
+                requestDelete(summary.id)
             } label: {
                 Label("削除", systemImage: "trash")
             }
         }
-    }
-
-    /// List の型消去を行描画から隔離し、アクティブ時だけ柔らかいピル背景へ切り替える。
-    private func historyRowBackground(isActive: Bool) -> AnyView {
-        guard isActive else { return AnyView(SidebarPalette.paper) }
-        return AnyView(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(SidebarPalette.pillActive)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-        )
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(summary.isPinned ? "ピン留め済み" : "")
+        // 見た目を Button から View へ変えても VoiceOver の標準 activate 操作は同じ選択動作を保つ。
+        .accessibilityAction { select(summary.id) }
+        // VoiceOver では長押しを要求せず、同じ操作を rotor actions として直接公開する。
+        .accessibilityAction(named: Text(summary.isPinned ? "ピン留めを解除" : "ピン留め")) {
+            togglePinned(summary)
+        }
+        .accessibilityAction(named: Text("名前を変更")) { beginRename(summary) }
+        .accessibilityAction(named: Text("削除")) { requestDelete(summary.id) }
     }
 
     /// 下部フローティングの新規チャットピル(モックの .fab .pill)。
@@ -229,7 +270,19 @@ struct ChatHistorySidebar: View {
         summaries = store.loadIndex()  // updatedAt 降順(ChatStore.loadIndex の契約)。
     }
 
-    private func delete(_ id: UUID) {
+    private func select(_ id: UUID) {
+        onSelect(id)
+        onClose()
+    }
+
+    private func requestDelete(_ id: UUID) {
+        deleteTargetID = id
+        showingDeleteConfirmation = true
+    }
+
+    private func commitDelete() {
+        guard let id = deleteTargetID else { return }
+        deleteTargetID = nil
         // ChatStore.delete は冪等(ファイルが無くても index から消す)。失敗しても一覧再読込は行う
         // (削除に失敗したら次の reload で「消えていない」ことが見えるので、握りつぶしても
         // ユーザーには状態が正しく反映される)。
@@ -238,6 +291,33 @@ struct ChatHistorySidebar: View {
         } catch {
             // 前版の print から Logger へ変更(軽微な指摘への追随。Features 層に専用 Logger を新設)。
             Self.logger.error("履歴の削除に失敗: \(String(reflecting: error), privacy: .public)")
+        }
+        reload()
+    }
+
+    private func togglePinned(_ summary: ChatSessionSummary) {
+        do {
+            try store.setPinned(id: summary.id, isPinned: !summary.isPinned)
+        } catch {
+            Self.logger.error("履歴のピン留め変更に失敗: \(String(reflecting: error), privacy: .public)")
+        }
+        // pin の変更は並び順も変えるため、ローカル配列の部分更新でなく store の契約順を再読込する。
+        reload()
+    }
+
+    private func beginRename(_ summary: ChatSessionSummary) {
+        renameTargetID = summary.id
+        renameTitle = summary.title
+        showingRenamePrompt = true
+    }
+
+    private func commitRename() {
+        guard let id = renameTargetID else { return }
+        renameTargetID = nil
+        do {
+            try store.rename(id: id, title: renameTitle)
+        } catch {
+            Self.logger.error("履歴の名前変更に失敗: \(String(reflecting: error), privacy: .public)")
         }
         reload()
     }
@@ -263,73 +343,9 @@ struct ChatHistorySidebar: View {
 
     // MARK: - 表示ヘルパ
 
-    /// 相対時刻フォーマッタ(実装メモ4)。生成コストが高いため static let でキャッシュ。
-    /// dateTimeStyle = .named で「昨日」「たった今」等の自然な表現が出る(手本の「6分前」「昨日」)。
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.dateTimeStyle = .named
-        return formatter
-    }()
-
-    private func relativeTime(_ date: Date) -> String {
-        Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
-    }
-
     /// サーバー URL の host 先頭ラベル(caldav.gigun-dev.workers.dev → "caldav")。ChatHomeView と同ロジック。
     private func serverShortName(_ url: URL) -> String {
         guard let host = url.host else { return "MCP" }
         return host.split(separator: ".").first.map(String.init) ?? host
     }
-}
-
-/// サイドバー専用パレット(sidebar-v2.html の CSS 変数を移植)。
-///
-/// 【Assets カタログ不使用の判断(タスク前提)】このプロジェクトに .xcassets は無い。
-/// モックの実装メモは Assets の light/dark カラーペア(Paper/PaperSubtle/PillActive/
-/// FabBG/FabFG)を前提にしているが、Assets を新設せず Swift の `Color(uiColor:)` +
-/// `UIColor { traitCollection in ... }` の動的プロバイダで代替する(コード内完結・
-/// カタログ管理の手間が無い)。値は sidebar-v2.html の `:root` / `.theme-light` /
-/// `.theme-dark` の Hex をそのまま写経(出典: 同ファイル 43-66 行)。
-enum SidebarPalette {
-    /// 温かい paper 背景(light: #faf9f5 / dark: #211f1c)。
-    static let paper = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0x21 / 255, green: 0x1f / 255, blue: 0x1c / 255, alpha: 1)
-            : UIColor(red: 0xfa / 255, green: 0xf9 / 255, blue: 0xf5 / 255, alpha: 1)
-    })
-
-    /// 検索ボックス・chip の下地(light: #f1efe9 / dark: #2c2a26)。
-    static let paperSubtle = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0x2c / 255, green: 0x2a / 255, blue: 0x26 / 255, alpha: 1)
-            : UIColor(red: 0xf1 / 255, green: 0xef / 255, blue: 0xe9 / 255, alpha: 1)
-    })
-
-    /// ヘアライン区切り線(light: #e8e6de / dark: #33312c)。
-    static let hairline = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0x33 / 255, green: 0x31 / 255, blue: 0x2c / 255, alpha: 1)
-            : UIColor(red: 0xe8 / 255, green: 0xe6 / 255, blue: 0xde / 255, alpha: 1)
-    })
-
-    /// アクティブ行の柔らかいピル塗り(light: #e9e6dd / dark: #33312b)。
-    static let pillActive = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0x33 / 255, green: 0x31 / 255, blue: 0x2b / 255, alpha: 1)
-            : UIColor(red: 0xe9 / 255, green: 0xe6 / 255, blue: 0xdd / 255, alpha: 1)
-    })
-
-    /// フローティングピルの背景(light: 黒 #26241f / dark: 白 #f0eee8。ダークで反転)。
-    static let fabBackground = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0xf0 / 255, green: 0xee / 255, blue: 0xe8 / 255, alpha: 1)
-            : UIColor(red: 0x26 / 255, green: 0x24 / 255, blue: 0x1f / 255, alpha: 1)
-    })
-
-    /// フローティングピルの文字色(fabBackground と対の反転)。
-    static let fabForeground = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0x21 / 255, green: 0x1f / 255, blue: 0x1c / 255, alpha: 1)
-            : UIColor(red: 0xfa / 255, green: 0xf9 / 255, blue: 0xf5 / 255, alpha: 1)
-    })
 }

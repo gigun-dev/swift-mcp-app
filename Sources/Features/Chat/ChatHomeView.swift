@@ -15,10 +15,6 @@ import SwiftUI
 import Services  // ServerRegistryStore(サーバー登録簿・M1)
 
 struct ChatHomeView: View {
-    /// 閉じた drawer をスワイプで開ける領域。iOS の screen-edge pan と同じく、画面中央の
-    /// carousel / graph / slider を横操作しても host navigation が割り込まないよう左端だけ予約する。
-    private static let sidebarEdgeWidth: CGFloat = 24
-
     // 設定は Home と Sheet で共有する1インスタンス。@State で所有(@Observable を SwiftUI が観測)。
     // 初期値は init で注入する(settings を home にも渡す必要があるため既定式は置かない)。
     @State private var settings: LLMSettingsStore
@@ -29,12 +25,6 @@ struct ChatHomeView: View {
     // 履歴サイドバーの開閉(committed 状態)。実際の見せ方は「メイン画面を右へスライドして
     // 下層のサイドバーを露出する」方式(body 参照)。
     @State private var showingSidebar = false
-    // 引き出しの横ドラッグ量(live)。**@GestureState でなく @State** にしているのは、指を離した
-    // 瞬間の 0 リセットを自前で(snap と同じ withAnimation 内で)行うため — @GestureState は
-    // 終了時に 0 へ即リセットされ、committed(showingSidebar)反映との間に1フレームの隙間ができて
-    // 「一度閉じてから開く」ちらつきになる(ユーザー指摘・2026-07-16)。committed の showingSidebar と
-    // 合わせて実オフセットを決める(currentOffset)。
-    @State private var dragTranslation: CGFloat = 0
 
     init() {
         // settings を先に作り、それを home に注入する。@State の init 直接代入は
@@ -49,14 +39,16 @@ struct ChatHomeView: View {
     var body: some View {
         // 【引き出しの実装方式(2026-07-16 全面修正・ユーザー指摘 + Claude iOS 手本)】
         // 手本は「drawer がコンテンツの上に被さる」のではなく、**サイドバーが下層にいて、
-        // メイン画面(角丸カード + ドロップシャドウ)が右へスライドして退く**方式。さらに
-        // 画面を右へドラッグするとカードが指に追従して開く(「漫画のページめくり」)。
+        // メイン画面(角丸カード + ドロップシャドウ)が右へスライドして退く**方式。
         // → 下層 = ChatHistorySidebar(左 revealWidth・全高)、上層 = メインを角丸カード化して
-        //   x オフセット。オフセットは ☰ タップ(committed=showingSidebar)+ 横ドラッグ(live=dragX)で決める。
+        //   x オフセット。開閉は ☰ / 明示 close / 退いたメインカードのタップだけで決める。
+        // 【2026-07-23 MCP App 横操作を host から完全分離】drawer の DragGesture は、左端限定でも
+        // WKWebView の carousel / graph / slider と recognizer が競合し得る。MCP App が所有する横操作を
+        // host navigation が奪わないことを優先し、drawer の swipe-open / swipe-close は設けない。
         GeometryReader { geo in
             // 露出幅: 画面の 84%(上限 330)。手本はカードの左端 ~15% が右に残る = reveal ~85%。
             let revealWidth = min(geo.size.width * 0.84, 330)
-            let offset = currentOffset(revealWidth: revealWidth)
+            let offset: CGFloat = showingSidebar ? revealWidth : 0
             // safe area の実測 inset(geo はまだ safe area を尊重した測定)。下でサイドバー内容を
             // これで寄せる。ZStack 全体は下の .ignoresSafeArea() で全画面へ広げる(カード bleed)。
             let topInset = geo.safeAreaInsets.top
@@ -71,6 +63,7 @@ struct ChatHomeView: View {
                 ChatHistorySidebar(
                     store: home.chatStore,
                     activeSessionID: activeSessionID,
+                    isPresented: showingSidebar,
                     onSelect: { id in home.openHistory(id: id) },
                     onNewChat: { Task { await home.newChat() } },
                     onClose: { closeSidebar() }
@@ -123,27 +116,9 @@ struct ChatHomeView: View {
                         Color.black.opacity(0.0001)
                             .contentShape(Rectangle())
                             .onTapGesture { closeSidebar() }
-                            // 開いている間は MCP App を操作する状態ではなく、この退いた main card
-                            // 全体が「drawer を閉じる」面になる。ここだけは左 drag でも閉じられる。
-                            .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .close))
                     }
                 }
                 .offset(x: offset)
-
-                // 【MCP App の横操作と drawer の競合防止・2026-07-23】
-                // 以前は NavigationStack 全域へ simultaneousGesture を付けていたため、WKWebView 内の
-                // graph / slider / carousel を横へ動かす正当な操作まで drawer が同時認識し、メイン画面が
-                // 右へずれた。横方向優位の判定だけでは両者を区別できない。閉状態の open gesture は
-                // iOS 標準の screen-edge pan と同じく左端 24pt から始まる場合だけに限定する。
-                // 履歴閲覧中は左端を「戻る」操作の領域として温存し、drawer は明示的な戻る後に開く。
-                if !showingSidebar, !isViewingHistory {
-                    Color.clear
-                        .frame(width: Self.sidebarEdgeWidth)
-                        .frame(maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .open))
-                        .accessibilityHidden(true)
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // paper を全画面へ(サイドバーのステータスバー下も埋める)+ ZStack ごと物理端まで広げる
@@ -151,10 +126,9 @@ struct ChatHomeView: View {
             .background(SidebarPalette.paper)
             .ignoresSafeArea()
         }
-        // ハプティクス(iOS 17+ 現行推奨 .sensoryFeedback・UIKit 不要)。committed の showingSidebar が
-        // 変わる = 開閉が snap 確定した瞬間に発火する(ドラッグ追従中は dragX 駆動で committed は
-        // 変わらないので鳴らない = スナップ完了時だけ鳴る・ベスプラどおり)。iPhone のみ想定なので
-        // iPad の非対応(ハプティクス無し)は考慮不要。
+        // ハプティクス(iOS 17+ 現行推奨 .sensoryFeedback・UIKit 不要)。明示操作によって
+        // showingSidebar が切り替わった瞬間だけ鳴る。iPhone のみ想定なので iPad の
+        // 非対応(ハプティクス無し)は考慮不要。
         .sensoryFeedback(.impact(weight: .medium), trigger: showingSidebar)
         .sheet(isPresented: $showingSettings) {
             SettingsSheet(store: settings, registry: registry, home: home)
@@ -188,23 +162,17 @@ struct ChatHomeView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        // 左: 履歴閲覧中は「戻る」(ライブへ)、通常は ☰(履歴サイドバーを開く)。
-        // モックはナビバー左に ☰(history-btn)。履歴詳細を開いたときだけ戻る導線に切り替える。
+        // 左は表示モードにかかわらず ☰ に統一する。履歴を選んだ直後だけ chevron.left へ変えると
+        // 「直前の session へ戻る」stack navigation に見えるが、実際は live chat へ飛ぶため不自然。
+        // 履歴間の移動・新規 chat は正典である sidebar を明示的に開いて行う。
         ToolbarItem(placement: .topBarLeading) {
-            if isViewingHistory {
-                Button {
-                    home.returnToLive()
-                } label: {
-                    Label("戻る", systemImage: "chevron.left")
-                }
-            } else {
-                Button {
-                    // トグル: 開いていれば畳む(ユーザー指摘「もう一度押したら畳まれるべき」)。
-                    withAnimation(.easeOut(duration: 0.22)) { showingSidebar.toggle() }
-                } label: {
-                    Image(systemName: "line.3.horizontal")
-                }
+            Button {
+                // トグル: 開いていれば畳む(ユーザー指摘「もう一度押したら畳まれるべき」)。
+                withAnimation(.easeOut(duration: 0.22)) { showingSidebar.toggle() }
+            } label: {
+                Image(systemName: "line.3.horizontal")
             }
+            .accessibilityLabel("チャット履歴")
         }
         // 中央: 接続先 + モデル名(履歴閲覧中は下の routedContent 側で navigationTitle が勝つが、
         // ライブ時はこの principal を出す。履歴詳細は自前の navigationTitle を持つ)。
@@ -248,77 +216,6 @@ struct ChatHomeView: View {
     }
 
     // MARK: - 引き出し(メイン画面を右へスライドして下層サイドバーを露出する方式)
-
-    /// 実オフセット = committed(showingSidebar なら revealWidth)+ live ドラッグ(dragX)を 0...reveal にクランプ。
-    /// これで「☰ タップで開閉」と「横ドラッグで指追従」を同じオフセットに合流させる。
-    private func currentOffset(revealWidth: CGFloat) -> CGFloat {
-        let base: CGFloat = showingSidebar ? revealWidth : 0
-        return min(max(base + dragTranslation, 0), revealWidth)
-    }
-
-    private enum SidebarDragIntent {
-        case open
-        case close
-    }
-
-    /// 横ドラッグで引き出しを開閉するジェスチャ。呼び出し元の hit region 自体を open=左端24pt、
-    /// close=開状態の main card overlay に分ける。開始位置を onChanged 内で後判定するだけでは親の
-    /// recognizer が WKWebView 上で競合し続けるため、gesture の取り付け先を分離することが重要。
-    /// - 縦スクロール/タップと両立させるため **横方向優位のときだけ**反応。
-    /// - open は右方向、close は左方向だけを live translation と snap 判定へ使う。
-    ///
-    /// 【ちらつき対策(2026-07-16・ユーザー指摘)】@State の dragTranslation を使い、onEnded で
-    /// **snap 確定(showingSidebar)と dragTranslation=0 を同一 withAnimation 内**で行う。こうすると
-    /// 実オフセット(base + dragTranslation)が「離した位置」から「snap 先」へ連続してアニメーション
-    /// する。@GestureState だと離した瞬間に 0 リセットが先行し、committed 反映との隙間で「一度閉じて
-    /// から開く」1フレームのちらつきが出ていた(開閉とも)。
-    private func sidebarDragGesture(revealWidth: CGFloat, intent: SidebarDragIntent) -> some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else {
-                    dragTranslation = 0
-                    return
-                }
-                // 途中で逆方向へ戻したとき、直前の有効 translation を残さない。open は正、close は負に
-                // クランプすることで、誤方向のdragではpaneが動かず、終了時の判定とも資格が一致する。
-                switch intent {
-                case .open:
-                    dragTranslation = max(value.translation.width, 0)
-                case .close:
-                    dragTranslation = min(value.translation.width, 0)
-                }
-            }
-            .onEnded { value in
-                let horizontal = abs(value.translation.width) > abs(value.translation.height)
-                // 【閾値を下げ・速度も見る(2026-07-16・ユーザー指摘「少ない動きで閉じたい・勢いを
-                // つけるのは疲れる」)】以前は「全開幅の 40% 位置」を単一閾値にしていたため、閉じるには
-                // 60% ぶんも左へ動かす必要があり疲れた。→ **現在状態からの移動量**が reveal の 22% を
-                // 超える or その向きに勢い(現在速度ぶんの追加予測移動 > 100pt)があれば toggle する、
-                // 対称で軽い判定にする(少しの動き or 軽いフリックのどちらでも確定)。
-                let moved = value.translation.width
-                let velocity = value.predictedEndTranslation.width - moved  // 現在速度ぶんの追加予測移動。
-                let posThreshold = revealWidth * 0.22
-                let velThreshold: CGFloat = 100
-                let reachedTarget: Bool
-                switch intent {
-                case .open:
-                    reachedTarget = horizontal && (moved > posThreshold || velocity > velThreshold)
-                case .close:
-                    reachedTarget = horizontal && (moved < -posThreshold || velocity < -velThreshold)
-                }
-                withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
-                    // intent と同じ方向へ閾値を越えた場合だけ状態を反転。それ以外は開始状態へ戻す。
-                    // reset は必ず同じ animation 内で行い、縦/逆方向で中間 offset を残さない。
-                    switch intent {
-                    case .open:
-                        showingSidebar = reachedTarget
-                    case .close:
-                        showingSidebar = !reachedTarget
-                    }
-                    dragTranslation = 0  // snap と同じアニメーション内でリセット(隙間=ちらつきを作らない)。
-                }
-            }
-    }
 
     private func closeSidebar() {
         withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) { showingSidebar = false }

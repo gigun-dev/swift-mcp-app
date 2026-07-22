@@ -41,19 +41,31 @@ public final class ChatStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let data = try Self.makeEncoder().encode(session)
+        var index = (try? Self.loadIndexRecords(at: indexURL, logger: logger)) ?? []
+        let existingRecord = index.first { $0.id == session.id }
+
+        // rename 後も ChatViewModel が握っていた古い session.title で上書きしない。index の
+        // hasCustomTitle が true の間はユーザー指定名を正とし、セッション本体にも同じ値を書く。
+        var persistedSession = session
+        if existingRecord?.hasCustomTitle == true {
+            persistedSession.title = existingRecord?.title ?? session.title
+        }
+        let data = try Self.makeEncoder().encode(persistedSession)
         let fileURL = sessionFileURL(for: session.id)
         try data.write(to: fileURL, options: .atomic)
 
-        var index = (try? Self.loadIndexRecords(at: indexURL, logger: logger)) ?? []
-        let preview = Self.derivePreview(from: session.turns)
+        let preview = Self.derivePreview(from: persistedSession.turns)
         let record = ChatSessionSummary(
-            id: session.id,
-            title: session.title,
+            id: persistedSession.id,
+            title: persistedSession.title,
             preview: preview,
-            updatedAt: session.updatedAt,
-            serverURL: session.serverURL,
-            model: session.model
+            updatedAt: persistedSession.updatedAt,
+            serverURL: persistedSession.serverURL,
+            model: persistedSession.model,
+            // pin / custom-title はセッションの会話内容とは独立した一覧メタデータ。通常 save で
+            // 作り直す際も既存値を運び、将来フィールド追加時もここで明示的に保全する。
+            isPinned: existingRecord?.isPinned ?? false,
+            hasCustomTitle: existingRecord?.hasCustomTitle ?? false
         )
         if let existingIndex = index.firstIndex(where: { $0.id == session.id }) {
             index[existingIndex] = record
@@ -65,8 +77,8 @@ public final class ChatStore: @unchecked Sendable {
 
     // MARK: - 読み込み
 
-    /// 一覧を updatedAt 降順で返す(設計 §5「サイドバーは index.json を読むだけで
-    /// 日付グループ表示できる」)。
+    /// 一覧を pin 優先、その内側では updatedAt 降順で返す。pin は「時系列から消す」のではなく
+    /// ユーザーが明示的に上段へ固定する操作なので、pin 同士・通常同士の時系列は維持する。
     ///
     /// index.json が壊れている/存在しない場合は空配列を返す(呼び出し側=サイドバーを
     /// 落とさない。**握りつぶさず OSLog に残す**——「破損ファイル・欠損は握りつぶさず
@@ -75,7 +87,12 @@ public final class ChatStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let records = (try? Self.loadIndexRecords(at: indexURL, logger: logger)) ?? []
-        return records.sorted { $0.updatedAt > $1.updatedAt }
+        return records.sorted { lhs, rhs in
+            if lhs.isPinned != rhs.isPinned { return lhs.isPinned && !rhs.isPinned }
+            if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+            // 同時刻でも comparator を安定させ、再読込のたびに表示順が揺れないよう UUID で決着する。
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
     }
 
     /// 1セッションを ID で読み込む。ファイルが無い/壊れている場合は throw する
@@ -102,6 +119,48 @@ public final class ChatStore: @unchecked Sendable {
 
         var index = (try? Self.loadIndexRecords(at: indexURL, logger: logger)) ?? []
         index.removeAll { $0.id == id }
+        try Self.writeIndex(index, to: indexURL)
+    }
+
+    /// 履歴を先頭へ固定/解除する。会話本体には UI メタデータを混ぜず、軽量 index だけを更新する。
+    /// 対象が無い場合に黙って成功させないのは、削除と違って pin は既存行からしか呼ばれず、
+    /// stale UI を検知できた方が安全だから。
+    public func setPinned(id: UUID, isPinned: Bool) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var index = try Self.loadIndexRecords(at: indexURL, logger: logger)
+        guard let recordIndex = index.firstIndex(where: { $0.id == id }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        index[recordIndex].isPinned = isPinned
+        try Self.writeIndex(index, to: indexURL)
+    }
+
+    /// ユーザー指定の履歴名を index とセッション本体へ同時に保存する。
+    /// 空白だけの名前は UI の disabled にも依存せずここで拒否し、呼び出し元が増えても invariant を守る。
+    public func rename(id: UUID, title: String) throws {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { throw ChatStoreMutationError.emptyTitle }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        var index = try Self.loadIndexRecords(at: indexURL, logger: logger)
+        guard let recordIndex = index.firstIndex(where: { $0.id == id }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+
+        // 詳細画面が load(id:) する本体側も同名にする。先に本体を atomic write し、成功した場合のみ
+        // index を更新することで「一覧だけ名前が変わったが開くと元へ戻る」状態を避ける。
+        let sessionURL = sessionFileURL(for: id)
+        let sessionData = try Data(contentsOf: sessionURL)
+        var session = try Self.makeDecoder().decode(ChatSession.self, from: sessionData)
+        session.title = trimmedTitle
+        try Self.makeEncoder().encode(session).write(to: sessionURL, options: .atomic)
+
+        index[recordIndex].title = trimmedTitle
+        index[recordIndex].hasCustomTitle = true
         try Self.writeIndex(index, to: indexURL)
     }
 
@@ -155,4 +214,10 @@ public final class ChatStore: @unchecked Sendable {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }
+}
+
+/// ChatStore のユーザー操作で入力値自体が不正な場合。I/O エラーとは分離し、UI が必要なら
+/// 将来ローカライズ文言へ写像できるよう公開型にする。
+public enum ChatStoreMutationError: Error, Equatable, Sendable {
+    case emptyTitle
 }
