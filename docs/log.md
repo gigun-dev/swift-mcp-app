@@ -685,3 +685,17 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   続けて実際の`make verify`を完走し、177 tests / 18 suites、SwiftFormat 0/112、SwiftLint
   0 violations / 111 files、generic iOS Simulator `BUILD SUCCEEDED`を確認した。sandbox内の初回実行は
   SwiftPM cacheと`.git/config`への書込み制約で失敗したが、権限を付けた同一commandでは製品側の失敗なく通過した。
+
+## 2026-07-23: iOS harness Phase 0とH-01/K-01 A、D local probe
+
+- 評価commitを`9d2c168`へ固定し、A〜D専用iPhone 17 Simulatorと成果物root
+  `/private/tmp/swift-mcp-app-ios-harness-9d2c168`を用意した。日常用Simulatorは操作していない。
+- A H-01はbuild/install/launch、screenshot、flat accessibility 10要素まで合格。A K-01も日本語clipboard、
+  誤URL、backspace、Select All/Paste、blur、Cancel後の未保存まで合格した。
+- D subagentはXcodeBuildMCP toolが露出せずCLI+idbへfallbackしたため採点外。mainが固定版2.6.2へlocal
+  JSON-RPC直結したK-01 capability probeは完走した。semantic ref、replaceExisting、HID backspaceは有効。
+- 一方AXe typeは日本語を拒否し、現在のkeyboard layoutではASCIIの`:`も`;`へ変換した。clipboardが必要で、
+  長押し後のPasteはXcodeBuildMCP snapshotでtextには出るがtap targetにならない。idb semantic frame中心への
+  座標fallbackで解決したため、hybrid採用時もidb fallbackを残す根拠になった。
+- 外部`codex exec`へrepo文脈を渡すD blindは安全審査で停止。専用Simulator操作の承認とは分け、
+  外部送信経路の明示承認が得られるまで正式scoreを付けない。

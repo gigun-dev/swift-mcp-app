@@ -1,6 +1,6 @@
 # iOS エージェントハーネス正式評価
 
-> **状態:** 計画確定・正式評価未着手
+> **状態:** Phase 0完了・Codex AのH-01/K-01完走・Dのlocal capability probe完走
 > **正典の範囲:** Claude Code / Codex から `swift-mcp-app` を build・操作・E2E 検証する
 > plugin / skill / MCP / CLI の比較と採否。製品ロードマップ自体は `docs/next-directions.md` を正とする。
 > **更新方法:** 結果を上書きせず、各試験のチェックボックスと結果表を更新する。生の経緯は
@@ -164,16 +164,24 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 
 ### Phase 0: 環境と試験fixture
 
-- [ ] 評価対象commitを固定し、開始時のdirtyを記録する。
-- [ ] A/B/C/D用の隔離configと専用Simulatorを用意する。
-- [ ] caldavの`changeme`が検証専用fixtureであることと接続先環境を明記する。
-- [ ] 各構成のMCP `tools/list`、skill metadata/body量を採取する。
-- [ ] raw trace・スクリーンショット・ログの保存先を`/private/tmp`配下に決める。
+- [x] 評価対象commitを`9d2c168823256933d2a32e56f5098ab23435b751`へ固定し、開始時cleanを記録する。
+- [x] A/B/C/D用の隔離configと専用Simulatorを用意する。
+- [x] caldavの`changeme`が検証専用fixtureであることと接続先環境を明記する。
+- [x] A/DのMCP `tools/list`、skill metadata/body量を採取する。
+  > **2026-07-23 更新:** Dは36 tools / 225,990 serialized bytes、project skill metadataは1,427 bytes。
+  > Bの無変更実行はunpinnedな`npx ...@latest`を含むため実行せず、A/Dで具体的な差が残った場合だけ
+  > B/Cを診断する。mutableなthird-party code実行を「公平性」のためだけに先行させない。
+- [x] raw trace・スクリーンショット・ログの保存先を
+  `/private/tmp/swift-mcp-app-ios-harness-9d2c168`配下に固定する。
 
 ### Phase 1: Codexでのblind比較
 
-- [ ] H-01をA/B/Dで各1回実行する。
-- [ ] K-01をA/B/Dで各1回実行する。
+- [ ] H-01をA/Dで各1回blind実行する。
+  > **2026-07-23 更新:** Aは合格。D担当subagentにはXcodeBuildMCP toolが露出せずCLI+idb fallbackで
+  > 機能上は合格したが、Aとの差を測れていないためDのblind結果には数えない。
+- [ ] K-01をA/Dで各1回blind実行する。
+  > **2026-07-23 更新:** Aは合格。Dはmain sessionからlocal MCPへ直結したcapability probeでは合格したが、
+  > 外部`codex exec`によるblind実行はrepo文脈の外部送信を伴うため、ユーザーの明示承認待ち。
 - [ ] O-01をA/B/Dで各2回実行する。
 - [ ] W-01をA/B/Dで各2回実行する。
 - [ ] L-01とM-01をA/B/Dで各1回実行する。
@@ -211,3 +219,40 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 - XcodeBuildMCP経由のXcode IDE tool一覧はPID指定の有無にかかわらずtimeoutした。原因未確定。
 - build/run、文字訂正、日本語、OAuth、WKWebView、subagent分離比較は未実施。以上を正式評価の
   成功根拠に使わない。
+
+## 8. 2026-07-23 正式評価結果（固定commit `9d2c168`）
+
+| 試験 | 構成 | 判定 | wall time | tool calls / retry | 証拠と判断 |
+| --- | --- | --- | --- | --- | --- |
+| H-01 | A | **Pass** | 約3分30秒 | 15 / 1 | 明示UDIDでbuild・install・launch。screenshotと10要素のflat accessibilityをmainも再確認 |
+| H-01 | D | **No score** | 約2分44秒 | 16 / 1 | 機能上は完走したがXcodeBuildMCPがsubagentへ露出せず、CLI+idbへ全面fallbackしたためD比較になっていない |
+| K-01 | A | **Pass** | 約6分30秒 | 39 / 3 | 日本語clipboard、誤URL、backspace、Select All/Paste、blur、Cancel後に未保存を確認 |
+| K-01 | D | **Local pass / blind pending** | 非blind | 未集計 | XcodeBuildMCP 2.6.2へlocal JSON-RPC直結しsemantic refsを検証。最終blind scoreには含めない |
+
+### H-01 Aの証拠
+
+- screenshot: `/private/tmp/swift-mcp-app-ios-harness-9d2c168/artifacts/H-01-A.png`
+- accessibility: `/private/tmp/swift-mcp-app-ios-harness-9d2c168/artifacts/H-01-A-accessibility.json`
+- raw command record: `/private/tmp/swift-mcp-app-ios-harness-9d2c168/raw/H-01-A-command-record.md`
+- build 26.801秒、install 4.189秒、launch PID 2143。別Simulator操作0、人手介入0。
+
+### K-01 Aの証拠と発見
+
+- 誤URL / backspace / 最終blur / cancel後の4画面を`artifacts/K-01-A-*`へ保存した。
+- 表示名`検証サーバー`はclipboard + semantic `Paste`で入力した。
+- `idb ui text`は現在のkeyboard layoutで`:`を`;`へ変換した。URLは直接typeに固執せず、
+  clipboard置換をfallbackにする必要がある。
+- 最後にsemantic `キャンセル`で閉じ、一覧が既存`caldav` 1件のままであることを確認した。
+
+### K-01 D local capability probeの証拠と発見
+
+- XcodeBuildMCP `snapshot_ui`は表示名・URLを安定してtext-field refとして返し、`type_text`の
+  `replaceExisting`と`key_sequence([42])`による全置換・backspaceは成功した。
+- AXe `type_text`は日本語を`US keyboard characters only`で拒否し、ASCIIの`:`も`;`へ変換した。
+- clipboardは必要。長押し後の`Paste`はsnapshotの**text**には出るがtap可能targetには出ない。
+  `idb ui describe-all`では`Paste`のframeを取得できるため、そのsemantic frame中心だけを座標fallbackにした。
+- 誤入力blur時に`https:// で始まる URLを入力してください`を画面とsnapshotで確認。その後
+  `https://example.com/mcpx`を貼り、XcodeBuildMCP backspaceで末尾を削除して
+  `https://example.com/mcp`へ修正、表示名`テストサーバー`を保持したままblurできた。
+- `artifacts/K-01-D-paste-menu.png`と`artifacts/K-01-D-final-blurred.png`、各段階のraw JSONを保存。
+  semantic refの内側だけで日本語pasteを完結できないため、Dを採る場合もidb fallbackは削除しない。

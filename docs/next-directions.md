@@ -30,8 +30,8 @@
   正式評価の成功根拠にしない。
 - **credential方針:** 実password/API keyはagentが入力しない。ユーザーが用途と値を明示した
   disposable test credentialはagentが入力してよい。caldav OAuth E2Eの`changeme`は入力可。
-- **次の着手順:** ①pre-push保護を`make verify`実走まで完了 ②正式評価Phase 0→H-01/K-01のA/D比較
-  ③差が出た試験だけB/Cを診断し、採用候補をmainが再検証 ④今回のUI修正の回帰と、通常チャット
+- **次の着手順:** ①正式評価H-01/K-01のD blindを承認後に確定 ②差が出た試験だけB/Cを診断し、
+  採用候補をmainが再検証 ③今回のUI修正の回帰と、通常チャット
   fullscreen・agenda/open-link・両server混在/toggle OFFの残E2Eを消化。harnessの採用判断なしに
   現行fallbackを削除しない。
 
@@ -58,9 +58,14 @@
 詳細・prompt・合格条件・計測方法は
 [`docs/ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)だけを更新する。本節にはgateだけ置く。
 
-- [ ] Phase 0: 固定commit、隔離config、専用Simulator、caldav test fixture、成果物保存先を用意する。
-- [ ] 現行A / 公式stock B / hybrid DのMCP schema量とskill context量を同じ方法で採取する。
+- [x] ~~Phase 0: 固定commit、隔離config、専用Simulator、caldav test fixture、成果物保存先を用意する。~~ ✅
+  > **2026-07-23 更新:** `9d2c168` / clean、A〜D専用iPhone 17、test fixture `changeme`、
+  > `/private/tmp/swift-mcp-app-ios-harness-9d2c168`を固定した。
+- [x] ~~現行A / hybrid DのMCP schema量とskill context量を同じ方法で採取する。~~ ✅
+  > Dは36 tools / 225,990 bytes。stock Bのunpinned `@latest`は先行実行せず、差分診断時だけB/Cを扱う。
 - [ ] `fork_turns=none`のsubagentへ同一promptを渡し、H-01/K-01/O-01/W-01/L-01/M-01をblind比較する。
+  > **2026-07-23 更新:** AのH-01/K-01は合格。Dはlocal capability probeでK-01合格だが、正式blindは
+  > repo文脈を外部`codex exec`へ送る経路の明示承認待ち。D担当subagentのCLI fallback結果は採点しない。
 - [ ] OAuth O-01でagentが`changeme`を入力し、callback→tool call→再起動後の無言接続まで完走する。
 - [ ] keyboard試験でASCII、日本語、backspace、全選択/置換を確認する。
 - [ ] WKWebView試験で実カード内操作、tools/call往復、fullscreen、JS状態保持を確認する。
