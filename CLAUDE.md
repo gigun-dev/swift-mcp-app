@@ -44,8 +44,11 @@ ext-apps のホスト SDK も TypeScript のみ — 「ホスト側を Swift で
   LLM 側にも及ぼすため互換 API へ寄せた。Anthropic を使う場合も互換ゲートウェイ経由になる。
 - 雛形: **XcodeGen**(project.yml → `xcodegen generate`、.xcodeproj は git 管理外)+
   Kernel/Services は**ローカル SwiftPM パッケージ**(`swift test` が Xcode なしで回る)。
-- 統合検証: `make check`(swift build + swift test + lint)。静的解析だけを再実行するときは
-  `make lint`(SwiftFormat lint + SwiftLint strict)を使い、既存違反もbaselineで隠さない。
+- 統合検証: `make check`(swift build + swift test + lint)はKernel/Servicesの高速gate、
+  `make app`はSwiftUIを含むiOSアプリ全体のbuild、`make verify`は両方を束ねたpush前の最終gate。
+  静的解析だけを再実行するときは`make lint`(SwiftFormat lint + SwiftLint strict)を使い、
+  既存違反もbaselineで隠さない。clone直後は`make hooks`でtrackedな`.githooks`を有効化し、通常の
+  main pushで`make verify`を実行する。意図的な非常時だけGit標準の`git push --no-verify`で迂回できる。
   (CI 導入は提出形態が固まってから)。
 
 ## 開発プロセス(caldav から移植した規律)

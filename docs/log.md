@@ -673,3 +673,15 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   閉じる、閉状態の中央（x=150→350pt）横swipe後は閉画面のscreenshotがbyte一致で不動、左端
   （x=5→220pt）横swipeではdrawerが開くことを実操作で確認した。実MCP Appグラフ自体の再操作は、
   当該カードを同じSimulatorへ再現できていないため未確認。
+
+## 2026-07-23: main push前のlocal gateをcaldav方式で追加
+
+- `make verify: check app`を追加し、Kernel/Servicesのbuild・test・lintと、SwiftUIを含むgeneric iOS
+  Simulator buildをpush前の1つの最終gateに束ねた。個別の高速loopとして`make check` / `make app`は維持。
+- trackedな`.githooks/pre-push`と`make hooks`を追加。remote `refs/heads/main`を更新する通常pushだけ
+  `make verify`を1回実行し、branch削除とfeature branch pushはskipする。失敗時はpushを中止し、
+  Git標準の`git push --no-verify`は意図的に使う非常口として案内する。
+- hook分岐はstub makeで安全に検証し、`make hooks`で`core.hooksPath=.githooks`を設定した。
+  続けて実際の`make verify`を完走し、177 tests / 18 suites、SwiftFormat 0/112、SwiftLint
+  0 violations / 111 files、generic iOS Simulator `BUILD SUCCEEDED`を確認した。sandbox内の初回実行は
+  SwiftPM cacheと`.git/config`への書込み制約で失敗したが、権限を付けた同一commandでは製品側の失敗なく通過した。

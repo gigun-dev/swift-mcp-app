@@ -1,0 +1,44 @@
+#!/bin/sh
+# =============================================================================
+# pre-push hook — mainへの通常push時だけ`make verify`を実行する
+# =============================================================================
+# 【なぜpre-pushか】
+#   `make check`はKernel/Servicesのbuild・test・lintを高速に検証する一方、SwiftUIを含む
+#   アプリターゲットはコンパイルしない。mainへ変更を届ける直前に`make verify`を走らせ、
+#   `make app`まで含む最終gateを普段のgit pushへ組み込む。
+#
+# 【スコープ】
+#   remoteのmainを更新する通常pushだけを検査する。feature branchのpushとbranch削除はskipし、
+#   複数refを同時にpushしても検査は1回だけ。緊急時はGit標準の
+#   `git push --no-verify`で意図的にskipできる。
+#
+# 【有効化】
+#   `.git/hooks`はgit管理外なので、clone直後に`make hooks`を実行し、trackedなこの
+#   `.githooks`ディレクトリを`core.hooksPath`へ設定する。
+# =============================================================================
+
+remote_main=refs/heads/main
+run_verify=0
+
+# stdin: "<local ref> <local sha> <remote ref> <remote sha>" がpush対象refごとに届く。
+while read -r local_ref local_sha remote_ref remote_sha; do
+	# local SHAが全ゼロのbranch削除は検査対象外。
+	case "$local_sha" in
+		*[!0]*) : ;;
+		*) continue ;;
+	esac
+
+	if [ "$remote_ref" = "$remote_main" ]; then
+		run_verify=1
+	fi
+done
+
+[ "$run_verify" -eq 0 ] && exit 0
+
+echo "pre-push: mainへpushするためmake verify（check + app）を実行します…"
+if ! make verify; then
+	echo ""
+	echo "✗ make verifyが失敗しました。mainへのpushを中止します。"
+	echo "  どうしてもpushする場合のみ: git push --no-verify"
+	exit 1
+fi

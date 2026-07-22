@@ -12,7 +12,9 @@
 - **完成済み:** P0〜P4-DM、M1(サーバー管理)、M2(複数サーバー同時接続・無言自動接続・
   `slug__tool`逆ルーティング)。caldavとtdr-conciergeの同時接続、tdrの実tool-useとMCP App
   カード描画までSimulatorで確認済み。
-- **検証基盤:** `make check`はSwift build/test/lintの統合gate、`make lint`は静的解析の個別gate。
+- **検証基盤:** `make check`はSwift build/test/lintの高速gate、`make app`はSwiftUIを含むiOS全体build、
+  `make verify`は両方を束ねたpush前の最終gate。`make hooks`でtrackedなpre-push hookを有効化すると、
+  通常のmain pushだけ`make verify`が走る（意図的な`--no-verify`は非常口として維持）。
   baselineなしSwiftLint strict 0件、177 tests、generic iOS Simulator app buildまでgreen。
   iPhone 12 miniへのbuild/install/launchとプロセス生存も確認済み。Simulator操作は汎用
   `ios-simulator`、MCPHost固有検証はproject `ios-e2e-verify`を併用する。
@@ -28,14 +30,21 @@
   正式評価の成功根拠にしない。
 - **credential方針:** 実password/API keyはagentが入力しない。ユーザーが用途と値を明示した
   disposable test credentialはagentが入力してよい。caldav OAuth E2Eの`changeme`は入力可。
-- **次の着手順:** ①現在のdirtyの意図とtestを確定 ②正式評価Phase 0→Codex blind比較
-  ③採用候補をmainが再検証 ④通常チャットfullscreen・agenda/open-link・両server混在/toggle OFFの
-  残E2Eを消化。harnessの採用判断なしに現行fallbackを削除しない。
+- **次の着手順:** ①pre-push保護を`make verify`実走まで完了 ②正式評価Phase 0→H-01/K-01のA/D比較
+  ③差が出た試験だけB/Cを診断し、採用候補をmainが再検証 ④今回のUI修正の回帰と、通常チャット
+  fullscreen・agenda/open-link・両server混在/toggle OFFの残E2Eを消化。harnessの採用判断なしに
+  現行fallbackを削除しない。
 
 <!-- session-head-end: SessionStartフックはここまでを常時注入する。以下は未完了タスクだけを置く。 -->
 
 ## 1. 直近の完了gate
 
+- [x] ~~caldav方式のtracked pre-push hook、`make hooks`、`make verify: check app`を追加する。~~ ✅
+  > **2026-07-23 更新:** mainの通常pushだけ最終gateを実行し、branch削除・feature pushはskipする。
+  > hook分岐はstub makeで検証した。
+- [x] ~~`make hooks`で配線し、実際の`make verify`（check + generic Simulator app build）を完走する。~~ ✅
+  > **2026-07-23 更新:** `core.hooksPath=.githooks`を設定。177 tests / 18 suites、SwiftFormat
+  > 0/112、SwiftLint 0 violations / 111 files、generic iOS Simulator `BUILD SUCCEEDED`を確認した。
 - [x] ~~現在のdirtyを機能単位に棚卸しし、各変更の目的・未完了・必要なユーザー確認を列挙する。~~ ✅
 - [x] ~~`make check`を通し、sandbox/toolchain起因の失敗と製品regressionを分ける。~~ ✅
 - [x] ~~MCP Appの横操作とhost drawerの全画面swipe競合を解消する。~~ ✅

@@ -35,5 +35,9 @@
 
 - iOS 17+ / Swift / SwiftUI
 - XcodeGen + ローカル SwiftPM パッケージ(Kernel / Services)
-- `make check` = swift build + swift test + lint（変更完了の統合ゲート）
+- `make check` = swift build + swift test + lint（Kernel / Servicesの高速ゲート）
 - `make lint` = SwiftFormat lint + SwiftLint strict（静的解析だけの再実行用。既存違反もbaselineで隠さない）
+- `make app` = SwiftUIを含むiOSアプリ全体のgeneric Simulator向けbuild
+- `make verify` = `make check` + `make app`（push前の最終ゲート）
+- `make hooks` = trackedな`.githooks`を有効化。通常のmain pushだけ`make verify`を実行する
+  （意図的に回避するときはGit標準の`git push --no-verify`）

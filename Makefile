@@ -3,10 +3,10 @@
 # `make check` は「ロジック層(Kernel/Services)が壊れていないか」を素早く見る用途で、
 # Xcode/xcodebuild を経由しない(swift build/test の方が xcodebuild よりずっと速く、
 # CI 導入前の手元検証ループとして十分。CI 導入は授業の提出形態が決まってから — CLAUDE.md)。
-# 静的解析だけを再実行できる `make lint` も用意するが、変更完了の統合ゲートである
-# `make check` は build・test・lint のすべてが通ったときだけ成功する。
+# 静的解析だけを再実行できる `make lint` も用意する。高速gateの`make check`は
+# build・test・lintのすべてが通ったときだけ成功する。
 # `make app` は逆にアプリターゲット(SwiftUI + XcodeGen 生成物)まで含めた
-# 実機/シミュレータ相当のビルド確認に使う。
+# 実機/シミュレータ相当のビルド確認に使い、push前の最終gate`make verify`が両方を束ねる。
 #
 # 【環境の方針(2026-07-22 に調査して確定)】
 # ツール(xcodegen / swiftformat / swiftlint)は**ユーザー環境(dotfiles の nix)で宣言的に
@@ -28,7 +28,13 @@
 # 秘密(API キー)だけは .envrc(direnv)が .env から読む。こちらは PATH と違って
 # シェルに自動で入らないので、`make run` の中で明示的に direnv へ取りに行く。
 
-.PHONY: check lint gen app doctor
+.PHONY: check lint gen app verify hooks doctor
+
+# clone直後に1回だけ実行し、git管理される.githooksをこのrepositoryのhookとして有効化する。
+# Git標準の`git push --no-verify`は、検証を意図的に迂回する非常口としてそのまま使える。
+hooks:
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath = .githooks（mainへのpush前にmake verify）"
 
 # ツールが揃っているかの確認。何かおかしいと思ったらまずこれ。
 # 「無いなら無いと言う」ことが目的なので、1つ足りなくても最後まで走って全部報告する。
@@ -50,7 +56,7 @@ doctor:
 		echo "!! direnv: 見つかりません（.env から鍵を読むのに使っています）"; \
 	fi
 
-# 変更完了の統合ゲート。個別のbuild/test結果とlint診断は出力上で分かれるが、
+# Kernel/Servicesを素早く確認するgate。個別のbuild/test結果とlint診断は出力上で分かれるが、
 # check全体は3工程のどれか1つでも失敗すれば失敗する。
 check:
 	swift build
@@ -106,6 +112,10 @@ app: gen
 		-scheme MCPHost \
 		-destination 'generic/platform=iOS Simulator' \
 		CODE_SIGNING_ALLOWED=NO
+
+# push前の最終gate。SwiftPMでKernel/Servicesのbuild・test・lintを確認した後、
+# SwiftUIを含むiOSアプリターゲット全体もgeneric Simulator向けにコンパイルする。
+verify: check app
 
 # シミュレータへ install + launch まで一気にやる(検証ループ用)。
 #
