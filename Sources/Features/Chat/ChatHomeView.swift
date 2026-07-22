@@ -15,6 +15,10 @@ import SwiftUI
 import Services  // ServerRegistryStore(サーバー登録簿・M1)
 
 struct ChatHomeView: View {
+    /// 閉じた drawer をスワイプで開ける領域。iOS の screen-edge pan と同じく、画面中央の
+    /// carousel / graph / slider を横操作しても host navigation が割り込まないよう左端だけ予約する。
+    private static let sidebarEdgeWidth: CGFloat = 24
+
     // 設定は Home と Sheet で共有する1インスタンス。@State で所有(@Observable を SwiftUI が観測)。
     // 初期値は init で注入する(settings を home にも渡す必要があるため既定式は置かない)。
     @State private var settings: LLMSettingsStore
@@ -111,22 +115,35 @@ struct ChatHomeView: View {
                 // contentShape(Rectangle) + onTapGesture がサイドバーへの全入力(履歴タップ・検索フォーカス・
                 // List スクロール)を食っていた — 「タップすると読み込まれずドロワーが閉じるだけ」
                 // 「検索欄が反応しない」「スクロールできない」の実機症状すべての単一原因。
-                // .offset の**前**に overlay/simultaneousGesture を付ければ、両方ともカードの描画と
-                // 一緒に右へ動き、サイドバー領域には何も残らない(タップキャッチャは「退いたカードの
-                // 見えている部分だけ」を覆う=本来の意図どおり)。
+                // .offset の**前**に overlay（tap/close gesture）を付ければカードの描画と一緒に右へ
+                // 動き、サイドバー領域には何も残らない(タップキャッチャは「退いたカードの見えている
+                // 部分だけ」を覆う=本来の意図どおり)。
                 .overlay {
                     if offset > 1 {
                         Color.black.opacity(0.0001)
                             .contentShape(Rectangle())
                             .onTapGesture { closeSidebar() }
+                            // 開いている間は MCP App を操作する状態ではなく、この退いた main card
+                            // 全体が「drawer を閉じる」面になる。ここだけは左 drag でも閉じられる。
+                            .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .close))
                     }
                 }
-                // 横ドラッグでカードを追従させて開閉(「漫画のページめくり」)。縦スクロール・タップと
-                // 両立させるため simultaneousGesture + 横方向優位ガード(縦優位のときは無反応)。
-                // これも .offset の前(上記コメント参照 — 後に付けると全画面 frame でサイドバーの
-                // 縦スクロールと競合する)。カード上の横ドラッグ開閉という意図は変わらない。
-                .simultaneousGesture(dragGesture(revealWidth: revealWidth))
                 .offset(x: offset)
+
+                // 【MCP App の横操作と drawer の競合防止・2026-07-23】
+                // 以前は NavigationStack 全域へ simultaneousGesture を付けていたため、WKWebView 内の
+                // graph / slider / carousel を横へ動かす正当な操作まで drawer が同時認識し、メイン画面が
+                // 右へずれた。横方向優位の判定だけでは両者を区別できない。閉状態の open gesture は
+                // iOS 標準の screen-edge pan と同じく左端 24pt から始まる場合だけに限定する。
+                // 履歴閲覧中は左端を「戻る」操作の領域として温存し、drawer は明示的な戻る後に開く。
+                if !showingSidebar, !isViewingHistory {
+                    Color.clear
+                        .frame(width: Self.sidebarEdgeWidth)
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .open))
+                        .accessibilityHidden(true)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // paper を全画面へ(サイドバーのステータスバー下も埋める)+ ZStack ごと物理端まで広げる
@@ -239,20 +256,37 @@ struct ChatHomeView: View {
         return min(max(base + dragTranslation, 0), revealWidth)
     }
 
-    /// 横ドラッグで引き出しを開閉するジェスチャ。
-    /// - 縦スクロール/タップと両立させるため **横方向優位のときだけ**反応(縦優位は無反応で素通し)。
-    /// - 指を離したら、投射位置(予測を少し加味)が reveal の 40% を超えていれば開、未満なら閉に snap。
+    private enum SidebarDragIntent {
+        case open
+        case close
+    }
+
+    /// 横ドラッグで引き出しを開閉するジェスチャ。呼び出し元の hit region 自体を open=左端24pt、
+    /// close=開状態の main card overlay に分ける。開始位置を onChanged 内で後判定するだけでは親の
+    /// recognizer が WKWebView 上で競合し続けるため、gesture の取り付け先を分離することが重要。
+    /// - 縦スクロール/タップと両立させるため **横方向優位のときだけ**反応。
+    /// - open は右方向、close は左方向だけを live translation と snap 判定へ使う。
     ///
     /// 【ちらつき対策(2026-07-16・ユーザー指摘)】@State の dragTranslation を使い、onEnded で
     /// **snap 確定(showingSidebar)と dragTranslation=0 を同一 withAnimation 内**で行う。こうすると
     /// 実オフセット(base + dragTranslation)が「離した位置」から「snap 先」へ連続してアニメーション
     /// する。@GestureState だと離した瞬間に 0 リセットが先行し、committed 反映との隙間で「一度閉じて
     /// から開く」1フレームのちらつきが出ていた(開閉とも)。
-    private func dragGesture(revealWidth: CGFloat) -> some Gesture {
+    private func sidebarDragGesture(revealWidth: CGFloat, intent: SidebarDragIntent) -> some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                dragTranslation = value.translation.width
+                guard abs(value.translation.width) > abs(value.translation.height) else {
+                    dragTranslation = 0
+                    return
+                }
+                // 途中で逆方向へ戻したとき、直前の有効 translation を残さない。open は正、close は負に
+                // クランプすることで、誤方向のdragではpaneが動かず、終了時の判定とも資格が一致する。
+                switch intent {
+                case .open:
+                    dragTranslation = max(value.translation.width, 0)
+                case .close:
+                    dragTranslation = min(value.translation.width, 0)
+                }
             }
             .onEnded { value in
                 let horizontal = abs(value.translation.width) > abs(value.translation.height)
@@ -265,17 +299,22 @@ struct ChatHomeView: View {
                 let velocity = value.predictedEndTranslation.width - moved  // 現在速度ぶんの追加予測移動。
                 let posThreshold = revealWidth * 0.22
                 let velThreshold: CGFloat = 100
-                let target: Bool
-                if showingSidebar {
-                    // 開いている → 左へ少し動かす or 左向きの勢いで閉じる。
-                    let closing = moved < -posThreshold || velocity < -velThreshold
-                    target = !closing
-                } else {
-                    // 閉じている → 右へ少し動かす or 右向きの勢いで開く。
-                    target = moved > posThreshold || velocity > velThreshold
+                let reachedTarget: Bool
+                switch intent {
+                case .open:
+                    reachedTarget = horizontal && (moved > posThreshold || velocity > velThreshold)
+                case .close:
+                    reachedTarget = horizontal && (moved < -posThreshold || velocity < -velThreshold)
                 }
                 withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
-                    if horizontal { showingSidebar = target }
+                    // intent と同じ方向へ閾値を越えた場合だけ状態を反転。それ以外は開始状態へ戻す。
+                    // reset は必ず同じ animation 内で行い、縦/逆方向で中間 offset を残さない。
+                    switch intent {
+                    case .open:
+                        showingSidebar = reachedTarget
+                    case .close:
+                        showingSidebar = !reachedTarget
+                    }
                     dragTranslation = 0  // snap と同じアニメーション内でリセット(隙間=ちらつきを作らない)。
                 }
             }

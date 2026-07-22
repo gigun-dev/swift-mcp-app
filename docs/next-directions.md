@@ -19,6 +19,9 @@
 - **lint整理:** 既存baselineを撤去し、UI・chat orchestration・AppsBridge・test suitesを
   責務別の型/ファイルへ分割した。閾値緩和で隠さず、意味的に正しいwire変換等だけ理由付きの
   最小例外とした。`make check`と`make app`で統合確認済み。
+- **横gesture競合:** MCP App内のgraph/carousel/slider操作と履歴drawerが競合しないよう、閉状態の
+  swipe-openをleading edge 24pt開始に限定した。☰での明示操作と、開状態のmain card上での
+  swipe/tap-to-closeは維持する。
 - **iOS agent harness:** OpenAI公式`build-ios-apps`、現行simctl+idb、XcodeBuildMCP hybridの
   正式評価を計画した。詳細な試験票と進捗は
   [`docs/ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)を正とする。予備調査を
@@ -35,6 +38,9 @@
 
 - [x] ~~現在のdirtyを機能単位に棚卸しし、各変更の目的・未完了・必要なユーザー確認を列挙する。~~ ✅
 - [x] ~~`make check`を通し、sandbox/toolchain起因の失敗と製品regressionを分ける。~~ ✅
+- [x] ~~MCP Appの横操作とhost drawerの全画面swipe競合を解消する。~~ ✅
+  > **2026-07-23 更新:** drawer-openをleading edge 24ptに限定。履歴閲覧中は無効化し、
+  > WKWebView中央の横操作をhost gesture認識領域から外した。
 - [ ] Simulatorでdirtyが触る主要経路を実操作し、semantic tree・画面・unified logで裏取りする。
 - [ ] docsと実装の事実が一致した時点で、変更を意図単位のcommitへ分割する。
 

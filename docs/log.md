@@ -657,3 +657,19 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - `make check` green: Swift build、177 tests / 18 suites、SwiftFormat 0/112、SwiftLint strict
   0 violations / 111 files。さらにgeneric iOS Simulator向け`make app`も`BUILD SUCCEEDED`。
   SwiftPMの初回失敗はsandbox外のModuleCache書込権限だけで、許可済み環境では成功した。
+
+## 2026-07-23: MCP Appの横操作とhost drawer gestureの競合を解消
+
+- 実機画像で、MCP App内グラフを横へ操作した際に左サイドバーが露出し、メインpane全体が右へ
+  追従する症状を確認。原因は`ChatHomeView`の`NavigationStack`全域へ付けた
+  `simultaneousGesture(DragGesture)`で、WKWebView内のgraph/slider/carouselとdrawerが同時認識していた。
+- 閉状態のswipe-openをleading edge 24ptから始めた場合だけに限定し、履歴閲覧中は無効化。
+  MCP App中央にはhostのdrag recognizerを載せない。☰による明示openは維持した。
+- 開状態は、もともとMCP App操作を遮断してtap-to-closeを担っていた退いたmain cardのoverlayだけに
+  close gestureを付けた。open/closeそれぞれで横優位・正方向を揃え、縦/逆方向でもlive translationを
+  必ずsnapと同じanimation内でresetして中間offsetを残さない。
+- `make check` green（177 tests / 18 suites、SwiftFormat 0、SwiftLint strict 0）、generic iOS
+  Simulator向け`make app`も`BUILD SUCCEEDED`。iPhone 17 Simulatorで、開状態のmain card左swipeで
+  閉じる、閉状態の中央（x=150→350pt）横swipe後は閉画面のscreenshotがbyte一致で不動、左端
+  （x=5→220pt）横swipeではdrawerが開くことを実操作で確認した。実MCP Appグラフ自体の再操作は、
+  当該カードを同じSimulatorへ再現できていないため未確認。
