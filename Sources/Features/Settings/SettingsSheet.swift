@@ -61,6 +61,8 @@ struct SettingsSheet: View {
     // MCP サーバー登録簿(M1)。LLM 設定と同じシートに「MCP サーバー」セクションを同居させる
     // ——「接続に関わる設定」を1シートに集約する(サーバーと LLM の両方が接続の材料)。
     var registry: ServerRegistryStore
+    // 接続オーケストレータ(M2)。行の状態表示・トグル ON/OFF での接続/切断・削除時の切断を仲介する。
+    var home: ChatHomeViewModel
     @Environment(\.dismiss) private var dismiss
 
     // サーバー追加/編集フォームの提示状態。nil = 非表示、非 nil = そのエントリを編集
@@ -92,48 +94,30 @@ struct SettingsSheet: View {
                 }
             }
             // サーバー追加/編集フォーム(item ベース: 対象が決まったら提示・保存/キャンセルで nil に戻す)。
-            .sheet(item: $editingServer) { target in
+            // onDismiss で接続オーケストレータに反映(追加/URL 変更後に有効サーバーへ接続を試みる)。
+            .sheet(item: $editingServer, onDismiss: { home.afterServerAddedOrEdited() }) { target in
                 ServerFormSheet(registry: registry, target: target)
             }
         }
     }
 
-    // MARK: - MCP サーバー(M1・複数登録して切替)
+    // MARK: - MCP サーバー(M2・複数同時接続・トグルで有効/無効)
 
     private var serversSection: some View {
         Section {
-            // 一覧: 各行 name + URL。タップで編集(rename / URL 変更)。スワイプで削除。
+            // 一覧: 各行 name + URL + 状態バッジ。行タップで詳細(状態・enabled トグル・tools 一覧)。
             ForEach(registry.servers) { entry in
-                Button {
-                    editingServer = .edit(entry)
+                NavigationLink {
+                    ServerDetailView(entry: entry, registry: registry, home: home)
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(entry.name)
-                                .font(.callout.weight(.medium))
-                                .foregroundStyle(.primary)
-                            // 選択中(次の新規チャットの既定)を控えめに示す。
-                            if entry.id == registry.selectedServerID {
-                                Text("選択中")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 6).padding(.vertical, 1)
-                                    .background(Capsule().fill(Color.accentColor.opacity(0.14)))
-                                    .foregroundStyle(Color.accentColor)
-                            }
-                        }
-                        Text(entry.url.absoluteString)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                    serverRow(entry)
                 }
-                .buttonStyle(.plain)
             }
-            // スワイプ削除。remove は該当 URL の OAuth トークンも Keychain から消す(ServerRegistryStore)。
+            // スワイプ削除。home.removeServer が接続を破棄し、該当 URL の OAuth トークンも
+            // Keychain から消す(ServerRegistryStore.remove)。
             .onDelete { offsets in
                 for index in offsets {
-                    registry.remove(id: registry.servers[index].id)
+                    home.removeServer(id: registry.servers[index].id)
                 }
             }
 
@@ -146,9 +130,31 @@ struct SettingsSheet: View {
         } header: {
             Text("MCP サーバー")
         } footer: {
-            // 接続テストをここでやらない理由(タスク指示・二重の接続経路を作らない)を言語化。
-            Text("チャットのタイトルから接続先を切り替えられます。接続(OAuth 認可)は"
-                + "そのサーバーで最初にチャットを始めたときに走ります。")
+            Text("有効なサーバーには起動時に自動接続します(トークンが生きていればブラウザは出ません)。"
+                + "認証が必要なサーバーは行を開いて接続できます。")
+        }
+    }
+
+    /// サーバー1行(一覧)。名前 + 状態バッジ、下段に URL。状態は ConnectionsManager と連動。
+    @ViewBuilder
+    private func serverRow(_ entry: MCPServerEntry) -> some View {
+        let state = home.connections.state(for: entry.id)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(entry.name)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.primary)
+                if !entry.enabled {
+                    ServerStateBadge(text: "無効", color: .secondary)
+                } else {
+                    ServerStateBadge.forState(state)
+                }
+            }
+            Text(entry.url.absoluteString)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
@@ -242,6 +248,135 @@ struct SettingsSheet: View {
         } footer: {
             Text("既定は軽量モデル。tool-use は毎ターン ツール定義(caldav ≈18件)を送るため"
                 + "トークン費が乗る — コスト重視なら軽量モデルを推奨。必要なタスクだけ上位モデルに切り替え可。")
+        }
+    }
+}
+
+// MARK: - サーバー状態バッジ(M2・一覧/詳細で共有)
+
+/// 接続状態の色付きバッジ(ready 緑 / needsAuth 橙 / connecting 灰 / failed 赤 / disconnected 灰)。
+/// SettingsSheet の一覧行と ServerDetailView の両方で使うので独立 View に切り出した。
+struct ServerStateBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(Capsule().fill(color.opacity(0.16)))
+            .foregroundStyle(color)
+    }
+
+    /// ConnectionsManager.State を色付きバッジへ写す(有効サーバー用)。
+    @ViewBuilder
+    static func forState(_ state: ConnectionsManager.State) -> some View {
+        switch state {
+        case .ready: ServerStateBadge(text: "接続済み", color: .green)
+        case .connecting: ServerStateBadge(text: "接続中", color: .secondary)
+        case .needsAuth: ServerStateBadge(text: "要認証", color: .orange)
+        case .failed: ServerStateBadge(text: "失敗", color: .red)
+        case .disconnected: ServerStateBadge(text: "未接続", color: .secondary)
+        }
+    }
+}
+
+// MARK: - サーバー詳細(M2・状態 + enabled トグル + tools ビューア)
+
+/// 1サーバーの詳細。enabled トグル・接続状態・(要認証/失敗時の)接続ボタン・tools/list ビューアを出す。
+/// tools は ConnectionsManager が接続時に取得済みの一覧(ReadyConnection.tools)を読む
+/// (詳細画面から改めて tools/list を叩かない=二重の接続経路を作らない・M1 の footer 方針を継承)。
+private struct ServerDetailView: View {
+    let entry: MCPServerEntry
+    var registry: ServerRegistryStore
+    var home: ChatHomeViewModel
+
+    @State private var editing = false
+
+    var body: some View {
+        let state = home.connections.state(for: entry.id)
+        Form {
+            Section {
+                // enabled トグル。ON で無言接続・OFF で切断(home.setServerEnabled が両方を仲介)。
+                Toggle("有効", isOn: Binding(
+                    get: { currentEntry?.enabled ?? entry.enabled },
+                    set: { home.setServerEnabled(id: entry.id, enabled: $0) }
+                ))
+                HStack {
+                    Text("状態")
+                    Spacer()
+                    if (currentEntry?.enabled ?? entry.enabled) {
+                        ServerStateBadge.forState(state)
+                    } else {
+                        ServerStateBadge(text: "無効", color: .secondary)
+                    }
+                }
+                // 要認証/失敗は「接続」ボタンで対話接続(ブラウザ)を出す。
+                if case .needsAuth = state {
+                    Button("認証して接続") { home.connectInteractively(serverID: entry.id) }
+                } else if case .failed(let message) = state {
+                    Button("再接続を試みる") { home.connectInteractively(serverID: entry.id) }
+                    Text(message)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text(entry.url.absoluteString)
+                    .font(.caption.monospaced())
+                    .textCase(nil)
+            }
+
+            // tools/list ビューア(接続済みのときだけ)。app 専用ツールにはバッジを出す。
+            if case .ready(let ready) = state {
+                Section {
+                    ForEach(Array(ready.tools.enumerated()), id: \.offset) { _, tool in
+                        toolRow(tool)
+                    }
+                } header: {
+                    Text("ツール(\(ready.tools.count))")
+                }
+            }
+
+            Section {
+                Button("名前・URL を編集") { editing = true }
+                Button("このサーバーを削除", role: .destructive) {
+                    home.removeServer(id: entry.id)
+                }
+            }
+        }
+        .navigationTitle(entry.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $editing, onDismiss: { home.afterServerAddedOrEdited() }) {
+            ServerFormSheet(registry: registry, target: .edit(entry))
+        }
+    }
+
+    /// registry の最新エントリ(トグル反映を即時に読むため id で引き直す)。無ければ nil。
+    private var currentEntry: MCPServerEntry? {
+        registry.servers.first(where: { $0.id == entry.id })
+    }
+
+    /// tools/list の1行。ツール名 + 説明。LLM に見せないツール(visibility に "model" を含まない)は
+    /// 「app 専用」バッジを付ける(apps.mdx:400 で LLM 一覧から除外されるものの可視化)。
+    @ViewBuilder
+    private func toolRow(_ tool: Tool) -> some View {
+        // isToolModelVisible は _meta.ui の JSONValue 変換で throw しうる(実データでは起きない)。
+        // 変換に失敗したら「モデルに見せる(既定)」側へ倒す(ツールが理由不明に app 専用扱いされない)。
+        let modelVisible = (try? isToolModelVisible(tool)) ?? true
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(tool.name)
+                    .font(.callout.monospaced())
+                if !modelVisible {
+                    ServerStateBadge(text: "app 専用", color: .purple)
+                }
+            }
+            if let description = tool.description, !description.isEmpty {
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
         }
     }
 }

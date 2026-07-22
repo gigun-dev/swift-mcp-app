@@ -19,9 +19,11 @@ struct ChatBodyView: View {
     // @Observable なので let で保持していても body 内で読んだプロパティの変化は自動追従する。
     let chatVM: ChatViewModel
 
-    // カード構築に使う AppsServerProxy(T5)。接続共有(設計 §4)。nil の場合はカードを描画しない
-    // (proxy 未確立の防御・通常 .ready では非 nil)。
-    let proxy: AppsServerProxy?
+    // カード由来サーバーの proxy を前置ツール名(slug__tool)から解決する(M2・タスク指示 §4)。
+    // カードは「そのツールを実行したサーバー」の proxy で tools/call・resources/read を流す必要がある
+    // (複数サーバー同時接続では単一 proxy 前提が崩れる)。ChatHomeViewModel.cardProxy(forToolName:) を
+    // ここへ渡す。nil を返すツール(未知 prefix・切断済みサーバー)はカードを描画しない。
+    let cardProxyResolver: (String) -> AppsServerProxy?
 
     // 入力欄のローカル下書き。送信で空にする。View ローカルの @State でよい(VM に持たせる必要なし)。
     @State private var draft: String = ""
@@ -398,8 +400,11 @@ struct ChatBodyView: View {
                 // maxHeight が実態と乖離していたのが根治点 —— columnWidth と同じ「実測前は保留」の扱いを
                 // visibleHeight にも及ぼし、両方揃うまでカード構築(=ui/initialize の maxHeight 確定)を
                 // 遅らせる。
-                if let proxy, visibleHeight > 0 {
+                if visibleHeight > 0 {
                     ForEach(Array(turn.cards.enumerated()), id: \.offset) { cardIndex, card in
+                        // カード由来サーバーの proxy を前置ツール名から解決する(M2・タスク指示 §4)。
+                        // 解決できない(未知 prefix / 切断済みサーバー)カードは描画しない。
+                        if let proxy = cardProxyResolver(card.toolName) {
                         // host を先に束ねる: zoom source の id(host.id)を InlineCardView 本体と
                         // .matchedTransitionSource の両方に使うため(call site で参照が要る)。
                         // 【混線バグ修正(原因B・防御的多重化)】キーに resourceUri を含める。
@@ -446,6 +451,7 @@ struct ChatBodyView: View {
                         // .zoomTransition(id: host.id) と同じ id/namespace で「その場から拡大」になる。
                         // iOS 18+ でのみ効き、未満では no-op。
                         .zoomSource(id: host.id, in: cardZoom)
+                        }  // if let proxy = cardProxyResolver(...)
                     }
                 }
                 // 再生成(retry・ユーザー要望 2026-07-17)。末尾 assistant ターンにだけ出す(ChatGPT 式)。
@@ -546,7 +552,14 @@ struct ChatBodyView: View {
     // 切り出すのが素直」に従う)。見た目・配置(HStack + アイコン + 🔧 + ツール名 + ラベル)は
     // 折りたたみ時そのまま踏襲する。
     private func toolStepRow(_ step: ToolCallStep) -> some View {
-        ToolStepRow(step: step, serverName: serverShortName(from: chatVM.currentSession.serverURL))
+        // ツール名は前置形(slug__tool)で積まれる(M2)。attribution には slug を「サーバー名」として
+        // 出し、ツール名からは前置を剥がして元の名前を見せる(前置形のままだと読みにくい)。前置が無い
+        // (旧データ・単一サーバー)場合は従来どおり接続先 URL からサーバー短縮名を導く。
+        let parsed = ToolNamespacing.parse(prefixed: step.toolName)
+        let serverLabel = parsed?.slug ?? serverShortName(from: chatVM.currentSession.serverURL)
+        var display = step
+        if let parsed { display.toolName = parsed.tool }
+        return ToolStepRow(step: display, serverName: serverLabel)
     }
 
     // MARK: - 入力バー(モックの .composer)

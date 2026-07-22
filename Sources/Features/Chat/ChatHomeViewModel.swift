@@ -1,127 +1,74 @@
-// チャット主画面のオーケストレータ(T4-B)。OAuth 接続 → AppsServerProxy 生成 →
-// ツール定義変換 → OpenAICompatClient 生成 → ChatViewModel(tool-use ループ)組み立てまでを
-// 1本のフローにまとめ、SwiftUI(ChatHomeView)は状態を描画するだけにする。
+// チャット主画面のオーケストレータ(M2・複数サーバー同時接続)。
 //
-// 接続フローは ConnectionViewModel / TodosCardSpikeView の実装済みパターンを踏襲・再利用する
-// (LoopbackOAuthAuthorizationDelegate + MCPConnection.connect + MCPHOST_AUTOCONNECT)。
-// T4 のスコープはテキスト往復まで(カードは T5)なので、AppsServerProxy は「ツール実行口
-// (MCPToolExecuting)」としてのみ使う。ui:// 解決・HTML プリフェッチ・AppsBridgeSession は
-// 呼ばない(T5 でここに足す)。
+// M1 までは「1チャット=1サーバー(単一選択)」で、起動時に接続ゲート(「接続」ボタン)を出していた。
+// M2 では **登録済みの有効サーバー全てへ同時接続**し、**起動即チャット**にする(ユーザー FB「毎回接続を
+// 押すのが違和感」)。接続の状態機械は ConnectionsManager(Features/Connection)に隔離し、この VM は
+// 「ready な接続群を合成して1つの ChatViewModel を組む」ことに専念する。
 //
-// 中立性(CLAUDE.md ビジョン2): この VM は caldav 固有の知識を持たない。サーバー URL は
-// 設定で差し替え可能な既定値にすぎず、systemPrompt も汎用(「MCP ツールを使えるアシスタント」)。
+// 【途中差し替えをしない設計(タスク指示 §3)】ready 集合が増減しても、進行中/発話済みのチャットは
+// 差し替えない。新しいツールは **次の新規チャット(newChat)** で反映する。例外として、まだ1度も発話して
+// いない空のチャットは、接続が増えたら黙って組み直す(refreshEmptyChatIfIdle)——空なので何も失われない。
+//
+// 中立性(CLAUDE.md ビジョン2): この VM は caldav 固有の知識を持たない。名前空間化(slug__tool)は
+// ToolNamespacing / ConnectionsManager に閉じ、ここは合成と ChatViewModel 構築だけを担う。
 import Foundation
 import Observation
 import OSLog
-import Kernel    // ChatSession・ToolDefinition(DisplayMode / ConnectionContext で参照)
-import Services  // MCPConnection・AppsServerProxy・OpenAICompatClient・toolDefinitions・ChatViewModel
+import Kernel    // ChatSession・ToolDefinition・ToolNamespacing
+import Services  // MCPConnection・AppsServerProxy・MultiServerToolExecutor・OpenAICompatClient・ChatViewModel
 
-/// チャット主画面の状態機械 + セッション構築。
-///
-/// @MainActor @Observable: 状態を SwiftUI(ChatHomeView)が観測する。ChatViewModel も
-/// @MainActor @Observable なので、.ready の associated value として保持しても観測が伝播する。
 @MainActor
 @Observable
 public final class ChatHomeViewModel {
-    /// 画面の4状態(タスク指示)。
+    /// 画面状態(M2 で接続ゲートを廃止したので2状態に単純化)。
+    /// 起動即チャット = 常に .ready(空チャットでも)。.failed は「チャット自体を組めない致命」
+    /// (LLM base URL 不正など)に限る。サーバー未接続でも LLM だけのチャット(ツール0件)は撃てる。
     public enum State {
-        case needsSetup           // キー未設定 or 未接続(接続前ゲート)。
-        case connecting           // OAuth 接続 + セッション構築中(プログレス表示)。
-        case ready(ChatViewModel) // 接続確立・ループ準備完了(チャット本体を出す)。
-        case failed(String)       // 接続・構築に失敗(エラー表示 + 再試行)。
+        case ready(ChatViewModel)
+        case failed(String)
     }
 
-    public private(set) var state: State = .needsSetup
+    public private(set) var state: State = .failed("初期化中")
 
-    /// 表示モード(T6 後半・タスク指示 C-2)。`state`(接続の下位状態機械)とは**直交**する軸で、
-    /// 「いまライブのチャットを見せているか / 過去セッションを読み取り専用で見せているか」を持つ。
-    ///
-    /// 【state と分けた理由(設計に明記なし・こう解釈)】`state` は接続の進行(needsSetup→
-    /// connecting→ready/failed)を表す既存の状態機械で、ライブチャットの生死に責務がある。
-    /// 履歴閲覧は「ライブとは別の、接続に依存しない読み取り専用オーバーレイ」——接続が
-    /// connecting 中でも failed でも過去ログは見られるべき——なので、state の enum に
-    /// `.viewingHistory` を足して混ぜるより、直交する displayMode として持つ方が責務が素直。
-    /// これにより「履歴を見ながら裏でライブ接続が生きている」を自然に表現できる(戻れば続けられる)。
-    ///
-    /// **副作用ゼロの担保(設計 §5)**: `.viewingHistory` は ChatSession(純データ)を直接描画する
-    /// HistoryDetailView に渡すだけで、ChatViewModel(ライブ接続・tools/call・LLM 呼び出し)には
-    /// 一切触れない。過去セッションで再実行しない=副作用ゼロ、を型レベルで守る。
+    /// 表示モード(履歴閲覧との直交軸・M1 から不変)。詳細は旧コメントの意図を踏襲(live / viewingHistory)。
     public enum DisplayMode {
-        case live                       // ライブのチャット(既存 state 群をそのまま描画)。
-        case viewingHistory(ChatSession) // 過去セッションを読み取り専用表示(HistoryDetailView)。
+        case live
+        case viewingHistory(ChatSession)
     }
 
     public private(set) var displayMode: DisplayMode = .live
-
-    /// 履歴読み込み失敗の文言(タスク指示「load 失敗はエラー表示・握りつぶさない」)。
-    /// openHistory が store.load に失敗したときに載せ、View がアラート等で見せる。成功で nil に戻す。
     public private(set) var historyLoadError: String?
 
-    /// BYOK 設定(base URL・モデル・キー)。SettingsSheet と共有する参照。
-    /// 接続時にここから OpenAICompatClient と model を組む。
+    /// BYOK 設定(SettingsSheet と共有)。
     public let settings: LLMSettingsStore
-
-    /// MCP サーバー登録簿(M1)。接続先 URL の唯一の出所。**ハードコード URL を廃止**し、
-    /// 「選択中サーバー」を registry.selectedEntry から取る(SettingsSheet で登録・ChatHomeView の
-    /// サーバー選択メニューで切替)。SettingsSheet と共有する参照(登録の追加がすぐ選択肢に反映される)。
+    /// MCP サーバー登録簿(SettingsSheet と共有)。
     public let registry: ServerRegistryStore
-
-    /// 接続先 MCP サーバー URL 文字列。**registry の選択中サーバーから導出する read-only 値**
-    /// (M1 でハードコードを廃止)。ChatHomeView のタイトル短縮名・runConnect の接続先が参照する。
-    /// 選択が無ければ空文字(runConnect が URL 不正として弾く=接続ゲートに留まる)。
-    public var serverURLString: String {
-        registry.selectedEntry?.url.absoluteString ?? ""
-    }
-
-    // 接続で生成したオブジェクトは手放すと delegate が nil 化してフローが壊れるため保持する
-    // (TodosCardSpikeView と同じ理由)。proxy は ChatViewModel 内にも保持されるが、
-    // ここでも参照を握って生存を確実にする。
-    private var connectTask: Task<Void, Never>?
-
-    /// 接続で生成した AppsServerProxy。**View(ChatBodyView → InlineCardView)がカード構築で使う**
-    /// ため公開する(T5)。fetchAppHTML と tools/call 素通しはどのカードからも同じ proxy = 同じ接続に
-    /// 流れる(設計 §4「接続は共有」)。.ready へ遷移した時点で必ず非 nil。
-    public private(set) var proxy: AppsServerProxy?
-
-    /// 接続で確立した「接続由来の材料」を束ねて保持する(T6 後半・新規チャット用)。
-    ///
-    /// 【新規チャットを OAuth 再対話なしで実現するために保持する(タスク指示の判断ポイント)】
-    /// 「新規チャット」は本来まっさらな空のチャットを始める操作だが、素朴に connect() をやり直すと
-    /// OAuth の再対話(ブラウザシート・パスワード入力)が毎回走って重い。一方、MCP 接続そのもの
-    /// (proxy が握る swift-sdk Client)とツール定義・UI 資源マップは**セッションを跨いで不変**なので、
-    /// これらを保持しておけば「接続はそのまま・新しい sessionId で空の ChatViewModel を組む」だけで
-    /// 真に新しいチャットを始められる(OAuth 再対話ゼロ)。設計 §4「接続は共有」とも整合する。
-    /// llm(OpenAICompatClient)は BYOK 設定から都度組み直す(設定変更が新チャットに反映されるように・
-    /// 接続とは独立なコストの軽い生成)。
-    private struct ConnectionContext {
-        let proxy: AppsServerProxy
-        let toolDefs: [ToolDefinition]
-        let uiResourceURIs: [String: String]
-        let serverURL: URL
-    }
-    private var connectionContext: ConnectionContext?
+    /// 複数サーバー同時接続の状態機械(SettingsSheet / ChatHomeView がサーバー一覧の状態表示に読む)。
+    public let connections = ConnectionsManager()
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-home")
 
-    /// チャット履歴の永続化(T6 前半・設計 02 §5)。本番ディレクトリは
-    /// `Application Support/chats/`(iOS では FileManager.urls(for: .applicationSupportDirectory)
-    /// がアプリのサンドボックス内 Application Support を返す)。
-    /// **サイドバー(ChatHistorySidebar)が loadIndex/delete で読むため公開する**(T6 後半)。
-    /// UI が直接 store を触るのは Services 型だが、サイドバーは「一覧を読む・行を消す」以上の
-    /// 責務を持たない薄い表示なので、VM に読み書きの薄いラッパを重ねるより素直(こう解釈)。
+    /// チャット履歴の永続化(サイドバーが loadIndex/delete で読むため公開)。
     public let chatStore = ChatStore(baseDirectory: ChatHomeViewModel.defaultChatsDirectory())
-
-    /// モデル単価テーブル(T7・設計 §6)。litellm pricing データを保持する。
-    /// `Application Support/pricing/` に本番キャッシュを置く(ChatStore と対称のディレクトリ設計)。
     private let pricingStore = PricingStore(baseDirectory: ChatHomeViewModel.defaultPricingDirectory())
+
+    /// 現在のチャットが握る slug→proxy スナップショット(カード由来サーバーの解決に使う)。
+    /// makeChatViewModel のたびに更新する。cardProxy(forToolName:) がここから引く。
+    private var currentSlugProxies: [String: AppsServerProxy] = [:]
 
     public init(settings: LLMSettingsStore, registry: ServerRegistryStore) {
         self.settings = settings
         self.registry = registry
-        // pricing ロードは接続をブロックしない(タスク指示「ロードは接続をブロックしない・
-        // 失敗してもチャットは動く」)。init 時点で1回 fire-and-forget で走らせておき、
-        // 完了時に「今 .ready なら」その chatVM へ反映する(接続前に終われば connect() 側の
-        // applyPricing がキャッシュ済み prices をそのまま拾える)。
+
+        // 接続の ready 集合が変わったら、空チャットなら黙って最新ツールで組み直す(上のクラスコメント)。
+        connections.onReadyConnectionsChanged = { [weak self] in
+            self?.refreshEmptyChatIfIdle()
+        }
+
+        // 初期チャットを即組む(接続がまだ 0 でもツール0件のチャットとして成立させる = 起動即チャット)。
+        rebuildChat(using: buildContext())
+
+        // pricing は接続をブロックしない(fire-and-forget・M1 と同じ)。
         Task { [weak self] in
             guard let self else { return }
             await self.pricingStore.load()
@@ -129,146 +76,66 @@ public final class ChatHomeViewModel {
         }
     }
 
-    /// settings.model の単価を pricingStore から引いて、現在 .ready な ChatViewModel(あれば)へ反映する。
-    /// 未知モデルは pricingStore.price が nil を返すので modelPrice も nil のまま
-    /// (ChatViewModel 側で lastCostUSD/cumulativeCostUSD が nil に伝播し、UI が "—" を出す・設計 §6)。
-    private func applyPricingToCurrentChatVM() {
-        guard case .ready(let chatVM) = state else { return }
-        chatVM.modelPrice = pricingStore.price(for: settings.model)
+    // MARK: - 起動 / 自動接続
+
+    /// ChatHomeView.onAppear から呼ぶ。有効な全サーバーへ無言接続を開始する(起動即チャット)。
+    /// MCPHOST_AUTOCONNECT は M1 の互換用に残す(M2 では常に自動接続するので実質同じ挙動)。
+    public func start() {
+        connections.connectEnabled(registry.servers)
     }
 
-    /// 本番の保存先ディレクトリ。取得に失敗する理論上のケース(サンドボックス外実行等)に備え、
-    /// 一時ディレクトリへフォールバックする(履歴保存が失敗してもチャット自体は継続できる方針
-    /// ——ChatStore.save の失敗はチャットを止めない、A5 の方針と一貫させる)。
-    private static func defaultChatsDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("chats", isDirectory: true)
+    // MARK: - 接続コンテキストの合成
+
+    /// ready な全接続を合成した「1チャットぶんの材料」。
+    private struct ChatContext {
+        let executor: MultiServerToolExecutor
+        let toolDefs: [ToolDefinition]
+        let uiResourceURIs: [String: String]
+        let serverURL: URL          // 代表(最初の ready)。ToolStepRow attribution 等の後方互換に使う。
+        let serverURLs: [URL]        // 全 ready(ChatSession.serverURLs へ)。
+        let slugProxies: [String: AppsServerProxy]
     }
 
-    /// pricing キャッシュの本番保存先(T7)。chats と同じ Application Support 直下・別サブディレクトリ
-    /// (履歴と単価キャッシュは寿命・書き込み主体が違うので分けておく——履歴は ChatStore、
-    /// 単価は PricingStore がそれぞれ排他的に読み書きする)。
-    private static func defaultPricingDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("pricing", isDirectory: true)
-    }
-
-    /// デバッグ用自動接続(MCPHOST_AUTOCONNECT=1)。ConnectionViewModel と同流儀で、
-    /// simctl launch --setenv だけでエージェントが接続〜チャット準備まで人手なしに到達できる。
-    /// キー未設定だと LLM 呼び出しは失敗するが、それは MCPHOST_LLM_KEY で供給する想定(T4-A)。
-    public func autoConnectIfRequested() {
-        if ProcessInfo.processInfo.environment["MCPHOST_AUTOCONNECT"] == "1" {
-            if case .needsSetup = state {
-                logger.info("MCPHOST_AUTOCONNECT=1: チャット自動接続を開始")
-                connect()
-            }
+    /// 現在 ready な接続群から ChatContext を組む(ツール定義・ui:// マップ・executor を合成)。
+    private func buildContext() -> ChatContext {
+        let ready = connections.readyConnections
+        var executors: [String: any MCPToolExecuting] = [:]
+        var slugProxies: [String: AppsServerProxy] = [:]
+        var toolDefs: [ToolDefinition] = []
+        var uiMap: [String: String] = [:]
+        var urls: [URL] = []
+        for rc in ready {
+            executors[rc.slug] = rc.proxy
+            slugProxies[rc.slug] = rc.proxy
+            toolDefs.append(contentsOf: rc.toolDefs)
+            for (key, value) in rc.uiResourceURIs { uiMap[key] = value }
+            urls.append(rc.url)
         }
+        return ChatContext(
+            executor: MultiServerToolExecutor(executors: executors),
+            toolDefs: toolDefs,
+            uiResourceURIs: uiMap,
+            serverURL: urls.first ?? ChatViewModel.placeholderServerURL,
+            serverURLs: urls,
+            slugProxies: slugProxies
+        )
     }
 
-    /// 接続ボタン(または自動接続)から呼ぶ。二重起動は connectTask のキャンセルで防ぐ。
-    public func connect() {
-        connectTask?.cancel()
-        state = .connecting
-
-        connectTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                try await self.runConnect()
-            } catch {
-                // 経緯全容は log(reflecting)へ、画面は簡潔に(ConnectionViewModel と同じ方針)。
-                self.logger.error("チャット接続失敗: \(String(reflecting: error), privacy: .public)")
-                self.state = .failed(String(describing: error))
-            }
-        }
-    }
-
-    private func runConnect() async throws {
-        guard let url = URL(string: serverURLString),
-              url.scheme == "https" || url.scheme == "http"
-        else {
-            state = .failed("MCP サーバー URL が不正です: \(serverURLString)")
+    /// ChatContext から新しい空セッションの ChatViewModel を組んで state を .ready にする。
+    /// LLM base URL 不正のときだけ .failed。currentSlugProxies も更新する(カード由来解決用)。
+    private func rebuildChat(using context: ChatContext) {
+        guard let baseURL = URL(string: settings.baseURL) else {
+            state = .failed("LLM の base URL が不正です: \(settings.baseURL)")
             return
         }
-
-        // --- 1. OAuth 接続(P1 フローの再利用)---------------------------------------
-        // delegate は接続1回につき1インスタンス(loopback リスナーの生存を1フローに閉じる)。
-        let delegate = LoopbackOAuthAuthorizationDelegate()
-        let redirectURI = try delegate.prepareRedirectURI()
-        logger.notice("接続開始 \(url.absoluteString, privacy: .public)")
-        let connection = try await MCPConnection.connect(
-            serverURL: url,
-            redirectURI: redirectURI,
-            authorizationDelegate: delegate
-        )
-        logger.notice("接続成功 tools=\(connection.tools.count)")
-
-        // --- 2. AppsServerProxy = ツール実行口(MCPToolExecuting)------------------------
-        // setTools で visibility 判定用の一覧を注入する(app 発 tools/call 拒否・設計 §7 の 401 MUST。
-        // T4 ではカードが無いので app 発呼び出しは起きないが、proxy の契約どおり一覧を渡しておく)。
-        let proxy = AppsServerProxy(client: connection.client)
-        await proxy.setTools(connection.tools)
-        self.proxy = proxy
-
-        // --- 3. LLM に見せるツール定義(visibility 除外込み・設計 §7)---------------------
-        // toolDefinitions が visibility:["app"] を落とす(refresh-todos/refresh-events 等)。
-        let toolDefs = try toolDefinitions(from: connection.tools)
-        logger.notice("LLM ツール定義 \(toolDefs.count) 件(visibility 除外後)")
-
-        // --- 3b. UI 資源マップ(toolName → ui:// URI)の事前計算(設計 §4・T5)------------------
-        // 発見(resolveUIResourceURI)は Features 側でここ1回だけ行い、結果を ChatViewModel へ渡す。
-        // ループ本体は AppsServerProxy に依存せずこの precomputed マップだけ見る(MCPToolExecuting 抽象を
-        // 保つ・ChatViewModel.uiResourceURIs のコメント参照)。resolveUIResourceURI は nonisolated 純関数
-        // なので await 不要。UI を持たないツール(refresh-* 等)は非 nil にならず、マップに載らない。
-        var uiResourceURIs: [String: String] = [:]
-        for tool in connection.tools {
-            if let uri = proxy.resolveUIResourceURI(for: tool) {
-                uiResourceURIs[tool.name] = uri
-            }
-        }
-        logger.notice("UI 資源を持つツール \(uiResourceURIs.count) 件")
-
-        // --- 4. 接続コンテキストを確定(新規チャットの再利用元・T6 後半)-------------------
-        // proxy/toolDefs/uiResourceURIs/serverURL は接続を跨いで不変なので束ねて保持しておき、
-        // 「新規チャット」で OAuth 再対話なしに新しい ChatViewModel を組めるようにする(上の
-        // ConnectionContext の説明参照)。
-        let context = ConnectionContext(
-            proxy: proxy,
-            toolDefs: toolDefs,
-            uiResourceURIs: uiResourceURIs,
-            serverURL: url
-        )
-        self.connectionContext = context
-
-        // --- 5. ChatViewModel(tool-use ループ)を組んで .ready へ ----------------------
-        // 接続直後は新しい空のセッション(新規 sessionId)を開始する。同じ構築を「新規チャット」
-        // でも使うため makeChatViewModel に切り出した(接続やり直し無しで新セッションを作れる)。
-        let chatVM = try makeChatViewModel(using: context)
-        state = .ready(chatVM)
-        displayMode = .live  // 接続直後は必ずライブ表示から始める(履歴閲覧中に再接続した場合の保険)。
-        applyPricingToCurrentChatVM()  // T7: pricing が既にロード済みなら即反映(未ロードなら init の Task が後で反映)。
-        logger.notice("チャット準備完了 model=\(self.settings.model, privacy: .public)")
-    }
-
-    /// 接続コンテキスト + 現在の BYOK 設定から、新しい空セッションの ChatViewModel を1個組む
-    /// (接続直後・新規チャットの両方から呼ぶ)。sessionId は毎回新規発番するので、呼ぶたびに
-    /// 「まっさらなチャット」になる(過去ターンを引き継がない)。
-    /// - Throws: LLM base URL が不正なとき。呼び出し側で state=.failed に落とす。
-    private func makeChatViewModel(using context: ConnectionContext) throws -> ChatViewModel {
-        // llm は接続とは独立に BYOK 設定から都度組む(設定変更が新チャットに反映される・軽量生成)。
-        guard let baseURL = URL(string: settings.baseURL) else {
-            throw ChatHomeError.invalidLLMBaseURL(settings.baseURL)
-        }
         let llm = OpenAICompatClient(baseURL: baseURL, apiKey: settings.apiKey)
-
         let sessionId = UUID().uuidString
         let store = chatStore
         let sessionLogger = logger
         var chatVM: ChatViewModel!
         chatVM = ChatViewModel(
             llm: llm,
-            toolExecutor: context.proxy,
+            toolExecutor: context.executor,
             tools: context.toolDefs,
             model: settings.model,
             systemPrompt: Self.systemPrompt,
@@ -276,33 +143,88 @@ public final class ChatHomeViewModel {
             traceSink: OSLogTraceSink(),
             sessionId: sessionId,
             serverURL: context.serverURL,
+            serverURLs: context.serverURLs.isEmpty ? nil : context.serverURLs,
             onTurnSettled: {
-                // A5: 各ターン確定時に保存。ChatViewModel は MainActor なのでこのクロージャも
-                // MainActor 文脈で呼ばれる(ChatViewModel.send の defer から同期呼び出し)。
-                // 保存自体は同期 I/O(ChatStore.save)なので Task に逃がさずそのまま呼ぶ ——
-                // JSON ファイル1個分の書き込みは軽量で、チャット UI をブロックするほどではない
-                // という判断(設計に明記なし・こう解釈。重くなるようなら後で Task { } に切り出す)。
                 do {
                     try store.save(chatVM.currentSession)
                 } catch {
-                    // 保存失敗はチャットを止めない(A5)。原因追跡のためログだけ残す。
                     sessionLogger.error("チャット履歴の保存に失敗: \(String(reflecting: error), privacy: .public)")
                 }
             }
         )
-        return chatVM
+        currentSlugProxies = context.slugProxies
+        state = .ready(chatVM)
+        displayMode = .live
+        applyPricingToCurrentChatVM()
     }
 
-    /// makeChatViewModel が投げる内部エラー(現状は LLM base URL 不正のみ)。
-    private enum ChatHomeError: Error {
-        case invalidLLMBaseURL(String)
+    /// ready 集合が変わったとき、現行チャットが「空 & 実行中でない」なら最新ツールで組み直す。
+    /// 空なので失われるものは無い(発話済み/実行中は差し替えず、次の newChat で反映・タスク指示 §3)。
+    private func refreshEmptyChatIfIdle() {
+        guard case .ready(let chatVM) = state else { return }
+        // 履歴閲覧中は触らない(ライブ state を裏で組み直しても閲覧体験は変えないが、無駄なので避ける)。
+        if case .viewingHistory = displayMode { return }
+        guard chatVM.turns.isEmpty, !chatVM.isRunning else { return }
+        rebuildChat(using: buildContext())
+        logger.notice("空チャットを最新接続で組み直し(ready 集合の変化)")
     }
 
-    // MARK: - 履歴閲覧 / 新規チャット(T6 後半・タスク指示 C-2)
+    // MARK: - カード由来サーバーの proxy 解決(M2・カードの由来紐付け)
 
-    /// サイドバーで過去セッションを選んだとき呼ぶ。ChatStore.load で読み、`.viewingHistory` へ遷移する。
-    /// **読み取り専用**(設計 §5・副作用ゼロ)なので ChatViewModel には一切触れない。
-    /// load 失敗は握りつぶさず historyLoadError に載せて View に見せる(タスク指示)。
+    /// 前置ツール名(slug__tool)から、そのカードを起動すべき proxy(由来サーバー)を返す。
+    /// ChatBodyView → InlineCardView がカード構築時にこれで proxy を選ぶ(tools/call・resources/read が
+    /// 由来サーバーへ流れる・タスク指示 §4)。未知の prefix / 切断済みサーバーは nil(カードは描画されない)。
+    public func cardProxy(forToolName name: String) -> AppsServerProxy? {
+        guard let (slug, _) = ToolNamespacing.parse(prefixed: name) else { return nil }
+        return currentSlugProxies[slug]
+    }
+
+    // MARK: - 新規チャット
+
+    /// 新規チャット(サイドバー / ナビの compose)。ready 各接続の tools/list を取り直してから組む
+    /// (#12 staleness 修正をサーバーごとに実施・ConnectionsManager.refreshReadyConnections)。
+    public func newChat() async {
+        displayMode = .live
+        historyLoadError = nil
+        if case .ready(let oldChatVM) = state {
+            oldChatVM.cancelActiveSend()  // 旧チャットの進行中送信を打ち切る(M1 と同じ作法)。
+        }
+        await connections.refreshReadyConnections()
+        rebuildChat(using: buildContext())
+        logger.notice("新規チャットを開始(接続再利用・tools/list 再取得・新 sessionId)")
+    }
+
+    // MARK: - サーバーの有効/無効・接続(SettingsSheet / サーバーメニューから)
+
+    /// SettingsSheet のトグル。ON で無言接続、OFF で切断。登録簿へも反映(永続化)。
+    public func setServerEnabled(id: UUID, enabled: Bool) {
+        registry.setEnabled(id: id, enabled: enabled)
+        if enabled {
+            connections.connectEnabled(registry.servers)
+        } else {
+            connections.disconnect(serverID: id)
+        }
+    }
+
+    /// 「要認証」サーバーをタップしたとき(サーバーメニュー)。ブラウザで対話接続する。
+    public func connectInteractively(serverID: UUID) {
+        guard let entry = registry.servers.first(where: { $0.id == serverID }) else { return }
+        connections.connectInteractively(entry, servers: registry.servers)
+    }
+
+    /// サーバー削除(SettingsSheet)。接続を破棄し、登録簿から消す(トークンも Keychain から消える)。
+    public func removeServer(id: UUID) {
+        connections.disconnect(serverID: id)
+        registry.remove(id: id)
+    }
+
+    /// サーバー追加後に呼ぶ(SettingsSheet)。新規登録分を接続対象に含める。
+    public func afterServerAddedOrEdited() {
+        connections.connectEnabled(registry.servers)
+    }
+
+    // MARK: - 履歴閲覧(M1 から不変)
+
     public func openHistory(id: UUID) {
         do {
             let session = try chatStore.load(id: id)
@@ -310,124 +232,34 @@ public final class ChatHomeViewModel {
             displayMode = .viewingHistory(session)
             logger.notice("履歴を開いた id=\(id.uuidString, privacy: .public) turns=\(session.turns.count)")
         } catch {
-            // 特定チャットの読み込み失敗はユーザーに見せる責務がある(ChatStore.load の握りつぶさない方針)。
             logger.error("履歴の読み込みに失敗 id=\(id.uuidString, privacy: .public): \(String(reflecting: error), privacy: .public)")
             historyLoadError = "履歴の読み込みに失敗しました。ファイルが壊れている可能性があります。"
         }
     }
 
-    /// 履歴読み込み失敗アラートを閉じたとき呼ぶ(View がアラートを dismiss したら文言をクリア)。
-    /// これを呼ばないと historyLoadError が非 nil のままアラートが再提示され続けるため必須。
-    public func clearHistoryLoadError() {
-        historyLoadError = nil
+    public func clearHistoryLoadError() { historyLoadError = nil }
+    public func returnToLive() { displayMode = .live }
+
+    // MARK: - pricing
+
+    private func applyPricingToCurrentChatVM() {
+        guard case .ready(let chatVM) = state else { return }
+        chatVM.modelPrice = pricingStore.price(for: settings.model)
     }
 
-    /// 履歴閲覧(.viewingHistory)からライブへ戻る(HistoryDetailView の「戻る」導線)。
-    /// ライブ側の state はそのまま(接続を畳んでいないので続きから話せる)。
-    public func returnToLive() {
-        displayMode = .live
+    private static func defaultChatsDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("chats", isDirectory: true)
     }
 
-    /// 新規チャットを始める(サイドバーの「新規チャット」/ナビの compose)。
-    ///
-    /// 【挙動の判断(タスク指示で裁量・設計に明記なし)】「新規チャット=新しい空のチャットを始める」
-    /// 意図に寄せる。ただし OAuth 再対話のコストを避けるため、**接続済みなら接続は再利用し、
-    /// 新しい sessionId で空の ChatViewModel を組み直す**(makeChatViewModel。connectionContext を
-    /// 使うので OAuth は走らない)。これで「まっさらなチャット」を軽量に実現できる。
-    /// 未接続(connectionContext なし)なら接続ゲートに戻すだけ(まず接続してもらう)。
-    ///
-    /// 【#12 staleness 修正: ここで tools/list を取り直す】以前は connect() 時点の
-    /// `uiResourceURIs`(toolName→ui:// URI マップ)を接続が生きている限りずっと使い回していたため、
-    /// サーバーを再デプロイしてカード HTML(= caldav ではハッシュ化 URI)が変わっても、
-    /// アプリを再起動するまで古いカードが出続けていた。「新規チャット」という自然な区切りで
-    /// `AppsServerProxy.refreshToolsAndInvalidateHTMLCache()` を呼び、tools/list を取り直して
-    /// マップと htmlCache を両方最新化する(鮮度方針の詳細は同メソッドのコメント参照)。
-    /// 失敗時(ネットワーク瞬断等)は握りつぶさず `.failed` に落とす——新規チャットを古い
-    /// マップのまま黙って始めると、また同じ staleness 症状に戻ってしまうため。
-    public func newChat() async {
-        displayMode = .live  // 履歴閲覧中なら抜ける。
-        historyLoadError = nil
-
-        // 監査 2026-07-18 MEDIUM: 旧チャットの進行中送信(LLM ストリーミング・MCP tools/call)を
-        // 新チャット開始前に打ち切る。state を .ready(newVM) へ差し替えるだけでは旧 chatVM の
-        // activeSendTask は誰にもキャンセルされず裏で完走を続けてしまう(サーバー副作用のある
-        // tools/call が新チャット開始後も走り続ける実害)。ChatBodyView.onDisappear は
-        // ChatBodyView 自体が破棄される経路(タブ切り替え等)しか塞がず、newChat() は
-        // `.id(chatVM.currentSession.id)` で View を作り直すだけで、その onDisappear が
-        // このメソッドの完了より確実に先行する保証は無い(SwiftUI の再描画タイミング依存)ため、
-        // ここで明示的に呼ぶ(冒頭で行うのが「旧チャットとの決別」の意図に最も忠実)。
-        if case .ready(let oldChatVM) = state {
-            oldChatVM.cancelActiveSend()
-        }
-
-        guard let context = connectionContext else {
-            // まだ一度も接続していない(または失敗)。接続ゲートへ戻して接続を促す。
-            state = .needsSetup
-            return
-        }
-        do {
-            let tools = try await context.proxy.refreshToolsAndInvalidateHTMLCache()
-            let toolDefs = try toolDefinitions(from: tools)
-            var uiResourceURIs: [String: String] = [:]
-            for tool in tools {
-                if let uri = context.proxy.resolveUIResourceURI(for: tool) {
-                    uiResourceURIs[tool.name] = uri
-                }
-            }
-            let refreshedContext = ConnectionContext(
-                proxy: context.proxy,
-                toolDefs: toolDefs,
-                uiResourceURIs: uiResourceURIs,
-                serverURL: context.serverURL
-            )
-            self.connectionContext = refreshedContext
-
-            let chatVM = try makeChatViewModel(using: refreshedContext)
-            state = .ready(chatVM)
-            applyPricingToCurrentChatVM()  // T7: 新規チャットでもモデル単価を引き直す(モデル変更後の新規チャットに追従)。
-            logger.notice("新規チャットを開始(接続再利用・tools/list 再取得・新 sessionId)")
-        } catch {
-            logger.error("新規チャットの構築に失敗: \(String(reflecting: error), privacy: .public)")
-            state = .failed(String(describing: error))
-        }
+    private static func defaultPricingDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("pricing", isDirectory: true)
     }
 
-    // MARK: - サーバー切替(M1)
-
-    /// チャットのサーバー選択メニューから呼ぶ。選択中サーバーを別 id に切り替え、新 URL で接続し直す。
-    ///
-    /// 【なぜ丸ごと再接続するか】1チャット=1サーバーモデル(M1 の前提)なので、サーバーが変われば
-    /// 接続(swift-sdk Client・OAuth トークン・tools/list・ui:// 資源マップ)は全て別物になる。
-    /// 既存の connection/proxy/connectionContext を破棄し、connect() で新 URL の接続フローを
-    /// 最初からやり直す(OAuth 対話が再度必要になるのは接続先が変わる以上避けられない・許容)。
-    ///
-    /// 進行中の送信(旧サーバーへの LLM/tools/call)は cancelActiveSend で確実に打ち切ってから
-    /// 破棄する(newChat と同じ「旧チャットとの決別」の作法・監査 2026-07-18 と一貫)。
-    /// 同じ id への切替は no-op(無駄な再接続=OAuth 再対話を起こさない)。
-    public func switchServer(to id: UUID) {
-        guard registry.selectedServerID != id else { return }
-
-        // 旧接続の進行中送信を止める(サーバー副作用のある tools/call を切替後に走らせない)。
-        if case .ready(let oldChatVM) = state {
-            oldChatVM.cancelActiveSend()
-        }
-
-        // 選択を移す(永続化=次回起動の既定にもなる)。serverURLString はこの選択から導出される。
-        registry.select(id)
-
-        // 接続由来の材料を破棄(新 URL の接続で作り直す。connect→runConnect が再生成する)。
-        connectionContext = nil
-        proxy = nil
-        displayMode = .live  // 履歴閲覧中なら抜ける(新サーバーのライブへ)。
-
-        logger.notice("サーバー切替 → \(self.serverURLString, privacy: .public)")
-        connect()
-    }
-
-    /// 既定 system プロンプト。**痩せさせる理由 = コスト**(設計 §6):
-    /// tool-use は毎ターン ≈18 ツールのスキーマ(数千トークン)を送るので、system を長文にすると
-    /// そのぶん毎ターンの入力トークンが恒常的に膨らむ。汎用ホストとして中立な最小限の指示に留める
-    /// (caldav 固有の語彙を入れない — CLAUDE.md ビジョン2)。
+    /// 既定 system プロンプト(痩せさせる理由=コスト・M1 から不変)。
     static let systemPrompt = "あなたは MCP ツールを使えるアシスタントです。必要なときだけツールを呼び、"
         + "結果を踏まえて簡潔に日本語で答えてください。"
 }

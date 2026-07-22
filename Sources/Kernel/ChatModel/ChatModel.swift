@@ -13,7 +13,18 @@ import Foundation
 public struct ChatSession: Codable, Equatable, Sendable {
     public var id: UUID
     public var title: String
+    /// このチャットの主接続先(単数)。**後方互換のため残す**(M1 以前の 1チャット=1サーバーモデルの
+    /// 保存データや、ToolStepRow の attribution が読む "代表サーバー")。M2 の複数サーバー同時接続では
+    /// 「最初に ready になったサーバー(なければ placeholder)」を書く(serverURLs の先頭と一致させる想定)。
     public var serverURL: URL
+    /// このチャットで LLM に見せていた全接続先(M2・複数サーバー同時接続)。
+    ///
+    /// 【additive に足した理由(タスク指示・設計裁量)】M2 で1つのチャットが複数サーバーのツールを
+    /// 束ねて撃てるようになったため、「このチャットはどのサーバー群に繋がっていたか」は serverURL(単数)
+    /// だけでは表せない。**Optional で足す**ことで旧データ(serverURLs キーが無い JSON)を
+    /// decodeIfPresent 相当で nil にデコードでき、後方互換を壊さない(ChatModelTests でラウンドトリップ確認)。
+    /// nil = M1 以前の保存 or 未設定(その場合の解釈は serverURL 単数へフォールバック)。
+    public var serverURLs: [URL]?
     public var createdAt: Date
     public var updatedAt: Date
     public var turns: [ChatTurn]
@@ -33,6 +44,7 @@ public struct ChatSession: Codable, Equatable, Sendable {
         id: UUID = UUID(),
         title: String,
         serverURL: URL,
+        serverURLs: [URL]? = nil,
         createdAt: Date,
         updatedAt: Date,
         turns: [ChatTurn] = [],
@@ -41,6 +53,7 @@ public struct ChatSession: Codable, Equatable, Sendable {
         self.id = id
         self.title = title
         self.serverURL = serverURL
+        self.serverURLs = serverURLs
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.turns = turns

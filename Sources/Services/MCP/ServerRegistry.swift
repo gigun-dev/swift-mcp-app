@@ -7,8 +7,8 @@
 // 任意の MCP サーバーに対して同一に振る舞う。シード定数(caldavSeed*)だけが唯一の caldav 参照で、
 // それも「既存ユーザーの体験を変えない」ための移行措置にすぎない。
 //
-// 【永続化の保存先が UserDefaults で足りる理由】このレジストリが持つのは name / URL / id と
-// 「最後に使ったサーバー id」だけで、**秘密情報を一切含まない**。OAuth のアクセストークンは
+// 【永続化の保存先が UserDefaults で足りる理由】このレジストリが持つのは name / URL / id / enabled
+// だけで、**秘密情報を一切含まない**(M2 で単一選択 id は廃止)。OAuth のアクセストークンは
 // KeychainTokenStorage が接続先 URL 単位で別に持つ(kSecAttrAccount = serverURL)ので、
 // レジストリ側は「どのサーバーが登録されているか」の非機密メタデータだけを扱う。
 // 非機密メタデータに Keychain の重い API を使う必要はなく、@AppStorage 的に軽く読み書きできる
@@ -37,15 +37,47 @@ public struct MCPServerEntry: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public var name: String
     public var url: URL
+    /// このサーバーへ自動接続するか(M2・トグルで有効/無効)。
+    ///
+    /// 【なぜトグルか(ユーザー FB)】「基本 MCP クライアントは複数の remote MCP を繋げる。トグルで
+    /// 有効無効ならわかる」。有効なサーバーは起動時に無言接続(トークンが生きていればブラウザ無し)し、
+    /// 無効化(OFF)すると接続を破棄して LLM のツール一覧からも外れる。
+    ///
+    /// 【後方互換(タスク指示)】M1 以前の保存 JSON には enabled キーが無い。非 Optional の Bool を
+    /// 素の synthesized decode で読むとキー欠落で失敗するため、下の Codable を手書きして
+    /// **decodeIfPresent ?? true**(既定は有効)にする。既存ユーザーの caldav シードが黙って無効に
+    /// ならないよう「無ければ有効」に倒す。
+    public var enabled: Bool
 
-    public init(id: UUID = UUID(), name: String, url: URL) {
+    public init(id: UUID = UUID(), name: String, url: URL, enabled: Bool = true) {
         self.id = id
         self.name = name
         self.url = url
+        self.enabled = enabled
+    }
+
+    // 手書き Codable。enabled だけ decodeIfPresent(旧データ後方互換)、他は必須のまま。
+    private enum CodingKeys: String, CodingKey { case id, name, url, enabled }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.url = try c.decode(URL.self, forKey: .url)
+        // 旧データ(enabled 無し)は「有効」に倒す(上のコメント参照)。
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(url, forKey: .url)
+        try c.encode(enabled, forKey: .enabled)
     }
 }
 
-/// MCP サーバー登録簿ストア。一覧の保持・永続化・選択状態・トークン後始末を担う。
+/// MCP サーバー登録簿ストア。一覧の保持・永続化・有効/無効トグル・トークン後始末を担う(M2)。
 ///
 /// @MainActor: SettingsSheet / ChatHomeViewModel(いずれも MainActor)からのみ触る。
 /// UserDefaults / Keychain 呼び出しは同期 API だが一瞬なので MainActor で許容(LLMSettingsStore と同流儀)。
@@ -67,17 +99,15 @@ public final class ServerRegistryStore {
     // v1 サフィックス: 将来スキーマ(name/URL 以外のフィールド追加等)が変わったら v2 に上げて
     // マイグレーションを分岐できるようにしておく(壊れた JSON で全消しにしないための版管理)。
     private static let serversKey = "mcp.servers.v1"
-    private static let selectedKey = "mcp.selectedServer.v1"
+    // 【M2 で廃止】旧「選択中サーバー(単数)」キー。単一選択モデルを廃し複数同時接続へ移行したため、
+    // このキーはもう読み書きしない。init で明示的に removeObject して読み捨てる(残骸を消す)。
+    private static let legacySelectedKey = "mcp.selectedServer.v1"
 
     // MARK: - 公開状態
 
-    /// 登録済みサーバー一覧(SettingsSheet が一覧表示・ChatHomeView がサーバー選択メニューで使う)。
-    /// private(set): 変更は add/remove/rename の API 経由に限る(永続化と対で行うため直接書き換え禁止)。
+    /// 登録済みサーバー一覧(SettingsSheet が一覧表示・ChatHomeView がサーバー切替メニューで使う)。
+    /// private(set): 変更は add/remove/rename/setEnabled の API 経由に限る(永続化と対で行うため直接書き換え禁止)。
     public private(set) var servers: [MCPServerEntry]
-
-    /// 最後に使った(= 新規チャットの既定にする)サーバー id。
-    /// nil はあり得る(全削除直後)。その場合の解決は selectedEntry のコメント参照。
-    public private(set) var selectedServerID: UUID?
 
     private let defaults: UserDefaults
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "server-registry")
@@ -104,18 +134,13 @@ public final class ServerRegistryStore {
             self.servers = Self.seededServers()
         }
 
-        // --- 選択中 id のロード ------------------------------------------------------
-        // 保存済み selectedServerID が現存する一覧を指していればそれを、指していなければ先頭を採る
-        // (削除で宙に浮いた id を掴み続けないための健全化)。
-        let savedSelected = defaults.string(forKey: Self.selectedKey).flatMap(UUID.init(uuidString:))
-        if let savedSelected, servers.contains(where: { $0.id == savedSelected }) {
-            self.selectedServerID = savedSelected
-        } else {
-            self.selectedServerID = servers.first?.id
-        }
+        // --- 旧「選択中サーバー(単数)」キーの読み捨て(M2 で単一選択モデルを廃止)---------------
+        // M1 まではここで selectedServerID を復元していたが、複数同時接続へ移行したため不要。
+        // 残骸を UserDefaults から掃除しておく(次回以降の init で毎回消しても no-op で無害)。
+        defaults.removeObject(forKey: Self.legacySelectedKey)
 
         // 初回シード直後は servers を永続化しておく(次回起動で「キー未存在=再シード」に戻らないよう、
-        // シードした事実をディスクに刻む)。選択 id も併せて確定保存する。
+        // シードした事実をディスクに刻む)。
         persist()
     }
 
@@ -129,40 +154,38 @@ public final class ServerRegistryStore {
         logger.notice("mcp.servers.v1 のデコードに失敗: caldav シードで復旧しました")
     }
 
-    // MARK: - 選択
+    // MARK: - 有効/無効トグル(M2)
 
-    /// 現在選択中のエントリ。選択 id が宙に浮いていれば先頭にフォールバック(空一覧なら nil)。
-    /// ChatHomeViewModel はここから接続先 URL を取る(ハードコード URL の置き換え先)。
-    public var selectedEntry: MCPServerEntry? {
-        if let id = selectedServerID, let hit = servers.first(where: { $0.id == id }) {
-            return hit
-        }
-        return servers.first
+    /// 有効(enabled == true)なサーバーだけを返す。ConnectionsManager が起動時の無言接続対象を
+    /// ここから取る(無効サーバーは接続しない・LLM のツール一覧にも載らない)。
+    public var enabledServers: [MCPServerEntry] {
+        servers.filter { $0.enabled }
     }
 
-    /// 新規チャット/切替でサーバーを選ぶ。選択を永続化する(次回起動時の既定になる)。
-    /// 存在しない id は無視する(宙に浮いた選択を作らない)。
-    public func select(_ id: UUID) {
-        guard servers.contains(where: { $0.id == id }) else { return }
-        selectedServerID = id
+    /// サーバーの有効/無効を切り替えて永続化する(SettingsSheet のトグル)。
+    /// 存在しない id は無視する。ON/OFF に伴う接続の確立/破棄は呼び出し側(ChatHomeViewModel /
+    /// ConnectionsManager)が servers の変化を観測して行う(このストアは登録メタデータだけを持つ)。
+    public func setEnabled(id: UUID, enabled: Bool) {
+        guard let idx = servers.firstIndex(where: { $0.id == id }) else { return }
+        guard servers[idx].enabled != enabled else { return }
+        servers[idx].enabled = enabled
         persist()
+        logger.notice("サーバー \(enabled ? "有効化" : "無効化") url=\(self.servers[idx].url.absoluteString, privacy: .public)")
     }
 
     // MARK: - 追加 / 改名 / 削除
 
-    /// サーバーを追加して、その id を返す。追加直後は選択もそれに移す
-    /// (「今追加したサーバーで話し始めたい」が自然な期待のため)。
+    /// サーバーを追加して、その id を返す。追加は enabled=true(すぐ接続を試みる)で入る。
     @discardableResult
     public func add(name: String, url: URL) -> MCPServerEntry {
         let entry = MCPServerEntry(name: name, url: url)
         servers.append(entry)
-        selectedServerID = entry.id
         persist()
         logger.notice("サーバー追加 name=\(name, privacy: .public) url=\(url.absoluteString, privacy: .public)")
         return entry
     }
 
-    /// 改名 / URL 変更(SettingsSheet の編集)。id は不変なので選択・過去参照は保たれる。
+    /// 改名 / URL 変更(SettingsSheet の編集)。id は不変なので過去参照は保たれる。
     public func update(id: UUID, name: String, url: URL) {
         guard let idx = servers.firstIndex(where: { $0.id == id }) else { return }
         servers[idx].name = name
@@ -184,26 +207,16 @@ public final class ServerRegistryStore {
         // 該当 URL のトークンを後始末(上記コメント)。clear() は SecItemDelete + メモリキャッシュ破棄。
         KeychainTokenStorage(serverURL: removed.url).clear()
 
-        // 選択中を消したら別のサーバー(先頭)へ選択を移す(宙に浮いた選択を残さない)。
-        if selectedServerID == removed.id {
-            selectedServerID = servers.first?.id
-        }
         persist()
         logger.notice("サーバー削除 url=\(removed.url.absoluteString, privacy: .public)")
     }
 
     // MARK: - 永続化
 
-    /// servers と selectedServerID を UserDefaults へ書き出す(全変更 API の末尾で呼ぶ)。
+    /// servers を UserDefaults へ書き出す(全変更 API の末尾で呼ぶ)。
     private func persist() {
         if let data = try? JSONEncoder().encode(servers) {
             defaults.set(data, forKey: Self.serversKey)
-        }
-        // selectedServerID が nil(全削除)なら選択キーを消す(空文字より「未設定」が素直)。
-        if let selectedServerID {
-            defaults.set(selectedServerID.uuidString, forKey: Self.selectedKey)
-        } else {
-            defaults.removeObject(forKey: Self.selectedKey)
         }
     }
 }

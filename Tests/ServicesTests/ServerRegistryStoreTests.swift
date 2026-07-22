@@ -21,7 +21,7 @@ import Testing
         return (defaults, suiteName)
     }
 
-    @Test("初回(キー未存在)は caldav 本番を1件シードし、それを選択する")
+    @Test("初回(キー未存在)は caldav 本番を1件シードし、既定は有効")
     func firstLaunchSeedsCaldav() {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -30,9 +30,9 @@ import Testing
         #expect(store.servers.count == 1)
         #expect(store.servers[0].name == ServerRegistryStore.caldavSeedName)
         #expect(store.servers[0].url.absoluteString == ServerRegistryStore.caldavSeedURLString)
-        // シード直後は選択もそのシードに向く(接続ゲートで即 connect できる)。
-        #expect(store.selectedServerID == store.servers[0].id)
-        #expect(store.selectedEntry == store.servers[0])
+        // シードは有効(起動時の無言接続対象になる)。
+        #expect(store.servers[0].enabled)
+        #expect(store.enabledServers.count == 1)
     }
 
     @Test("シード後に永続化され、別インスタンスで復元される(再シードされない)")
@@ -47,24 +47,56 @@ import Testing
         let second = ServerRegistryStore(defaults: defaults)
         #expect(second.servers.count == 1)
         #expect(second.servers[0].id == seededID)
-        #expect(second.selectedServerID == seededID)
     }
 
-    @Test("add はエントリを追加し、選択をそれに移し、永続化する")
-    func addAppendsSelectsAndPersists() {
+    @Test("add はエントリを追加し(有効で入る)、永続化する")
+    func addAppendsAndPersists() {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let store = ServerRegistryStore(defaults: defaults)
         let added = store.add(name: "local", url: URL(string: "https://example.com/mcp")!)
         #expect(store.servers.count == 2)
-        #expect(store.selectedServerID == added.id)  // 追加直後は追加したものを選択。
+        #expect(added.enabled)  // 追加は有効で入る(すぐ接続を試みる)。
 
         // 永続化の確認: 別インスタンスで2件とも復元される。
         let restored = ServerRegistryStore(defaults: defaults)
         #expect(restored.servers.count == 2)
         #expect(restored.servers.contains(added))
-        #expect(restored.selectedServerID == added.id)
+    }
+
+    @Test("setEnabled で有効/無効を切り替え、enabledServers に反映・永続化される")
+    func setEnabledTogglesAndPersists() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ServerRegistryStore(defaults: defaults)
+        let id = store.servers[0].id
+        store.setEnabled(id: id, enabled: false)
+        #expect(store.servers[0].enabled == false)
+        #expect(store.enabledServers.isEmpty)
+
+        // 別インスタンスでも無効のまま復元される。
+        let restored = ServerRegistryStore(defaults: defaults)
+        #expect(restored.servers[0].enabled == false)
+    }
+
+    @Test("enabled キーの無い旧 JSON は有効(true)にデコードされる(後方互換)")
+    func legacyServersDecodeEnabledTrue() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // enabled キーを持たない旧スキーマの JSON を直接書き込む。
+        let id = UUID().uuidString
+        let legacy = """
+        [{"id":"\(id)","name":"legacy","url":"https://legacy.example.com/mcp"}]
+        """
+        defaults.set(Data(legacy.utf8), forKey: "mcp.servers.v1")
+
+        let store = ServerRegistryStore(defaults: defaults)
+        #expect(store.servers.count == 1)
+        #expect(store.servers[0].name == "legacy")
+        #expect(store.servers[0].enabled)  // 無ければ有効。
     }
 
     @Test("update は id 不変で name/URL を書き換える")
@@ -80,41 +112,17 @@ import Testing
         #expect(store.servers[0].url.absoluteString == "https://new.example.com/mcp")
     }
 
-    @Test("select は既存 id のみ選択し、永続化する。存在しない id は無視")
-    func selectPersistsAndIgnoresUnknown() {
-        let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let store = ServerRegistryStore(defaults: defaults)
-        let second = store.add(name: "b", url: URL(string: "https://b.example.com/mcp")!)
-        let first = store.servers[0].id
-
-        store.select(first)
-        #expect(store.selectedServerID == first)
-
-        // 存在しない id は無視(選択は変わらない)。
-        store.select(UUID())
-        #expect(store.selectedServerID == first)
-
-        // 永続化される。
-        let restored = ServerRegistryStore(defaults: defaults)
-        #expect(restored.selectedServerID == first)
-        _ = second
-    }
-
-    @Test("remove は一覧から消し、選択中を消したら別へ移す。トークン後始末は呼ばれても落ちない")
-    func removeDropsEntryAndReassignsSelection() {
+    @Test("remove は一覧から消し、永続化する。トークン後始末は呼ばれても落ちない")
+    func removeDropsEntry() {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let store = ServerRegistryStore(defaults: defaults)
         let seedID = store.servers[0].id
         let second = store.add(name: "b", url: URL(string: "https://b.example.com/mcp")!)
-        // add で選択は second に移っている。その second を消す → 選択は残った seed に移るはず。
         store.remove(id: second.id)
         #expect(store.servers.count == 1)
         #expect(store.servers[0].id == seedID)
-        #expect(store.selectedServerID == seedID)
 
         // 永続化の確認(削除が別インスタンスにも反映)。
         let restored = ServerRegistryStore(defaults: defaults)
@@ -122,16 +130,14 @@ import Testing
         #expect(restored.servers[0].id == seedID)
     }
 
-    @Test("全削除すると selectedServerID は nil・selectedEntry も nil")
-    func removeAllClearsSelection() {
+    @Test("全削除すると servers は空になり、別インスタンスでも空のまま(再シードしない)")
+    func removeAllEmpties() {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let store = ServerRegistryStore(defaults: defaults)
         for entry in store.servers { store.remove(id: entry.id) }
         #expect(store.servers.isEmpty)
-        #expect(store.selectedServerID == nil)
-        #expect(store.selectedEntry == nil)
 
         // 永続化: 別インスタンスでも空のまま(空一覧は再シードしない ——
         // ユーザーが意図して全消しした状態を尊重する。キー未存在=初回のみ再シード)。

@@ -45,6 +45,44 @@ public func toolDefinitions(from tools: [Tool]) throws -> [ToolDefinition] {
     }
 }
 
+/// MCP のツール一覧を、slug で名前空間化しつつ LLM の ToolDefinition 配列へ変換する(M2)。
+///
+/// `toolDefinitions(from:)` と同じく visibility 除外を適用したうえで、ツール名を `slug__tool` に前置し、
+/// description の末尾に「(サーバー名)」を添える(**LLM が「どのサーバーのツールか」を選びやすくする**
+/// 補助・タスク指示 §3 の任意項目。1つの LLM に複数サーバーのツールを混ぜると、素の名前だけでは
+/// モデルがどのサーバー向けか判断しづらい場面があるため、出自を description で明示する)。
+///
+/// - Parameters:
+///   - tools: そのサーバーの tools/list 結果。
+///   - slug: そのサーバーの名前空間 slug(ToolNamespacing.slug で決定的に生成済み)。
+///   - serverName: description に添えるサーバー表示名(ユーザーが付けた name)。
+/// - Returns: 前置名・出自注記済みの ToolDefinition 配列(visibility 除外後)。
+public func prefixedToolDefinitions(from tools: [Tool], slug: String, serverName: String) throws -> [ToolDefinition] {
+    try tools.compactMap { tool -> ToolDefinition? in
+        let uiMeta = try uiMeta(from: tool)
+        guard isModelVisible(uiMeta: uiMeta) else { return nil }
+        let parameters = try JSONValue(encoding: tool.inputSchema)
+        // description に出自を添える(既存説明があれば後ろに、無ければ注記だけ)。
+        let annotated: String
+        if let base = tool.description, !base.isEmpty {
+            annotated = "\(base)（サーバー: \(serverName)）"
+        } else {
+            annotated = "（サーバー: \(serverName)）"
+        }
+        return ToolDefinition(function: .init(
+            name: ToolNamespacing.prefixed(slug: slug, tool: tool.name),
+            description: annotated,
+            parameters: parameters
+        ))
+    }
+}
+
+/// そのツールが LLM のツール一覧に載る(= visibility に "model" を含む)かを返す(設定画面の
+/// tools/list ビューアで「app 専用」バッジを出すために使う・追加スコープ)。`_meta.ui` の抽出込み。
+public func isToolModelVisible(_ tool: Tool) throws -> Bool {
+    try isModelVisible(uiMeta: uiMeta(from: tool))
+}
+
 /// Tool の `_meta.ui`(JSONValue)を取り出す。`_meta` 自体や `ui` キーが無ければ nil。
 ///
 /// AppsServerProxy.fetchAppHTML と同じ書き方: `_meta`(MCP.Metadata)の `fields`

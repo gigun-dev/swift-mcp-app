@@ -140,7 +140,7 @@ struct ChatHomeView: View {
         // iPad の非対応(ハプティクス無し)は考慮不要。
         .sensoryFeedback(.impact(weight: .medium), trigger: showingSidebar)
         .sheet(isPresented: $showingSettings) {
-            SettingsSheet(store: settings, registry: registry)
+            SettingsSheet(store: settings, registry: registry, home: home)
         }
         // 履歴読み込み失敗(タスク指示・握りつぶさない)。VM が historyLoadError に載せたら見せる。
         .alert(
@@ -156,9 +156,9 @@ struct ChatHomeView: View {
         } message: {
             Text(home.historyLoadError ?? "")
         }
-        // デバッグ用自動接続(MCPHOST_AUTOCONNECT=1)。ConnectionView と同じ導線。
+        // 起動即チャット + 有効な全サーバーへ無言接続(M2)。接続ゲートは廃止。
         .onAppear {
-            home.autoConnectIfRequested()
+            home.start()
             // 【一時デバッグ・2026-07-16】開いた状態のレイアウトをエージェントがスクショで検証する
             // ための起動時オープン(UI タップができないため)。MCPHOST_SIDEBAR_OPEN=1 のときだけ。確認後に外す。
             if ProcessInfo.processInfo.environment["MCPHOST_SIDEBAR_OPEN"] == "1" {
@@ -303,131 +303,56 @@ struct ChatHomeView: View {
     @ViewBuilder
     private var content: some View {
         switch home.state {
-        case .needsSetup:
-            setupGate
-        case .connecting:
-            // OAuth の対話(ブラウザのシート)が出る旨を添える(人手が要る合図)。
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("接続中…(ブラウザのシートが出ます・パスワード changeme)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding()
         case .ready(let chatVM):
-            // proxy は .ready で必ず非 nil(runConnect が state=.ready の直前に生成)。カード構築
-            //(InlineCardView)に渡す。防御的に if let で受け、万一 nil ならカード無しで本体だけ出す。
-            // 【混線バグ修正(実機報告「list-todos カードに vevent(agenda)が一時表示された」の原因A)】
-            // ChatBodyView は cardRegistry(InlineCardHost の台帳)を @State で持つ。@State は
-            // "同じ位置に居続ける View" に紐づくため、newChat() で home.state が
-            // .ready(oldVM) → .ready(newVM) に切り替わっても、SwiftUI は enum の同じ case として
-            // ChatBodyView を**同一 View 扱い**し続け、cardRegistry(旧チャットの WKWebView/
-            // AppsBridgeSession を保持したまま)が生き残ってしまっていた。新チャット最初のツール
-            // 結果カードが (turnIndex:0, cardIndex:0) に積まれると、cardRegistry.host(for: "0-0")
-            // が **旧チャットの別ツールの host**(例: agenda カードの webView)をそのまま返し、
-            // buildIfNeeded の guard(buildTask != nil)で再構築もスキップされる — 新カードの
-            // resourceUri/引数を送らないまま旧 HTML がそのまま表示される、という経路が実在した。
-            // `.id(chatVM.currentSession.id)` でセッションごとに View identity を切ることで、
-            // chatVM が入れ替わるたびに ChatBodyView(と cardRegistry を含む @State 一式)を
-            // 強制的に作り直させる(旧 registry は参照が切れて破棄され、新チャットは必ず空の
-            // registry から始まる)。teardown() 呼び出しを挟まないので旧 WKWebView は明示の
-            // ui/notifications/request-teardown を送らずに deinit されるが、チャット切り替えの
-            // 低頻度さと「誤ったカードを見せ続けるより安全」を優先した(1B の cardRegistry.teardownAll()
-            // が既に同種のトレードオフを採っているのと同じ判断)。
-            if let proxy = home.proxy {
-                ChatBodyView(chatVM: chatVM, proxy: proxy)
-                    .id(chatVM.currentSession.id)
-            } else {
-                ChatBodyView(chatVM: chatVM, proxy: nil)
-                    .id(chatVM.currentSession.id)
-            }
+            // カード由来サーバーの proxy を前置ツール名から解決するクロージャを渡す(M2・タスク指示 §4)。
+            // 【混線バグ回避(M1 から継承)】`.id(chatVM.currentSession.id)` でセッションごとに View
+            // identity を切り、chatVM 入れ替え時に ChatBodyView(と cardRegistry を含む @State 一式)を
+            // 作り直させる(旧チャットのカード台帳を持ち越さない)。
+            ChatBodyView(
+                chatVM: chatVM,
+                cardProxyResolver: { home.cardProxy(forToolName: $0) }
+            )
+            .id(chatVM.currentSession.id)
         case .failed(let message):
             failedView(message)
         }
     }
 
-    /// 接続前ゲート: 接続ボタン + 設定ボタン(タスク指示)。
-    private var setupGate: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 44))
-                .foregroundStyle(.secondary)
-            Text("MCP サーバーに接続してチャットを始めます。")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            // キー未設定の注意(接続しても LLM 呼び出しで失敗するため先に促す)。
-            if !settings.hasAPIKey {
-                Text("API キーが未設定です。まず設定でキーを入力してください。")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-            }
-
-            Button {
-                home.connect()
-            } label: {
-                Text("接続")
-                    .fontWeight(.semibold)
-                    .frame(maxWidth: 220)
-            }
-            .buttonStyle(.borderedProminent)
-
-            Button("設定") { showingSettings = true }
-                .font(.callout)
-        }
-        .padding()
-    }
-
+    /// チャット自体を組めない致命(LLM base URL 不正など)。接続失敗はここには来ない
+    /// (M2 では接続はサーバーごとに非同期で、失敗してもチャット(ツール0件)は成立する)。
     private func failedView(_ message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 40))
                 .foregroundStyle(.red)
-            Text("接続に失敗しました")
+            Text("チャットを開始できません")
                 .font(.headline)
-            // 詳細はデバッグしやすさ優先でそのまま(ConnectionView と同方針)。
             Text(message)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
-            Button("再試行") { home.connect() }
+            Button("設定を開く") { showingSettings = true }
                 .buttonStyle(.bordered)
-            Button("設定") { showingSettings = true }
-                .font(.callout)
         }
         .padding()
     }
 
     // MARK: - タイトル + model chip(モックの h1 + .model-chip を縦に合成)
 
-    /// 中央タイトル領域。上段=接続先サーバー名(切替メニューの入口)、下段=接続状態ドット + モデル名。
+    /// 中央タイトル領域。上段=接続状態サマリ(接続中サーバー数)+ メニューの入口、下段=モデル名。
     ///
-    /// 【M1: iOS 標準の Menu でサーバー切替 + 設定への導線を1つにまとめる】以前は全体を「設定を開く
-    /// Button」にしていたが、汎用クライアント化(複数サーバー登録)で「今どのサーバーに繋いでいるか /
-    /// 別サーバーへ切り替える」導線が主画面に要る。カスタム UI は作らず iOS 標準 Menu で十分
-    /// (タスク指示)。登録済みサーバーを列挙し、選択中にはチェック、タップで home.switchServer(再接続)。
-    /// 末尾に「サーバーを管理…」で SettingsSheet(登録の追加/編集/削除 + モデル設定)へ抜ける。
+    /// 【M2: 単一選択を廃止し「接続状態サマリ + サーバー一覧の状態表示」へ】複数サーバー同時接続に
+    /// なったので「今どのサーバー1つに繋いでいるか」ではなく「有効な各サーバーが今どういう状態か」を
+    /// 見せる。タップの Menu に登録済みサーバーを状態アイコン付きで列挙し、要認証のサーバーをタップ
+    /// すると対話接続(ブラウザ)を出す。末尾に設定導線。
     private var titleAndModel: some View {
         Menu {
-            // 登録済みサーバー(現在選択中はチェックマーク)。同じサーバーの選択は switchServer 側で no-op。
+            // 登録済みサーバーを状態アイコン付きで列挙。要認証はタップで対話接続。
             ForEach(registry.servers) { entry in
-                Button {
-                    home.switchServer(to: entry.id)
-                } label: {
-                    // 選択中だけ checkmark を出す(Label の systemImage を出し分け)。
-                    if entry.id == registry.selectedServerID {
-                        Label(entry.name, systemImage: "checkmark")
-                    } else {
-                        Text(entry.name)
-                    }
-                }
+                serverMenuRow(entry)
             }
             Divider()
-            // サーバーの追加/編集/削除・モデル設定は設定シートに集約(二重の管理 UI を作らない)。
             Button {
                 showingSettings = true
             } label: {
@@ -435,43 +360,74 @@ struct ChatHomeView: View {
             }
         } label: {
             VStack(spacing: 1) {
-                // 上段: 選択中サーバーの表示名(ユーザーが付けた name。未選択なら "MCP")+ 切替の合図。
                 HStack(spacing: 3) {
-                    Text(serverShortName)
+                    Text(connectionSummary)
                         .font(.headline)
                         .foregroundStyle(.primary)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
                 }
-                // 下段: 状態ドット + モデル名(フル表示)。
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(isReady ? Color.green : Color.gray)
-                        .frame(width: 6, height: 6)
-                    Text(settings.model)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text(settings.model)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-        // Menu 既定のシェブロン/装飾を抑え、自前ラベルだけを見せる(principal をすっきりさせる)。
         .menuStyle(.button)
         .buttonStyle(.plain)
     }
 
-    /// 中央タイトルに出す選択中サーバーの表示名。**登録簿の name を優先**(ユーザーが付けた名前)。
-    /// 選択が無いとき(全削除直後など)は URL host 先頭にフォールバックし、それも無ければ "MCP"。
-    private var serverShortName: String {
-        if let name = registry.selectedEntry?.name, !name.isEmpty { return name }
-        guard let host = URL(string: home.serverURLString)?.host else { return "MCP" }
-        return host.split(separator: ".").first.map(String.init) ?? host
+    /// サーバーメニュー1行。状態アイコン + 名前。要認証はタップで対話接続、それ以外はタップで設定へ。
+    @ViewBuilder
+    private func serverMenuRow(_ entry: MCPServerEntry) -> some View {
+        let state = home.connections.state(for: entry.id)
+        Button {
+            // 要認証だけ「タップで対話接続」。それ以外の行タップは設定シートへ(管理導線)。
+            if case .needsAuth = state {
+                home.connectInteractively(serverID: entry.id)
+            } else if case .failed = state {
+                home.connectInteractively(serverID: entry.id)  // 失敗も再試行(対話)で復帰させる。
+            } else {
+                showingSettings = true
+            }
+        } label: {
+            Label(menuLabel(for: entry, state: state), systemImage: menuIcon(for: entry, state: state))
+        }
     }
 
-    private var isReady: Bool {
-        if case .ready = home.state { return true }
-        return false
+    /// メニュー行のラベル(名前 + 状態注記)。
+    private func menuLabel(for entry: MCPServerEntry, state: ConnectionsManager.State) -> String {
+        if !entry.enabled { return "\(entry.name)(無効)" }
+        switch state {
+        case .ready: return entry.name
+        case .connecting: return "\(entry.name)(接続中…)"
+        case .needsAuth: return "\(entry.name)(タップで認証)"
+        case .failed: return "\(entry.name)(失敗・タップで再試行)"
+        case .disconnected: return entry.name
+        }
+    }
+
+    /// メニュー行の状態アイコン(接続済み check / 要認証 exclamation / 接続中 hourglass / 無効 dim)。
+    private func menuIcon(for entry: MCPServerEntry, state: ConnectionsManager.State) -> String {
+        if !entry.enabled { return "circle.slash" }
+        switch state {
+        case .ready: return "checkmark.circle.fill"
+        case .connecting: return "hourglass"
+        case .needsAuth: return "exclamationmark.circle"
+        case .failed: return "xmark.circle"
+        case .disconnected: return "circle"
+        }
+    }
+
+    /// ナビ中央の接続状態サマリ。ready 数を主に見せる(例「2 接続」)。0 なら「未接続」。
+    private var connectionSummary: String {
+        let ready = home.connections.readyConnections.count
+        let enabled = registry.servers.filter { $0.enabled }.count
+        if ready == 0 {
+            return enabled == 0 ? "サーバーなし" : "接続中…"
+        }
+        return "\(ready)/\(enabled) 接続"
     }
 }
 

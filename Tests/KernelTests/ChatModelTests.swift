@@ -60,6 +60,43 @@ func toolCallStepStateRoundTrip() throws {
     }
 }
 
+@Test("ChatSession は serverURLs(複数接続先・M2)を round-trip する")
+func chatSessionRoundTripServerURLs() throws {
+    let session = ChatSession(
+        title: "マルチサーバー",
+        serverURL: URL(string: "https://a.example.com/mcp")!,
+        serverURLs: [
+            URL(string: "https://a.example.com/mcp")!,
+            URL(string: "https://b.example.com/mcp")!,
+        ],
+        createdAt: Date(timeIntervalSince1970: 0),
+        updatedAt: Date(timeIntervalSince1970: 0),
+        model: "gpt-5-mini"
+    )
+    let restored = try roundTrip(session)
+    #expect(restored == session)
+    #expect(restored.serverURLs?.count == 2)
+}
+
+@Test("serverURLs キーが無い旧 JSON は nil にデコードされる(後方互換)")
+func chatSessionDecodesLegacyWithoutServerURLs() throws {
+    // M1 以前の保存 JSON(serverURLs キーが無い)を手書きして decode し、nil に落ちることを固定する。
+    let legacyJSON = """
+    {
+      "id": "\(UUID().uuidString)",
+      "title": "旧チャット",
+      "serverURL": "https://caldav.gigun-dev.workers.dev/mcp",
+      "createdAt": 0,
+      "updatedAt": 0,
+      "turns": [],
+      "model": "gpt-5-mini"
+    }
+    """
+    let decoded = try JSONDecoder().decode(ChatSession.self, from: Data(legacyJSON.utf8))
+    #expect(decoded.serverURLs == nil)
+    #expect(decoded.serverURL.absoluteString == "https://caldav.gigun-dev.workers.dev/mcp")
+}
+
 @Test("CardEmbed は snapshotHTML/structuredContent 省略でも round-trip する")
 func cardEmbedRoundTripMinimal() throws {
     let card = CardEmbed(toolName: "list-todos", resourceUri: "ui://todos/list")

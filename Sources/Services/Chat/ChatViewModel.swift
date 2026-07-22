@@ -138,6 +138,9 @@ public final class ChatViewModel {
     /// (T3/T5 の既存呼び出し・テストが serverURL を渡さなくても initializer が壊れないように)。
     /// 実運用(ChatHomeViewModel)は必ず実サーバー URL を渡す。
     private let sessionServerURL: URL
+    /// currentSession.serverURLs に積む全接続先(M2・複数サーバー同時接続)。nil = 単一/未設定
+    /// (ChatSession.serverURLs の後方互換 nil と同義)。ChatHomeViewModel が ready 全サーバーの URL を渡す。
+    private let sessionServerURLs: [URL]?
     private let sessionCreatedAt = Date()
 
     /// 1ユーザーターン(send 呼び出し)が確定(.stop 到達 or 最大反復打ち切り)したときに呼ばれる。
@@ -189,6 +192,7 @@ public final class ChatViewModel {
         traceSink: (any TraceSink)? = nil,
         sessionId: String = UUID().uuidString,
         serverURL: URL = ChatViewModel.placeholderServerURL,
+        serverURLs: [URL]? = nil,
         onTurnSettled: (() -> Void)? = nil
     ) {
         self.llm = llm
@@ -201,6 +205,7 @@ public final class ChatViewModel {
         self.sessionId = sessionId
         self.sessionUUID = UUID(uuidString: sessionId) ?? UUID()
         self.sessionServerURL = serverURL
+        self.sessionServerURLs = serverURLs
         self.onTurnSettled = onTurnSettled
 
         if let systemPrompt {
@@ -224,6 +229,7 @@ public final class ChatViewModel {
             id: sessionUUID,
             title: Self.deriveTitle(from: turns),
             serverURL: sessionServerURL,
+            serverURLs: sessionServerURLs,
             createdAt: sessionCreatedAt,
             updatedAt: Date(),
             turns: turns,
