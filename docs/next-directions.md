@@ -52,8 +52,12 @@
   > WKWebView中央の横操作をhost gesture認識領域から外した。
   > **2026-07-23 実カード確認:** caldav todosカード中央の横swipe前後でscreenshot SHA-256が一致し、
   > 左端swipeだけdrawerが開いた。tdr-concierge `park_waits`も通常チャットから実呼出しできた。
-- [ ] Simulatorでdirtyが触る主要経路を実操作し、semantic tree・画面・unified logで裏取りする。
-- [ ] docsと実装の事実が一致した時点で、変更を意図単位のcommitへ分割する。
+- [x] ~~Simulatorでdirtyが触る主要経路を実操作し、semantic tree・画面・unified logで裏取りする。~~ ✅
+  > **2026-07-23 更新:** 専用Simulator DでOAuth再接続、複数server、toggle OFF、実todos/agenda App、
+  > 横gesture、fullscreen往復、カード内`tools/call`、作成時focusまでsemantic tree・screenshot・logを照合した。
+- [x] ~~docsと実装の事実が一致した時点で、変更を意図単位のcommitへ分割する。~~ ✅
+  > **2026-07-23 更新:** fullscreen応答順序修正とW-01/agenda実E2Eを正典・benchmark・logへ反映し、
+  > `make verify` green後に独立commitとする。
 
 ## 2. iOS agent harness正式評価
 
@@ -77,7 +81,11 @@
   > browserなし無言接続（caldav 23 tools）を確認。正式blind各構成2回の比較gateは別途継続する。
 - [ ] keyboard試験でASCII、日本語、backspace、全選択/置換を確認する。
 - [ ] WKWebView試験で実カード内操作、tools/call往復、fullscreen、JS状態保持を確認する。
+  > **2026-07-23 main独立再実行:** 実`list-todos`カードでcollection menuを開くと
+  > `refresh-todos`/`list-calendars`が往復し、inline→fullscreen→inline後もmenuのopen状態を保持した。
+  > main独立分は合格。正式A/B/D各2回の比較gateは継続する。
 - [ ] main sessionがraw traceを採点し、採用候補のO-01/W-01を独立再実行する。
+  > **2026-07-23 更新:** O-01とW-01のmain独立再実行は合格。構成間のraw trace採点は未完了。
 - [ ] Claude Codeのrate limit解消後、同じ採用候補でH-01/O-01を再実行する。
 - [ ] 採用判断後にgeneric知識をuser plugin、MCPHost固有知識を`ios-e2e-verify`へ反映する。
 
@@ -89,8 +97,14 @@
 - [x] ~~server toggle OFFが次のnew chatのtool一覧へ反映される。~~ ✅
   > **2026-07-23 更新:** tdr-conciergeをOFF後のnew chatで`park_hours`を要求してもtool stepは
   > 生成されず、利用可能なtoolがない応答になることを確認。試験後はONへ復元した。
-- [ ] 通常チャットの⊕でfullscreen昇格し、右上ドリフトなし、scrollIntoView、keyboard自動表示を確認する。
+- [x] ~~通常チャットの⊕でfullscreen昇格し、右上ドリフトなし、scrollIntoView、keyboard自動表示を確認する。~~ ✅
+  > **2026-07-23 更新:** 実todosカードで確認。旧実装は成功応答をreparent前に返し、遅延focus後の
+  > 載せ替えでkeyboardがhideしていた。応答を実reparentまで待たせ、timeout/cancelはinlineへrollback。
+  > 修正版は作成行がkeyboard accessory上へ可視化され、focusを安定維持。右上縮小ボタンのドリフトも無い。
 - [ ] todosのcollection切替、agendaの色filter/追加/行色、inline menuのclipなしを確認する。
+  > **2026-07-23 部分確認:** todos collection menuとagenda色filter menuはinlineでclipなし。
+  > agendaの⊕はfullscreenの予定/リマインダーformを開き、終日既定ONを確認して未保存cancelした。
+  > collection実切替、予定行色、保存往復は未確認。
 - [ ] 会議「参加」open-link、C3/C4作成、終日保存、action-row、カード内部scroll消滅を確認する。
 - [ ] Simulator標準カレンダー/リマインダーへCalDAV accountを追加し、URL/CONFERENCE等を裏取りする。
 

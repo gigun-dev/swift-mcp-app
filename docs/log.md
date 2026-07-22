@@ -744,3 +744,19 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   callbackを呼ばず現在のinlineを返すよう修正した。未設定はapps.mdx:786の`if set`に従い旧View互換を維持。
 - 正規宣言あり、明示的なfullscreenなし、未設定互換の3経路をtestで固定。設計docの旧`.sheet`前提も、
   現行`fullScreenCover`＋ホスト管理の縮小stripへ更新した。
+
+## 2026-07-23: 実App W-01とfullscreen作成focusの順序を修正
+
+- 専用Simulator Dの通常チャットから実caldav `list-todos`カードを表示し、collection menu操作で
+  `refresh-todos`と`list-calendars`の`tools/call`往復をlog確認した。menuを開いたまま
+  inline→fullscreen→inlineと移してもopen状態を維持し、同一WKWebViewのreparentを画面で裏取りした。
+- todosの⊕はfullscreenと作成行までは出たが、旧実装ではkeyboardがshow直後にhideした。原因は
+  `ui/request-display-mode`の成功応答が実reparentより先で、カードの応答後focusのあとに
+  `removeFromSuperview`が走ってWKContentViewがfirst responderを失う順序だった。
+- カード発要求だけ、実`AppCardView.onAdopted`まで応答を待機するgateを追加した。2秒timeoutまたは
+  teardown時はfullscreen成立を偽らずcoordinatorをinlineへrollbackする。カードDOM推測や強制再focusはしない。
+- 修正版をDへ署名build/installし、03:13:21.571のrequestから03:13:21.615のfullscreen context通知、
+  作成行とkeyboard accessoryの安定表示まで確認した。`make check`は182 tests / 19 suites、
+  SwiftFormat 0/115、SwiftLint 0/114、`make app`もgreen。
+- agenda実カードでは色filter menuがinlineでclipしないこと、⊕でfullscreenの予定/リマインダーformが開き、
+  終日が既定ONであることを確認して未保存cancelした。実collection切替、予定行色、保存往復は残す。

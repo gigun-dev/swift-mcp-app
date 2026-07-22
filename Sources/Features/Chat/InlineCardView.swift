@@ -111,7 +111,7 @@ final class InlineCardHost: Identifiable {
     // 生存させ続ける参照群(手放すと停止する。TodosCardSpikeViewModel のプロパティ群と同じ役割)。
     private var transport: WebViewTransport?
     private var coordinator: AppCardWebCoordinator?
-    private var session: AppsBridgeSession?
+    var session: AppsBridgeSession?
     private var buildTask: Task<Void, Never>?
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "inlinecard")
@@ -138,7 +138,11 @@ final class InlineCardHost: Identifiable {
     // AppCardView.onAdopted(実際に webView が新コンテナへ載った瞬間)から notifyReparented() が
     // 呼ばれ、ここに積まれていればそこで初めて session.notifyDisplayModeChanged を送る。
     // nil のとき notifyReparented は何もしない(通常の再描画による adopt 呼び出しを無視する)。
-    private var pendingDisplayModeNotification: (mode: UIDisplayMode, dims: ContainerDimensions)?
+    var pendingDisplayModeNotification: (mode: UIDisplayMode, dims: ContainerDimensions)?
+
+    // カード発 request の応答を実 reparent まで待たせる一度きりゲート。詳細な原因・timeout 方針は
+    // FullscreenPresentationGate.swift に閉じ、肥大しやすい InlineCardHost は連携だけを持つ。
+    let fullscreenPresentationGate = FullscreenPresentationGate()
 
     /// カードを1度だけ構築する。2回目以降(スクロール往復での再 .task)は no-op(既存 webView を維持)。
     /// - Parameters:
@@ -259,19 +263,6 @@ final class InlineCardHost: Identifiable {
         snapshotter.captureFirst(from: webView, receiver: onSnapshot)
     }
 
-    /// カード発の fullscreen 要求を高々1枚の調停役へ渡す。通知は実際の reparent 後まで保留する。
-    private func resolveDisplayMode(_ requested: UIDisplayMode) -> DisplayModeResolution {
-        guard requested == .fullscreen, let fullscreenCoordinator else {
-            return DisplayModeResolution(mode: .inline)
-        }
-        let dimensions = estimatedFullscreenDimensions()
-        let resolution = fullscreenCoordinator.requestFullscreen(self, estimatedDimensions: dimensions)
-        if resolution.mode == .fullscreen {
-            pendingDisplayModeNotification = (.fullscreen, dimensions)
-        }
-        return resolution
-    }
-
     /// URL 検証は Session 済み。UIKit の completion を async の成否へ橋渡しする。
     private static func openLink(_ url: URL) async -> Bool {
         await withCheckedContinuation { continuation in
@@ -288,6 +279,8 @@ final class InlineCardHost: Identifiable {
         // 取りこぼさないため、didCapture に関わらず最後に1度取る。webView 破棄前に評価する。
         snapshotter.capture(from: webView, receiver: onSnapshot)
         let session = self.session
+        // fullscreen 提示中に画面自体が破棄された場合も、待機中の JSON-RPC callback を残さない。
+        fullscreenPresentationGate.cancel()
         Task { await session?.teardown() }
     }
 
@@ -365,19 +358,6 @@ final class InlineCardHost: Identifiable {
         //    AppCardView の実際の reparent 完了(onAdopted → notifyReparented)を待つ。
         let dims = ContainerDimensions(width: Double(containerWidth), maxHeight: Double(inlineMaxHeight))
         pendingDisplayModeNotification = (.inline, dims)
-    }
-
-    /// AppCardView.onAdopted から呼ばれる: 実際に webView がどこかのコンテナへ再アダプトされた
-    /// **直後**に、保留中の displayMode 通知があればそこで初めて送る(監査 2026-07-18 HIGH #1)。
-    /// 保留が無ければ何もしない(通常の再描画による adopt 呼び出しをすべて無視する — displayMode
-    /// 遷移を伴わない adopt は頻繁に起きる: 例えばスクロールで InlineCardView が再生成されるたびに
-    /// updateUIView 経由で adoptIfOwned は呼ばれるが、shouldOwn かつ既に正しい container に居れば
-    /// adopt() 自体を呼ばない = onAdopted も呼ばれない。呼ばれるのは「本当に載せ替わった」ときだけ)。
-    func notifyReparented() {
-        guard let pending = pendingDisplayModeNotification else { return }
-        pendingDisplayModeNotification = nil
-        let session = self.session
-        Task { await session?.notifyDisplayModeChanged(to: pending.mode, containerDimensions: pending.dims) }
     }
 
     // MARK: - テーマ(外観)変更(#5 ダークモード)

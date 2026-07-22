@@ -187,6 +187,10 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
   > callback、caldav 23 tools、`get-current-time`成功、terminate/relaunch後のbrowserなし無言接続まで
   > 完走した。初回に発見した無署名runのKeychain `-34018`は`make run`だけad-hoc署名へ戻して解消。
 - [ ] W-01をA/B/Dで各2回実行する。
+  > **2026-07-23 更新:** 正式比較とは別にmainのD独立再実行は合格。実todosカードの
+  > `refresh-todos`/`list-calendars`往復、fullscreen往復、collection menuのJS状態保持、
+  > 作成時の安定focusをscreenshotとunified logで照合した。semantic helperが背後の検索欄を
+  > 誤選択した2回は誤操作として記録し、composer固有patternへ修正した。
 - [ ] L-01とM-01をA/B/Dで各1回実行する。
 - [ ] Bの失敗が依存version由来の場合だけCで該当試験を再実行する。
 - [ ] mainがraw traceを採点し、採用候補のO-01/W-01を独立再実行する。
@@ -231,6 +235,7 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 | H-01 | D | **No score** | 約2分44秒 | 16 / 1 | 機能上は完走したがXcodeBuildMCPがsubagentへ露出せず、CLI+idbへ全面fallbackしたためD比較になっていない |
 | K-01 | A | **Pass** | 約6分30秒 | 39 / 3 | 日本語clipboard、誤URL、backspace、Select All/Paste、blur、Cancel後に未保存を確認 |
 | K-01 | D | **Local pass / blind pending** | 非blind | 未集計 | XcodeBuildMCP 2.6.2へlocal JSON-RPC直結しsemantic refsを検証。最終blind scoreには含めない |
+| W-01 | D | **Main independent pass / blind pending** | 非blind | 未集計 | 実Appの操作往復・同一WebView状態保持・fullscreen作成focusを画面/logで確認。正式各2回には含めない |
 
 ### H-01 Aの証拠
 
@@ -243,6 +248,14 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 
 - 誤URL / backspace / 最終blur / cancel後の4画面を`artifacts/K-01-A-*`へ保存した。
 - 表示名`検証サーバー`はclipboard + semantic `Paste`で入力した。
+
+### W-01 D main独立再実行の証拠と発見
+
+- inline、collection menu、fullscreen、inline復帰、作成focusの画面を`artifacts/w01-*`と
+  `artifacts/focus-fix-fullscreen-keyboard-stable.png`へ保存した。
+- inline→fullscreen→inlineでcollection menuのopen状態が維持され、同一WKWebViewのJS状態保持を確認した。
+- semantic snapshotは非表示drawerの検索欄も返すため、曖昧な`text-field`指定で2回誤入力した。
+  composerはplaceholderを含む固有pattern、カード内部は画面確認後の座標fallbackが必要。
 - `idb ui text`は現在のkeyboard layoutで`:`を`;`へ変換した。URLは直接typeに固執せず、
   clipboard置換をfallbackにする必要がある。
 - 最後にsemantic `キャンセル`で閉じ、一覧が既存`caldav` 1件のままであることを確認した。
