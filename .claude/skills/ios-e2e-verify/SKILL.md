@@ -1,6 +1,6 @@
 ---
 name: ios-e2e-verify
-description: iOS シミュレータで MCPHost を E2E 検証する手順とハマりどころ。ビルド〜起動〜画面操作〜ログ裏取りの一連、スパイクハーネス(MCPHOST_SPIKE)の使い分け、API キー/OAuth を「入力せずに」通す方法、タップ座標系のズレ、テキスト削除ができない制約、caldav 本番のデプロイ状態確認まで。「シミュレータで確認して」「E2E 検証して」「実機未検証を消化して」「アプリを動かして」と言われたとき、および画面を見て挙動を確かめる必要があるときに読む。
+description: iOS シミュレータで MCPHost を E2E 検証する手順とハマりどころ。ビルド〜起動〜画面操作〜ログ裏取りの一連、スパイクハーネス(MCPHOST_SPIKE)の使い分け、実credentialと使い捨てtest credentialの安全な扱い、OAuthのagent入力、タップ座標系、入力・削除のfallback、caldav本番のデプロイ状態確認まで。「シミュレータで確認して」「E2E 検証して」「実機未検証を消化して」「アプリを動かして」と言われたとき、および画面を見て挙動を確かめる必要があるときに読む。
 ---
 
 # iOS シミュレータ E2E 検証
@@ -51,9 +51,16 @@ SIMCTL_CHILD_MCPHOST_SPIKE=reparent xcrun simctl launch --terminate-running-proc
 | `MCPHOST_AUTOCONNECT` | 自動接続(M2 以降は無言自動接続が既定なので通常は不要) |
 | `MCPHOST_SIDEBAR_OPEN` | 起動時サイドバー展開 |
 
-## 3. 資格情報を「入力せずに」通す
+## 3. 資格情報を安全に扱う
 
-**エージェントはパスワード・API キーをフィールドに入力しない。** 迂回路を使う。
+credentialを一律に人手へ戻さない。次の境界で判断する。
+
+- **入力してよい**: ユーザーが値と用途を明示した、失効可能なtest fixture / disposable credential。
+  現在のcaldav OAuth E2Eでは`changeme`を検証用passwordとしてagentが入力してよい。
+- **入力しない**: 実パスワード、個人credential、LLM API key、用途や環境が不明な値。
+  env / Keychain経路を使うか、値を扱う1操作だけユーザーへ依頼する。
+- test credentialでも必要なfieldへだけ入力し、最終報告やスクリーンショットへ値を転載しない。
+  「test credentialを入力可」を「任意の秘密を入力可」へ拡大解釈しない。
 
 - **`make run` が最短**(推奨)。`.env`(gitignore 済み)に `MCPHOST_LLM_KEY=sk-...` を
   1度書いておけば、ビルド → install → **鍵入りで launch** まで一発。人手も貼り付けも要らない。
@@ -70,8 +77,10 @@ SIMCTL_CHILD_MCPHOST_SPIKE=reparent xcrun simctl launch --terminate-running-proc
 - **シミュレータへのペースト**: どうしても貼り付けたいなら
   `echo -n "<値>" | xcrun simctl pbcopy <udid>` でホストのペーストボードを流し込める。
   ただしシェル履歴に残るので機密には向かない。env 経路を優先する。
-- **OAuth**: caldav は同意画面でパスワードを求める。ここはユーザーに押してもらう。
-  一度通れば Keychain のトークンで**無言自動接続**になり、以後は起動するだけで ready。
+- **OAuth**: caldavは同意画面でpasswordを求める。E2Eではsemantic snapshot / accessibility treeで
+  password fieldを特定し、明示されたtest fixture `changeme`をagentが入力してsubmitまで進める。
+  callbackでMCPHostへ復帰してreadyになること、実tool call、terminate / relaunch後にブラウザを
+  出さずKeychain tokenで**無言自動接続**することまで確認して初めてOAuth完走とする。
   `tdr-concierge` は **OAuth 不要**なので、認証を挟まない2台目検証の相方に使える。
 
 ## 4. 画面操作の落とし穴
@@ -81,10 +90,18 @@ SIMCTL_CHILD_MCPHOST_SPIKE=reparent xcrun simctl launch --terminate-running-proc
 `screenshot` は **918px 幅**で返るが、`tap`/`swipe` は **402x874 ポイント空間**。
 スクリーンショット上の座標を **約 2.284 で割って**渡す。これを忘れると明後日の場所を叩く。
 
-### 使えるアクションが限られる
+### 操作backendを能力順に選ぶ
 
-`control` の action は attach / launch / screenshot / tap / swipe / touch_path / touch2_path /
-text / button / open_url / detach のみ。**`key` も `double_click` も `triple_click` も `zoom` も無い**。
+1. XcodeBuildMCPが使える場合はsemantic snapshotのelement refと`tap` / `type-text` /
+   `key-press` / `key-sequence`を優先する。画面遷移後はrefを使い回さずsnapshotを更新する。
+2. semantic treeが隠れたNavigationStackを混ぜる、またはWKWebView内を十分に露出しない場合は
+   `idb ui describe-all`の表示中labelとframeへfallbackする。
+3. 最後にscreenshotとpoint座標を使う。固定座標だけを成功根拠にしない。
+
+旧Simulator `control` backendだけを使う場合、actionは attach / launch / screenshot / tap / swipe /
+touch_path / touch2_path / text / button / open_url / detach に限られる。
+
+**`key` も `double_click` も `triple_click` も `zoom` も無い**。
 待機は `wait` ではなく Bash 側で `until false; do sleep N; break; done`(素の `sleep` は harness に弾かれる)。
 
 ### 日本語が打てない + かな入力モードに化ける
@@ -99,10 +116,10 @@ text / button / open_url / detach のみ。**`key` も `double_click` も `tripl
   (ただし長押しペーストのメニューを出すのが難しい)
 - 検証用の発話は**最初から英語で組み立てる**のが結局いちばん速い
 
-### テキストの「削除」ができない
+### backendによってはテキストを削除できない
 
-`text` はカーソル位置に**挿入**するだけ。バックスペースを送る手段が無いので、
-**既存の値を消す編集はエージェント単独では困難**。回避策:
+旧`control.text`はカーソル位置に**挿入**するだけでbackspaceを送れない。XcodeBuildMCPの
+`key-press` / `key-sequence`で削除・全選択・置換を先に試し、使えない場合だけ次へfallbackする:
 
 - そのエントリを削除して作り直す(詳細画面に「このサーバーを削除」がある)
 - `touch_path` の長押しで選択メニューを狙う(成功率は低い)

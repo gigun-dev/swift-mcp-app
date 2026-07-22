@@ -623,3 +623,37 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - iPhone 17 Simulatorへ`make run`でinstall/launchし実画面を確認。新規フォームは空の`表示名` / `URL`
   だけで、初期エラー・正常footerとも無し、保存は無効。不正な非空値を入力して別欄へ移ると赤字が現れ、
   URL欄へ再focusすると消えることをアクセシビリティツリーとスクリーンショットで裏取りした。
+
+## 2026-07-23: lint個別targetを追加しbaselineを撤去
+
+- 静的解析だけを再実行できる`make lint`を追加した。`make check`はbuild/test後にlintも呼び、
+  変更完了の統合ゲートとして3工程のいずれかが失敗すれば失敗する。
+- `make lint`はSwiftFormat lintとSwiftLint strictを実行する。ツールが無い場合はskipせず、
+  具体的な案内付きで失敗する。`make doctor`で両toolの状態を確認できる。
+- `.swiftlint-baseline.json`とconfigのbaseline参照を撤去。既存違反を不可視化せず、
+  Sources/Testsのコード側を別lint整理タスクで修正し、全違反0件を維持する方針へ変更した。
+
+## 2026-07-23: iOS agent harness正式評価を起票しnext-directions第3版へ棚卸し
+
+- OpenAI公式`build-ios-apps`、現行simctl+idb、XcodeBuildMCP hybridをblind subagentで比較する
+  正式試験票を`docs/ios-agent-harness-benchmark.md`へ追加。OAuth `changeme`入力、keyboard訂正、
+  WKWebView実カード、複数Simulator、context/tool schema量、mainによる独立再検証をgate化した。
+- `ios-e2e-verify`のcredential方針を修正。実password/API keyは禁止を維持しつつ、ユーザーが用途と
+  値を明示したdisposable test credentialはagent入力可とした。caldav OAuth E2Eでは`changeme`を
+  agentが入力し、callback→tool call→再起動後の無言接続まで確認する。
+- 607行だった`docs/next-directions.md`第2版を内容ごと
+  `docs/archive/next-directions-v2-2026-07-23.md`へ退避。第3版は87行の最新head・未完了gate・
+  詳細docへの索引へ再構成した。SessionStart hookの警告文もarchive運用へ合わせ、Claude/Codexは
+  symlinkされた同じhookとproject skillを読む。
+
+## 2026-07-23: baselineなしlintをコード改善で0件化
+
+- 初期SwiftLint違反はSources 133件、Tests 153件。baselineや閾値緩和で隠さず、命名・整形に加えて
+  `ChatBodyView` / `InlineCardView` / `SettingsSheet`、`ChatViewModel`、`AppsBridgeSession`、
+  大型test suiteを責務別の型/ファイルへ分割した。
+- 日本語のSwift Testing関数名、JSON-RPC/OpenAI SSEのwire fixture、OSLog privacy補間は表現や
+  wire意味を維持する狭いconfig例外とした。`String(decoding:)`等の意味的に必要な箇所は、理由を
+  コメントした最小範囲のdisableだけを使う。
+- `make check` green: Swift build、177 tests / 18 suites、SwiftFormat 0/112、SwiftLint strict
+  0 violations / 111 files。さらにgeneric iOS Simulator向け`make app`も`BUILD SUCCEEDED`。
+  SwiftPMの初回失敗はsandbox外のModuleCache書込権限だけで、許可済み環境では成功した。
