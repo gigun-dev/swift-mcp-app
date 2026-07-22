@@ -61,6 +61,9 @@ public final class ConnectionsManager {
 
     /// serverID → 進行中の接続 Task(再接続で古いものをキャンセルするため保持)。
     private var connectTasks: [UUID: Task<Void, Never>] = [:]
+    /// connecting がどの登録内容で開始されたか。接続中に設定が編集された場合、古い Task を
+    /// 「既に connecting だから」と温存せず、差を検出して新しい endpoint/slug でやり直す。
+    private var connectingIdentities: [UUID: MCPConnectionIdentity] = [:]
     /// serverID → 割り当て済み slug(決定的・登録順で採番)。前置名・逆引きの鍵。
     private var slugByServer: [UUID: String] = [:]
 
@@ -103,11 +106,34 @@ public final class ConnectionsManager {
     public func connectEnabled(_ servers: [MCPServerEntry]) {
         reassignSlugs(servers)
         let enabled = servers.filter { $0.enabled }
+        var invalidatedReadyConnection = false
         for entry in enabled {
             switch state(for: entry.id) {
-            case .connecting, .ready:
-                continue  // 進行中/接続済みはそのまま(無駄な再接続を起こさない)。
-            default:
+            case .connecting:
+                guard let expectedSlug = slugByServer[entry.id] else { continue }
+                if let connecting = connectingIdentities[entry.id],
+                   !MCPConnectionIdentityPolicy.requiresReconnect(
+                       connected: connecting,
+                       expected: MCPConnectionIdentity(name: entry.name, url: entry.url, slug: expectedSlug)
+                   ) {
+                    continue  // 同じ登録内容で進行中なら二重接続を起こさない。
+                }
+                // 編集が接続完了より先に行われた場合も、旧 Task をcancelして新しい内容でやり直す。
+                startSilentConnect(entry)
+            case .ready(let ready):
+                guard let expectedSlug = slugByServer[entry.id] else { continue }
+                // serverID が同じでも、設定画面で name / URL が編集された接続や、他エントリの
+                // 追加・削除で slug の採番が変わった接続は古い。ここで skip すると旧 URL を
+                // 使い続けるだけでなく、同 slug の executor が2本できて tools/call が別サーバーへ
+                // 誤配送されうる。純関数側の回帰テストと対にして、必ず再接続へ落とす。
+                if MCPConnectionIdentityPolicy.requiresReconnect(
+                    connected: MCPConnectionIdentity(name: ready.name, url: ready.url, slug: ready.slug),
+                    expected: MCPConnectionIdentity(name: entry.name, url: entry.url, slug: expectedSlug)
+                ) {
+                    startSilentConnect(entry)
+                    invalidatedReadyConnection = true
+                }
+            case .disconnected, .needsAuth, .failed:
                 startSilentConnect(entry)
             }
         }
@@ -115,6 +141,12 @@ public final class ConnectionsManager {
         let liveIDs = Set(enabled.map { $0.id })
         for id in states.keys where !liveIDs.contains(id) {
             teardown(id)
+        }
+        // ready → connecting は ready 集合の減少でもある。成功時の通知だけでは、その間に空の
+        // チャットが古い proxy/toolDefs を握り続けるため、無効化した時点でも組み直させる。
+        // 発話済みチャットは ChatHomeViewModel 側の既存方針どおり差し替えない。
+        if invalidatedReadyConnection {
+            onReadyConnectionsChanged?()
         }
     }
 
@@ -127,6 +159,7 @@ public final class ConnectionsManager {
     private func startSilentConnect(_ entry: MCPServerEntry) {
         guard let slug = slugByServer[entry.id] else { return }
         states[entry.id] = .connecting
+        connectingIdentities[entry.id] = MCPConnectionIdentity(name: entry.name, url: entry.url, slug: slug)
         connectTasks[entry.id]?.cancel()
         connectTasks[entry.id] = Task { [weak self] in
             await self?.performSilentConnect(entry, slug: slug)
@@ -147,6 +180,7 @@ public final class ConnectionsManager {
             let ready = try await makeReady(entry: entry, slug: slug, connection: connection)
             guard !Task.isCancelled else { return }
             states[entry.id] = .ready(ready)
+            connectingIdentities[entry.id] = nil
             logger.notice("無言接続 成功 \(entry.url.absoluteString, privacy: .public) tools=\(connection.tools.count)")
             onReadyConnectionsChanged?()
         } catch {
@@ -159,6 +193,7 @@ public final class ConnectionsManager {
                 states[entry.id] = .failed(shortError(error))
                 logger.error("無言接続 失敗 \(entry.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)")
             }
+            connectingIdentities[entry.id] = nil
         }
     }
 
@@ -170,6 +205,7 @@ public final class ConnectionsManager {
         reassignSlugs(servers)
         guard let slug = slugByServer[entry.id] else { return }
         states[entry.id] = .connecting
+        connectingIdentities[entry.id] = MCPConnectionIdentity(name: entry.name, url: entry.url, slug: slug)
         connectTasks[entry.id]?.cancel()
         connectTasks[entry.id] = Task { [weak self] in
             await self?.performInteractiveConnect(entry, slug: slug)
@@ -190,11 +226,13 @@ public final class ConnectionsManager {
             let ready = try await makeReady(entry: entry, slug: slug, connection: connection)
             guard !Task.isCancelled else { return }
             states[entry.id] = .ready(ready)
+            connectingIdentities[entry.id] = nil
             logger.notice("対話接続 成功 \(entry.url.absoluteString, privacy: .public) tools=\(connection.tools.count)")
             onReadyConnectionsChanged?()
         } catch {
             if Task.isCancelled { return }
             states[entry.id] = .failed(shortError(error))
+            connectingIdentities[entry.id] = nil
             logger.error("対話接続 失敗 \(entry.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)")
         }
         _ = delegate  // 明示保持(この行まで delegate を生存させる意図の可視化)。
@@ -211,6 +249,7 @@ public final class ConnectionsManager {
     private func teardown(_ id: UUID) {
         connectTasks[id]?.cancel()
         connectTasks[id] = nil
+        connectingIdentities[id] = nil
         // dict からキーを消す(state(for:) が disconnected を返すようになる)。
         if states[id] != nil {
             states[id] = nil

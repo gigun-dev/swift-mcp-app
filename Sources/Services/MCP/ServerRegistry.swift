@@ -186,6 +186,12 @@ public final class ServerRegistryStore {
     }
 
     /// 改名 / URL 変更(SettingsSheet の編集)。id は不変なので過去参照は保たれる。
+    ///
+    /// URL 変更時も旧 URL の Keychain token はここでは消さない。token のキーは endpoint URL で、
+    /// 同じ URL を参照する別エントリが存在しうるため、1エントリの編集を理由に消すと無関係な
+    /// 接続まで再認証させてしまう。また typo を直して旧 URL へ戻した場合の認証再利用も失われる。
+    /// 明示的な「サーバー削除」だけが従来どおり token の寿命を終える。接続実体については
+    /// ChatHomeViewModel → ConnectionsManager が name / URL / slug の差を検出して再接続する。
     public func update(id: UUID, name: String, url: URL) {
         guard let idx = servers.firstIndex(where: { $0.id == id }) else { return }
         servers[idx].name = name

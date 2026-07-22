@@ -340,12 +340,30 @@ struct ChatHomeView: View {
 
     // MARK: - タイトル + model chip(モックの h1 + .model-chip を縦に合成)
 
-    /// 中央タイトル領域。上段=接続状態サマリ(接続中サーバー数)+ メニューの入口、下段=モデル名。
+    /// 中央タイトル領域。**平時はモデル名 + chevron の1行だけ**、異常時のみその上に警告行を出す。
     ///
     /// 【M2: 単一選択を廃止し「接続状態サマリ + サーバー一覧の状態表示」へ】複数サーバー同時接続に
     /// なったので「今どのサーバー1つに繋いでいるか」ではなく「有効な各サーバーが今どういう状態か」を
     /// 見せる。タップの Menu に登録済みサーバーを状態アイコン付きで列挙し、要認証のサーバーをタップ
     /// すると対話接続(ブラウザ)を出す。末尾に設定導線。
+    ///
+    /// 【2026-07-22 全面作り直し: ヘッダーから常設の接続状態を撤去】
+    /// ボツ案(M2 の初版): 上段に `connectionSummary` = 「2/2 接続」(ready/enabled)、下段に
+    /// モデル名を `.caption2` で小さく。ユーザー指摘「意味不明」。駄目だった理由は3つ:
+    ///  (a) 分母(enabled)が何なのか画面から読み取れない。「2/2」は数字だけ見せて文脈を渡さない。
+    ///  (b) **全部正常なときにこそ数字が出る** — 情報量ゼロの表示が常時ナビバーを占有していた。
+    ///  (c) ナビバー中央は約 200pt しかなく、サーバー名を並べる余地は物理的に無い(代替案も否定済み)。
+    /// 裏取り(他製品・ガイドライン、いずれも「常設で出すな」で一致):
+    ///  - claude.ai / ChatGPT / Claude Desktop / VS Code の4つとも接続状態をヘッダーに出さない。
+    ///    常設一覧は設定画面、会話中に使えるツールは入力欄のツールピッカー、異常はチャット内
+    ///    (=作業の文脈)に出す、という配置で一致していた。
+    ///  - Apple HIG: ナビバーのタイトル領域は「現在地の説明」。冗長なら空でよい/バーに詰め込むな。
+    ///    「動的な状態をタイトルに置け」という記述はどこにも無い。
+    ///  - NN/g: 日常操作の成功をわざわざ主張するのは "bothersome and intrusive"。ただしサイレント
+    ///    故障は最悪なので「黙る」のは異常が確実に届く経路がある場合に限る → 本アプリはタップで開く
+    ///    この Menu に全サーバーの状態が既に並んでいるので条件を満たす。
+    /// → 平時は接続状態を出さず、モデル名を主役(`.subheadline`/`.primary`)に昇格。
+    ///   `.headline` は中央で主張しすぎる(ナビバーの左右ボタンより重くなる)ので使わない。
     private var titleAndModel: some View {
         Menu {
             // 登録済みサーバーを状態アイコン付きで列挙。要認証はタップで対話接続。
@@ -359,20 +377,45 @@ struct ChatHomeView: View {
                 Label("サーバーを管理・設定", systemImage: "gearshape")
             }
         } label: {
-            VStack(spacing: 1) {
-                HStack(spacing: 3) {
-                    Text(connectionSummary)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+            // 【1行に収める】初版は警告を独立した行にしてモデル名と2段に積んだが、ユーザーの
+            // 実機フィードバックで却下 —「スペース的にアイコンとテキストは厳しい」。ナビ中央は
+            // 約 200pt しかなく、2段にすると左右のボタンを圧迫するし、モデル名も切れる。
+            // → 警告は**モデル名と同じ行の先頭に置くアイコン1つ**に畳んだ。横幅の増分は ~14pt で済み、
+            //   平時は何も足さない(banner == nil)という性質は保たれる。
+            HStack(spacing: 3) {
+                // 【異常時だけ出るアイコン】平時(needsAuth も failed も 0)は banner == nil で消える。
+                // connecting は banner を作らない = 接続途中の過程を騒がない
+                // (NN/g「進行中の一時状態にユーザーの注意を払わせない」)。
+                if let banner = attentionBanner {
+                    // 【テキストを省いても WCAG 1.4.1 に反しない理由】1.4.1 が禁じているのは
+                    // 「色**だけ**」を情報の手がかりにすること。禁止例に挙がるのは緑/赤ドットのように
+                    // **形が同一で色しか違わない**インジケータであって、ここで使う警告三角は
+                    // 色を落としてグレースケールにしても「三角形 + 感嘆符」という形状だけで
+                    // 平時(アイコン無し)と区別できる。よって色は補助であり、単独の手がかりではない。
+                    // ただし**視覚的テキストを削った分、言語的な手がかりは accessibilityLabel が唯一**に
+                    // なるので、そちらは件数と種別まで言い切る(下の accessibilityLabel)。
+                    // 内訳の読み分けは Menu を開けばサーバー1行ずつに出る(serverMenuRow)。
+                    Image(systemName: banner.symbol)
+                        .font(.caption)
+                        .foregroundStyle(banner.tint)
                 }
+                // モデル名。旧実装では下段の `.caption2`/`.secondary` の脇役だったが、常設の
+                // 接続状態を撤去した結果ここが中央の主役になる(= 現在地の説明・HIG)。
                 Text(settings.model)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
+                // chevron は「ここを押すと何か開く」の唯一の手がかりなので、状態表示を消しても残す。
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
             }
+            // VoiceOver では要素がバラけて読まれると意味が痩せる(「警告」「gpt-5.4-mini」)ので、
+            // 行ごと1つのラベルに畳んで「何件が」「どうなっていて」「どうすれば良いか」まで渡す。
+            // 平時はモデル名だけを読ませる。
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(attentionBanner.map { "\($0.accessibilityLabel)。モデル \(settings.model)" }
+                ?? "モデル \(settings.model)。タップしてサーバー一覧を開く")
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -397,13 +440,19 @@ struct ChatHomeView: View {
     }
 
     /// メニュー行のラベル(名前 + 状態注記)。
+    ///
+    /// 語彙は Claude Code の MCP 一覧(`✔ Connected` / `! Needs authentication` /
+    /// `✘ Failed to connect`)に揃える。ヘッダーの警告行(attentionBanner)と同じ言葉を使うことで
+    /// 「未認証と言われた → メニューを開く → 未認証の行がある」と視線が繋がる(旧「タップで認証」
+    /// 「失敗」は指示だけで状態名が無く、ヘッダーの語と対応が取れていなかった)。
+    /// 状態アイコン(menuIcon)と併せて色に依存しない2重符号化になっている(WCAG 1.4.1)。
     private func menuLabel(for entry: MCPServerEntry, state: ConnectionsManager.State) -> String {
         if !entry.enabled { return "\(entry.name)(無効)" }
         switch state {
         case .ready: return entry.name
         case .connecting: return "\(entry.name)(接続中…)"
-        case .needsAuth: return "\(entry.name)(タップで認証)"
-        case .failed: return "\(entry.name)(失敗・タップで再試行)"
+        case .needsAuth: return "\(entry.name)(要認証・タップ)"
+        case .failed: return "\(entry.name)(接続失敗・タップで再試行)"
         case .disconnected: return entry.name
         }
     }
@@ -420,14 +469,68 @@ struct ChatHomeView: View {
         }
     }
 
-    /// ナビ中央の接続状態サマリ。ready 数を主に見せる(例「2 接続」)。0 なら「未接続」。
-    private var connectionSummary: String {
-        let ready = home.connections.readyConnections.count
-        let enabled = registry.servers.filter { $0.enabled }.count
-        if ready == 0 {
-            return enabled == 0 ? "サーバーなし" : "接続中…"
+    // MARK: - 異常サマリ(旧 connectionSummary の置き換え)
+
+    /// ナビ中央に出す警告行の中身。**異常が無ければ生成されない**(= 平時はヘッダーに何も足さない)。
+    ///
+    /// 旧 `connectionSummary`(「2/2 接続」)はここに畳んだ。正常系の数字を出すのをやめ、
+    /// 「ユーザーが手を打たないとツールが使えないままになる」状況だけを表に出す責務に作り替えている
+    /// (撤去理由の全文は titleAndModel のコメント)。
+    private struct AttentionBanner {
+        let symbol: String              // SF Symbol。色を落としても「形」だけで平時と区別できるものを選ぶ。
+        let tint: Color                 // 色は「補助」。これを外しても symbol の形状で意味が通ること。
+        let accessibilityLabel: String  // VoiceOver 用。状況 + 次の操作まで言い切る。
+        // 【ボツ: `text` フィールド(画面に出す短文「n 件 未認証」等)】初版は symbol と並べて
+        // ナビに出していたが、ユーザーの実機フィードバック「スペース的にアイコンとテキストは厳しい」で
+        // 撤去。ナビ中央 ~200pt にモデル名と併置すると破綻する。件数・種別の言語表現は
+        // accessibilityLabel に集約し、視覚的な内訳は Menu を開いた先(serverMenuRow)で読ませる。
+    }
+
+    /// 現在の接続状態から警告行を組み立てる。nil = 出さない(正常 or 接続中)。
+    private var attentionBanner: AttentionBanner? {
+        let enabled = registry.servers.filter { $0.enabled }
+        // 【ここは黙ってはいけない例外】有効なサーバーが1件も無いとツールが一切使えないが、
+        // LLM は「そんなツールはありません」とだけ答えるのでユーザーには理由が分からない
+        // = サイレント故障。NN/g の「黙ってよいのは異常が確実に届く経路がある場合だけ」に反するので、
+        // これだけは異常(needsAuth/failed)が 0 件でも案内を出す。旧実装の enabled==0 →
+        // 「サーバーなし」分岐の趣旨を引き継いだもの。
+        if enabled.isEmpty {
+            return AttentionBanner(
+                symbol: "exclamationmark.triangle.fill",
+                tint: .orange,
+                accessibilityLabel: "MCP サーバーが登録されていません。タップして設定を開く"
+            )
         }
-        return "\(ready)/\(enabled) 接続"
+        // needsAuth / failed を数える。connecting・disconnected は数えない(前者は過程、後者は
+        // 有効サーバーなら起動時に必ず connecting へ遷移する通過点で、どちらも手を打つ対象ではない)。
+        var needsAuth = 0
+        var failed = 0
+        for entry in enabled {
+            switch home.connections.state(for: entry.id) {
+            case .needsAuth: needsAuth += 1
+            case .failed: failed += 1
+            case .ready, .connecting, .disconnected: break
+            }
+        }
+        let total = needsAuth + failed
+        guard total > 0 else { return nil }  // 平時はここで nil = ヘッダーは モデル名のみ。
+        // 語彙は Claude Code の MCP 一覧(要認証 / 接続失敗)に寄せ、Menu 側の serverMenuRow と
+        // 同じ言葉にする。混在時は原因を1語で言えないので「要対応」に丸める
+        // (内訳は Menu を開けば1行ずつ読める — ヘッダーで説明しきろうとしない)。
+        // ここで作るのは**読み上げ専用**の文言。画面には出ない(アイコンのみ)。
+        let voice: String
+        if failed == 0 {
+            voice = "\(total) 件のサーバーが要認証。タップして一覧を開く"
+        } else if needsAuth == 0 {
+            voice = "\(total) 件のサーバーが接続失敗。タップして一覧を開く"
+        } else {
+            voice = "\(total) 件のサーバーが要対応。タップして一覧を開く"
+        }
+        return AttentionBanner(
+            symbol: "exclamationmark.triangle.fill",
+            tint: .orange,
+            accessibilityLabel: voice
+        )
     }
 }
 
