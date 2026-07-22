@@ -40,6 +40,31 @@ private actor RecordingExecutor: MCPToolExecuting {
         #expect(otherCalls.isEmpty)
     }
 
+    @Test("既定はlegacy互換で明示routeが無くてもslug前置名を解釈する")
+    func defaultPolicyKeepsLegacyParsingFallback() async throws {
+        let recorder = RecordingExecutor(returnValue: .string("legacy"))
+        let exec = MultiServerToolExecutor(executors: ["caldav": recorder])
+
+        #expect(try await exec.callTool(name: "caldav__list-todos", arguments: nil) == .string("legacy"))
+        #expect(await recorder.recorded().first?.name == "list-todos")
+    }
+
+    @Test("strictでは広告routeに無いapp-only相当の前置名を推測しても実行しない")
+    func strictPolicyRejectsUnadvertisedPrefixedName() async {
+        let recorder = RecordingExecutor(returnValue: .null)
+        let advertised = ToolNamespacing.route(slug: "caldav", tool: "list-todos")
+        let exec = MultiServerToolExecutor(
+            executors: ["caldav": recorder],
+            routes: [advertised],
+            routePolicy: .explicitRoutesOnly
+        )
+
+        await #expect(throws: MultiServerToolError.self) {
+            try await exec.callTool(name: "caldav__refresh-todos", arguments: nil)
+        }
+        #expect(await recorder.recorded().isEmpty)
+    }
+
     @Test("前置のない名前は unknownPrefix で throw する")
     func throwsOnUnprefixed() async {
         let exec = MultiServerToolExecutor(executors: ["caldav": RecordingExecutor(returnValue: .null)])

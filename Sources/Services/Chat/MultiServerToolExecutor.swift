@@ -17,15 +17,32 @@ import Kernel
 /// 握るだけ(接続の増減は「次の新規チャットで新しい MultiServerToolExecutor を組む」方針なので、
 /// この executor 自身は不変でよい — 途中差し替えをしない設計・タスク指示 §3)。
 public struct MultiServerToolExecutor: MCPToolExecuting {
+    /// route 表に無い wire 名をどう扱うか。
+    ///
+    /// `legacyParsingFallback` は、この型へ routes が追加される前から存在した
+    /// `slug__tool` の直接解釈を残す互換モードである。一方、新規チャットでは LLM に広告した
+    /// tool 集合だけを実行可能にしなければ、モデルが app-only tool 名を推測して呼べてしまう。
+    /// その境界では `explicitRoutesOnly` を必ず指定する。
+    public enum RoutePolicy: Sendable, Equatable {
+        case legacyParsingFallback
+        case explicitRoutesOnly
+    }
+
     /// slug → 実行口。テスト差し替えのため `any MCPToolExecuting`(本番は AppsServerProxy)。
     private let executors: [String: any MCPToolExecuting]
     /// 短縮済み wire 名を元の `(slug, tool)` へ戻す表。短い従来名も含めてよい。
     private let routes: [String: ToolRoute]
     /// 同一 wire 名が異なる route を指した場合は、辞書の後勝ちにせず実行時に明示拒否する。
     private let ambiguousWireNames: Set<String>
+    private let routePolicy: RoutePolicy
 
-    public init(executors: [String: any MCPToolExecuting], routes: [ToolRoute] = []) {
+    public init(
+        executors: [String: any MCPToolExecuting],
+        routes: [ToolRoute] = [],
+        routePolicy: RoutePolicy = .legacyParsingFallback
+    ) {
         self.executors = executors
+        self.routePolicy = routePolicy
         var indexed: [String: ToolRoute] = [:]
         var ambiguous = Set<String>()
         for route in routes {
@@ -52,10 +69,13 @@ public struct MultiServerToolExecutor: MCPToolExecuting {
         let resolved: (slug: String, tool: String)
         if let route = routes[name] {
             resolved = (route.slug, route.toolName)
-        } else if let parsed = ToolNamespacing.parse(prefixed: name) {
+        } else if routePolicy == .legacyParsingFallback,
+                  let parsed = ToolNamespacing.parse(prefixed: name) {
             resolved = parsed
         } else {
-            throw MultiServerToolError.unknownPrefix(name)
+            throw routePolicy == .explicitRoutesOnly
+                ? MultiServerToolError.unadvertisedTool(name)
+                : MultiServerToolError.unknownPrefix(name)
         }
         let (slug, tool) = resolved
         guard let executor = executors[slug] else {
@@ -71,6 +91,7 @@ public enum MultiServerToolError: Error, CustomStringConvertible {
     case unknownPrefix(String)
     case unknownServer(slug: String, name: String)
     case ambiguousRoute(String)
+    case unadvertisedTool(String)
 
     public var description: String {
         switch self {
@@ -80,6 +101,8 @@ public enum MultiServerToolError: Error, CustomStringConvertible {
             return "ツール \(name) の接続先サーバー(\(slug))は現在接続されていません。"
         case let .ambiguousRoute(name):
             return "ツール名 \(name) は複数の接続先に対応しているため安全に実行できません。"
+        case let .unadvertisedTool(name):
+            return "ツール \(name) はこのチャットへ広告されていないため実行できません。"
         }
     }
 }

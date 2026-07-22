@@ -52,6 +52,32 @@ import MCP
         }
     }
 
+    // モデル経路をstrictに閉じても、カード内部の tools/call は AppsServerProxy の app visibility
+    // を正として独立に動く。明示 app-only が model 非公開であることを理由に拒否してはならない。
+    @Test func app専用ツールはカード内部のvisibility判定を通過する() async {
+        let proxy = makeProxy()
+        let appOnlyTool = Tool(
+            name: "refresh-todos",
+            description: "card internal refresh",
+            inputSchema: .object([:]),
+            _meta: Metadata(additionalFields: [
+                "ui": .object(["visibility": .array([.string("app")])])
+            ]))
+        await proxy.setTools([appOnlyTool])
+
+        let params: JSONValue = ["name": "refresh-todos", "arguments": [:]]
+        do {
+            _ = try await proxy.passthroughToolsCall(params: params)
+            Issue.record("接続していない Client への callTool は成功しないはず")
+        } catch let error as AppsServerProxyError {
+            if case .toolNotAppCallable = error {
+                Issue.record("app-only tool はカード内部から呼べるはず: \(error)")
+            }
+        } catch {
+            // Client 未接続による例外は、app visibility gate を通過した証拠になる。
+        }
+    }
+
     // 一覧に無い名前は(visibility を根拠にした)拒否をしない。この分岐は Client の実行結果を
     // 問わないので、toolNotAppCallable **ではない**理由で失敗することだけを確認する。
     @Test func 一覧に無い名前はvisibilityでは拒否しない() async {

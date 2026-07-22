@@ -110,10 +110,7 @@ public final class ChatHomeViewModel {
         var uiMap: [String: String] = [:]
         var urls: [URL] = []
         var toolRoutes: [ToolRoute] = []
-        var serverNames: [String: String] = [:]
-        var originalToolNames: [String: String] = [:]
-        var indexedRoutes: [String: ToolRoute] = [:]
-        var ambiguousWireNames = Set<String>()
+        var routeServerNames: [ToolRoute: String] = [:]
         for readyConnection in ready {
             executors[readyConnection.slug] = readyConnection.proxy
             slugProxies[readyConnection.slug] = readyConnection.proxy
@@ -125,26 +122,35 @@ public final class ChatHomeViewModel {
             }
             toolRoutes.append(contentsOf: routes)
             for route in routes {
-                if let existing = indexedRoutes[route.wireName], existing != route {
-                    indexedRoutes.removeValue(forKey: route.wireName)
-                    serverNames.removeValue(forKey: route.wireName)
-                    originalToolNames.removeValue(forKey: route.wireName)
-                    ambiguousWireNames.insert(route.wireName)
-                } else if !ambiguousWireNames.contains(route.wireName) {
-                    indexedRoutes[route.wireName] = route
-                    serverNames[route.wireName] = readyConnection.name
-                    originalToolNames[route.wireName] = route.toolName
-                }
+                routeServerNames[route] = readyConnection.name
             }
         }
+        // LLM 定義を正として、executor route とカード帰属も同じ集合へ閉じる。
+        // app-only tool は readyConnection.tools / AppsServerProxy には残るため、カード内部の
+        // tools/call は引き続き app visibility に従って呼べるが、通常チャットからは実行不能になる。
+        let surface = strictModelToolRoutingSurface(
+            toolDefinitions: toolDefs,
+            routes: toolRoutes,
+            uiResourceURIs: uiMap
+        )
+        let serverNames = Dictionary(uniqueKeysWithValues: surface.routes.compactMap { route in
+            routeServerNames[route].map { (route.wireName, $0) }
+        })
+        let originalToolNames = Dictionary(uniqueKeysWithValues: surface.routes.map {
+            ($0.wireName, $0.toolName)
+        })
         return ChatContext(
-            executor: MultiServerToolExecutor(executors: executors, routes: toolRoutes),
-            toolDefs: toolDefs,
-            uiResourceURIs: uiMap,
+            executor: MultiServerToolExecutor(
+                executors: executors,
+                routes: surface.routes,
+                routePolicy: .explicitRoutesOnly
+            ),
+            toolDefs: surface.toolDefinitions,
+            uiResourceURIs: surface.uiResourceURIs,
             serverURL: urls.first ?? ChatViewModel.placeholderServerURL,
             serverURLs: urls,
             slugProxies: slugProxies,
-            toolRoutes: toolRoutes,
+            toolRoutes: surface.routes,
             serverNames: serverNames,
             originalToolNames: originalToolNames
         )
@@ -219,15 +225,10 @@ public final class ChatHomeViewModel {
     /// ChatBodyView → InlineCardView がカード構築時にこれで proxy を選ぶ(tools/call・resources/read が
     /// 由来サーバーへ流れる・タスク指示 §4)。未知の prefix / 切断済みサーバーは nil(カードは描画されない)。
     public func cardProxy(forToolName name: String) -> AppsServerProxy? {
-        let slug: String
-        if let route = currentToolRoutes[name] {
-            slug = route.slug
-        } else if let parsed = ToolNamespacing.parse(prefixed: name) {
-            slug = parsed.slug
-        } else {
-            return nil
-        }
-        return currentSlugProxies[slug]
+        // 通常チャットのカード帰属も executor と同じ広告済みrouteだけを正とする。
+        // `slug__tool` の推測 fallback は app-only tool を再び表へ出すため、ここでは行わない。
+        guard let route = currentToolRoutes[name] else { return nil }
+        return currentSlugProxies[route.slug]
     }
 
     // MARK: - 新規チャット

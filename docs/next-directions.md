@@ -134,7 +134,8 @@
 - [ ] composer側のtool pickerを設計し、server/tool単位の有効化と状態表示を集約する。
   > **2026-07-23 設計案:** [`docs/design/06-composer-tool-picker.md`](design/06-composer-tool-picker.md)。
   > 永続「自動接続」とchat単位「このチャットで使用」を分離し、最初の送信でfreezeする案を推奨。
-  > UXの4選択はユーザー合意待ち。監査で見つけたapp-only toolのmodel executor迂回は独立HIGHとして先に修正する。
+  > UXの4選択はユーザー合意待ち。監査で見つけたapp-only toolのmodel executor迂回は独立HIGHとして修正済み。
+  > 広告定義・明示route・カード帰属を同一集合へ閉じ、ChatHomeでは未広告名のparse fallbackを拒否する。
 - [ ] reasoning表示、宣言型network permission、geolocationは将来sliceとして維持する。
 
 ## 5. caldavと連携する次slice

@@ -812,3 +812,13 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   definitions/routes/attributionを原子的生成する案を`docs/design/06-composer-tool-picker.md`へ整理した。
   監査中、modelへ非広告のapp-only toolも名前を推測すればexecutorが実行できるHIGH不整合を発見。
   picker UIの合意を待たず、広告集合と実行許可集合をfail-closedで一致させる修正を先行する。
+
+## 2026-07-23: model-visible tool境界をfail-closed化
+
+- ChatHomeのLLM広告定義、executorの明示route、カード帰属を同じwire-name集合へ正規化した。
+  route欠落・同一wire名の衝突は広告前に除外し、ChatHomeのexecutorとcard proxyから
+  `slug__tool`推測fallbackを除いた。これによりapp-only toolは通常チャットから推測実行できない。
+- `AppsServerProxy`のカード内部経路は分離したままなので、app-only `tools/call`は従来どおり利用できる。
+  汎用executorの既定legacy fallbackは保存済み利用者との互換用に維持し、ChatHomeだけstrict policyを指定する。
+- ready connectionはregistry登録順へ安定化。`make check`は201 tests / 21 suites、
+  SwiftFormat 0/119、SwiftLint 0/118、`make app`もgreen。

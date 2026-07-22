@@ -1,7 +1,7 @@
 # Composer tool picker（提案・未合意）
 
 > **状態:** 2026-07-23 read-only監査を反映した設計案。UI方針はユーザー合意前であり、未実装。
-> 接続securityの前提（広告したtoolだけmodel executorが実行可能）は本UIと独立して先に修正する。
+> 接続securityの前提（広告したtoolだけmodel executorが実行可能）は本UIと独立して修正済み。
 
 ## 1. 分ける状態
 
@@ -19,7 +19,7 @@
 3. `uiResourceURIs`とcard attribution
 4. 実行時server表示名・元tool名
 
-広告していないtoolはexecutorでも拒否する。`app` visibilityだけのtoolはmodel選択対象にせず、
+広告していないtoolはexecutorでも拒否する（2026-07-23実装済み）。`app` visibilityだけのtoolはmodel選択対象にせず、
 既存カード内部の`AppsServerProxy`経由では引き続き実行可能にする。
 
 最初の送信後に選択を変える場合は、実行中chatを差し替えず「この選択で新しいチャット」を確認する。
@@ -67,4 +67,3 @@ sheet: ツール                               [完了]
 - 純関数test: default all、server OFF→ONで子選択復元、model/app visibility、新規/消滅tool、0件。
 - 統合test: `definitions == executor allowed routes == attribution keys`、unadvertised tool拒否、
   app-only card call維持、空chatだけ再構成可能、旧履歴decode互換。
-

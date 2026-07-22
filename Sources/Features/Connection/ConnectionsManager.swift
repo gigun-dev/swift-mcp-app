@@ -66,6 +66,8 @@ public final class ConnectionsManager {
     private var connectingIdentities: [UUID: MCPConnectionIdentity] = [:]
     /// serverID → 割り当て済み slug(決定的・登録順で採番)。前置名・逆引きの鍵。
     private var slugByServer: [UUID: String] = [:]
+    /// Dictionary の反復順へ依存せず、registry.servers の順で ready snapshot を返すための位置表。
+    private var registryOrder: [UUID: Int] = [:]
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "connections")
 
@@ -76,9 +78,15 @@ public final class ConnectionsManager {
         states[id] ?? .disconnected
     }
 
-    /// いま ready な接続の一覧(登録順は保証しない — 呼び出し側が必要なら並べ替える)。
+    /// いま ready な接続の一覧。直近に渡された registry.servers の登録順で安定して返す。
     public var readyConnections: [ReadyConnection] {
-        states.values.compactMap { if case .ready(let connection) = $0 { return connection } else { return nil } }
+        states.values
+            .compactMap { if case .ready(let connection) = $0 { return connection } else { return nil } }
+            .sorted {
+                let lhs = registryOrder[$0.serverID] ?? .max
+                let rhs = registryOrder[$1.serverID] ?? .max
+                return lhs == rhs ? $0.serverID.uuidString < $1.serverID.uuidString : lhs < rhs
+            }
     }
 
     // MARK: - slug 採番
@@ -88,6 +96,7 @@ public final class ConnectionsManager {
     /// slug 自体は表示・サーバー識別にも使うため32文字に抑える。ツール名との合成結果が64文字を
     /// 超える場合は ToolNamespacing.wireName が決定的に短縮するので、ツール長への仮定は置かない。
     private func reassignSlugs(_ servers: [MCPServerEntry]) {
+        registryOrder = Dictionary(uniqueKeysWithValues: servers.enumerated().map { ($0.element.id, $0.offset) })
         var used = Set<String>()
         var map: [UUID: String] = [:]
         for entry in servers {
