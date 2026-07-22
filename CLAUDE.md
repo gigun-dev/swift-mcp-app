@@ -49,6 +49,9 @@ ext-apps のホスト SDK も TypeScript のみ — 「ホスト側を Swift で
   静的解析だけを再実行するときは`make lint`(SwiftFormat lint + SwiftLint strict)を使い、
   既存違反もbaselineで隠さない。clone直後は`make hooks`でtrackedな`.githooks`を有効化し、通常の
   main pushで`make verify`を実行する。意図的な非常時だけGit標準の`git push --no-verify`で迂回できる。
+  複数Simulatorを使う検証では`make run SIMULATOR_UDID=<UDID>`で専用端末を固定し、build・install・
+  launchの配送先を揃える。名前指定は一意に解決できる場合だけ許可する。generic buildだけの
+  `make app`は無署名、Keychain永続化を検証する`make run`はSimulator標準のad-hoc署名を使う。
   (CI 導入は提出形態が固まってから)。
 
 ## 開発プロセス(caldav から移植した規律)

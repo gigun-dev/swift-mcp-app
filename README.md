@@ -41,3 +41,7 @@
 - `make verify` = `make check` + `make app`（push前の最終ゲート）
 - `make hooks` = trackedな`.githooks`を有効化。通常のmain pushだけ`make verify`を実行する
   （意図的に回避するときはGit標準の`git push --no-verify`）
+- `make run SIMULATOR_UDID=<UDID>` = 指定したSimulatorだけへbuild・install・launchする。
+  `SIMULATOR_UDID`未指定時は`SIMULATOR="iPhone 17"`のような名前指定も使えるが、同名端末が
+  複数あれば誤配送を避けるため候補UDIDを表示して停止する。`make app`はgeneric build用に無署名、
+  `make run`はKeychainを使えるSimulator標準のad-hoc署名で用途を分けている

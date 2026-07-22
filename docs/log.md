@@ -699,3 +699,28 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   座標fallbackで解決したため、hybrid採用時もidb fallbackを残す根拠になった。
 - 外部`codex exec`へrepo文脈を渡すD blindは安全審査で停止。専用Simulator操作の承認とは分け、
   外部送信経路の明示承認が得られるまで正式scoreを付けない。
+
+## 2026-07-23: `make run`の配送先を専用Simulator UDIDへ固定
+
+- `make run SIMULATOR_UDID=<UDID>`を追加し、xcodebuildのdestination、simctlのboot/install/launchを
+  すべて同じUDIDへ固定した。複数の評価用Simulatorを並行利用しても日常用端末へ誤配送しない。
+- 従来の`SIMULATOR="iPhone 17"`による名前指定は後方互換として維持。ただしavailableな同名端末が
+  複数なら先頭を黙って選ばず、候補UDIDを表示して明示指定を要求する。
+- 初回の実走でOAuth token保存が`-34018`（missing entitlement）になり、再起動後は再認証を要求した。
+  原因はrunにもgeneric build用の`CODE_SIGNING_ALLOWED=NO`を流用していたこと。`make app`の無署名
+  generic buildは維持し、installしてKeychain永続化まで試す`make run`だけ`CODE_SIGNING_ALLOWED=YES`
+  （Simulator標準のidentity `-`によるad-hoc署名）へ分離した。
+- 専用Simulator Dへ署名済みappを実installし、caldav OAuthへfixture `changeme`で再接続した。
+  OAuth後のログに`-34018`はなく、terminate/relaunch後はbrowserを出さずtdr-concierge（3 tools）と
+  caldav（23 tools）がともに`無言接続 成功`。envでLLM keyを再注入後、caldav
+  `get-current-time`のtool callも成功し、O-01のmain独立再実行を完走した。
+
+## 2026-07-23: 実MCP Appでdrawer横gesture回帰を確認
+
+- 通常チャットからcaldav `list-todos`を呼び、`resources/read`で約507 KBの実todos Appを表示した。
+  カード中央（110,500→350,500pt）の横swipe前後でscreenshot SHA-256
+  `6c03eeb29c883a6c8e7733e5d3f96e0e56780435f4891ff0779bc99c0ebb6913`が一致し、drawerは不動。
+  左端（5,500→220,500pt）からのswipeだけdrawerが開き、edge限定gestureの回帰がないことも確認した。
+- 追加したtdr-conciergeは接続済みとなり、通常チャットから`park_waits`を実呼出しできた。閉園時間帯の
+  応答は全件休止中の一覧で、ユーザー画像にある履歴グラフは再現しなかったため、グラフ固有のtooltip操作は
+  未確認として残す。確認できていないものを別toolの推測呼出しで成功扱いにはしない。

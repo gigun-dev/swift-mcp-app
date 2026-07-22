@@ -1,6 +1,6 @@
 # iOS エージェントハーネス正式評価
 
-> **状態:** Phase 0完了・Codex AのH-01/K-01完走・Dのlocal capability probe完走
+> **状態:** Phase 0完了・Codex AのH-01/K-01完走・Dのlocal probeとmain O-01完走
 > **正典の範囲:** Claude Code / Codex から `swift-mcp-app` を build・操作・E2E 検証する
 > plugin / skill / MCP / CLI の比較と採否。製品ロードマップ自体は `docs/next-directions.md` を正とする。
 > **更新方法:** 結果を上書きせず、各試験のチェックボックスと結果表を更新する。生の経緯は
@@ -183,6 +183,9 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
   > **2026-07-23 更新:** Aは合格。Dはmain sessionからlocal MCPへ直結したcapability probeでは合格したが、
   > 外部`codex exec`によるblind実行はrepo文脈の外部送信を伴うため、ユーザーの明示承認待ち。
 - [ ] O-01をA/B/Dで各2回実行する。
+  > **2026-07-23 更新:** 正式blind比較とは別にmainがDを独立再実行。署名済みappで`changeme`入力、
+  > callback、caldav 23 tools、`get-current-time`成功、terminate/relaunch後のbrowserなし無言接続まで
+  > 完走した。初回に発見した無署名runのKeychain `-34018`は`make run`だけad-hoc署名へ戻して解消。
 - [ ] W-01をA/B/Dで各2回実行する。
 - [ ] L-01とM-01をA/B/Dで各1回実行する。
 - [ ] Bの失敗が依存version由来の場合だけCで該当試験を再実行する。

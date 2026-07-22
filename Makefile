@@ -140,25 +140,50 @@ verify: check app
 # **空文字も「値がある」と見なす**。未設定の変数をそのまま渡すと空文字が勝って
 # Keychain 保存済みの鍵が無視される。よって値が空のものは export しない。
 # export 経由にしているのは、コマンドライン引数だと ps で鍵が覗けてしまうため。
+#
+# 【runだけ署名を有効にする理由】build成立だけを見る`make app`はgeneric destinationかつ
+# CODE_SIGNING_ALLOWED=NOのままでよい。一方runはOAuth token/API keyをKeychainへ保存して
+# 再起動後も使うE2E経路で、無署名appはSecItemUpdate/Addが-34018(missing entitlement)になる。
+# Simulator標準のad-hoc署名(identity `-`)にapplication-identifierを生成させるため、runでは
+# CODE_SIGNING_ALLOWED=YESを明示する。実機用provisioning profileを要求する設定ではない。
 SIMULATOR ?= iPhone 17
+# 複数の同名Simulatorを使う検証では名前解決に頼らず、専用端末のUDIDを明示する。
+# 未指定時はSIMULATOR名を後方互換として使うが、一意に決まらなければ安全側に倒して停止する。
+SIMULATOR_UDID ?=
 BUNDLE_ID := dev.gigun.mcphost
 DERIVED := .build/xcode
 
 .PHONY: run
 run: gen
+	@set -e; \
+	TARGET_UDID='$(SIMULATOR_UDID)'; \
+	if [ -n "$$TARGET_UDID" ]; then \
+		if ! xcrun simctl list devices available | grep -F "($$TARGET_UDID)" >/dev/null; then \
+			echo "!! availableなSimulator UDID '$$TARGET_UDID' が見つかりません" >&2; exit 1; \
+		fi; \
+	else \
+		CANDIDATES="$$(xcrun simctl list devices available | awk -v target='$(SIMULATOR)' '{ \
+			line=$$0; sub(/^[[:space:]]*/, "", line); \
+			if (index(line, target " (") == 1) { rest=substr(line, length(target) + 3); split(rest, fields, ")"); print fields[1] } \
+		}')"; \
+		COUNT="$$(printf '%s\n' "$$CANDIDATES" | awk 'NF { count++ } END { print count + 0 }')"; \
+		if [ "$$COUNT" -eq 0 ]; then \
+			echo "!! Simulator '$(SIMULATOR)' が見つかりません" >&2; exit 1; \
+		elif [ "$$COUNT" -gt 1 ]; then \
+			echo "!! Simulator '$(SIMULATOR)' が複数あります。誤配送を防ぐためSIMULATOR_UDIDを指定してください:" >&2; \
+			printf '   %s\n' $$CANDIDATES >&2; exit 1; \
+		fi; \
+		TARGET_UDID="$$CANDIDATES"; \
+	fi; \
+	echo "==> Simulator UDID: $$TARGET_UDID"; \
 	xcodebuild build \
 		-project MCPHost.xcodeproj \
 		-scheme MCPHost \
-		-destination 'platform=iOS Simulator,name=$(SIMULATOR)' \
+		-destination "platform=iOS Simulator,id=$$TARGET_UDID" \
 		-derivedDataPath $(DERIVED) \
-		CODE_SIGNING_ALLOWED=NO
-	@SIMULATOR_UDID="$$(xcrun simctl list devices available | awk -v target='$(SIMULATOR)' '{ \
-		line=$$0; sub(/^[[:space:]]*/, "", line); \
-		if (index(line, target " (") == 1) { rest=substr(line, length(target) + 3); split(rest, fields, ")"); print fields[1]; exit } \
-	}')"; \
-	if [ -z "$$SIMULATOR_UDID" ]; then echo "!! Simulator '$(SIMULATOR)' が見つかりません" >&2; exit 1; fi; \
-	xcrun simctl boot "$$SIMULATOR_UDID" 2>/dev/null || true; \
-	xcrun simctl install "$$SIMULATOR_UDID" $(DERIVED)/Build/Products/Debug-iphonesimulator/MCPHost.app; \
+		CODE_SIGNING_ALLOWED=YES; \
+	xcrun simctl boot "$$TARGET_UDID" 2>/dev/null || true; \
+	xcrun simctl install "$$TARGET_UDID" $(DERIVED)/Build/Products/Debug-iphonesimulator/MCPHost.app; \
 	if command -v direnv >/dev/null 2>&1; then RUNNER="direnv exec ."; \
 	else echo "==> direnv が無いので鍵を渡せません（アプリは設定画面の Keychain 値で動きます）"; RUNNER="env"; fi; \
 	$$RUNNER sh -c '\
@@ -166,7 +191,7 @@ run: gen
 		eval "val=\$$$$v"; \
 		if [ -n "$$val" ]; then export "SIMCTL_CHILD_$$v=$$val"; fi; \
 	done; \
-	xcrun simctl launch --terminate-running-process "$$1" $(BUNDLE_ID)' sh "$$SIMULATOR_UDID"
+	xcrun simctl launch --terminate-running-process "$$1" $(BUNDLE_ID)' sh "$$TARGET_UDID"
 
 # 実機ビルド(自動署名・Team は project.yml の DEVELOPMENT_TEAM)。
 # インストール・起動まで含めた実機デプロイは ios-device-build スキルの

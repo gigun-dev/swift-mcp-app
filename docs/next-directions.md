@@ -50,6 +50,8 @@
 - [x] ~~MCP Appの横操作とhost drawerの全画面swipe競合を解消する。~~ ✅
   > **2026-07-23 更新:** drawer-openをleading edge 24ptに限定。履歴閲覧中は無効化し、
   > WKWebView中央の横操作をhost gesture認識領域から外した。
+  > **2026-07-23 実カード確認:** caldav todosカード中央の横swipe前後でscreenshot SHA-256が一致し、
+  > 左端swipeだけdrawerが開いた。tdr-concierge `park_waits`も通常チャットから実呼出しできた。
 - [ ] Simulatorでdirtyが触る主要経路を実操作し、semantic tree・画面・unified logで裏取りする。
 - [ ] docsと実装の事実が一致した時点で、変更を意図単位のcommitへ分割する。
 
@@ -61,12 +63,18 @@
 - [x] ~~Phase 0: 固定commit、隔離config、専用Simulator、caldav test fixture、成果物保存先を用意する。~~ ✅
   > **2026-07-23 更新:** `9d2c168` / clean、A〜D専用iPhone 17、test fixture `changeme`、
   > `/private/tmp/swift-mcp-app-ios-harness-9d2c168`を固定した。
+- [x] ~~`make run`のbuild/install/launchを専用Simulator UDIDへ一貫して固定できるようにする。~~ ✅
+  > **2026-07-23 更新:** `SIMULATOR_UDID`を明示できるようにし、名前指定が同名端末へ複数一致する
+  > 場合は候補UDIDを表示して停止する。専用Simulator評価で日常用端末への誤配送を防ぐ。
+  > 実走で無署名runがKeychain `-34018`を起こすことも確認し、runだけad-hoc署名へ戻した。
 - [x] ~~現行A / hybrid DのMCP schema量とskill context量を同じ方法で採取する。~~ ✅
   > Dは36 tools / 225,990 bytes。stock Bのunpinned `@latest`は先行実行せず、差分診断時だけB/Cを扱う。
 - [ ] `fork_turns=none`のsubagentへ同一promptを渡し、H-01/K-01/O-01/W-01/L-01/M-01をblind比較する。
   > **2026-07-23 更新:** AのH-01/K-01は合格。Dはlocal capability probeでK-01合格だが、正式blindは
   > repo文脈を外部`codex exec`へ送る経路の明示承認待ち。D担当subagentのCLI fallback結果は採点しない。
-- [ ] OAuth O-01でagentが`changeme`を入力し、callback→tool call→再起動後の無言接続まで完走する。
+- [x] ~~OAuth O-01でagentが`changeme`を入力し、callback→tool call→再起動後の無言接続まで完走する。~~ ✅
+  > **2026-07-23 main独立再実行:** Dでcallback、`get-current-time`成功、terminate/relaunch後の
+  > browserなし無言接続（caldav 23 tools）を確認。正式blind各構成2回の比較gateは別途継続する。
 - [ ] keyboard試験でASCII、日本語、backspace、全選択/置換を確認する。
 - [ ] WKWebView試験で実カード内操作、tools/call往復、fullscreen、JS状態保持を確認する。
 - [ ] main sessionがraw traceを採点し、採用候補のO-01/W-01を独立再実行する。
