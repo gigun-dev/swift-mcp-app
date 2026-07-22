@@ -724,3 +724,23 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 追加したtdr-conciergeは接続済みとなり、通常チャットから`park_waits`を実呼出しできた。閉園時間帯の
   応答は全件休止中の一覧で、ユーザー画像にある履歴グラフは再現しなかったため、グラフ固有のtooltip操作は
   未確認として残す。確認できていないものを別toolの推測呼出しで成功扱いにはしない。
+
+## 2026-07-23: 1チャット内の複数MCP server振り分けを実E2E
+
+- 専用Simulator Dの同一ターンでcaldav `get-current-time`とtdr-concierge `park_waits`を要求した。
+  UIには`caldav · get-current-time`、`tdr-concierge · park_waits`の順に2つの成功stepが表示され、
+  日本時間とDisneySea待ち時間を統合した最終応答まで完走。合成tool名が正しいexecutorへ戻ることを確認した。
+- 続けてtdr-conciergeのserver toggleをOFFにし、次のnew chatで`park_hours`を明示要求した。tdrの
+  tool stepは生成されず、LLMは利用可能なtoolがないと応答。new chat生成時のtool一覧へ無効状態が反映された。
+  検証後はtdr-conciergeをONへ復元した。
+
+## 2026-07-23: fullscreenを編集セッションの器として定義しcapability gateを修正
+
+- 汎用hostはtap、focus、`tools/call`から編集意図を推測して自動fullscreen化しない。done、undo、
+  単純toggleはinlineに残し、rename、新規作成、複数field form、一括編集はカードが編集セッションへ
+  入る直前に`ui/request-display-mode(fullscreen)`を要求する。拒否時はinline fallbackを維持する。
+- 監査で、カード発要求がViewの`appCapabilities.availableDisplayModes`を確認せずFeatures callbackへ
+  到達する経路を発見。initialize前、未設定、明示リストを区別し、明示リストにfullscreenが無い場合は
+  callbackを呼ばず現在のinlineを返すよう修正した。未設定はapps.mdx:786の`if set`に従い旧View互換を維持。
+- 正規宣言あり、明示的なfullscreenなし、未設定互換の3経路をtestで固定。設計docの旧`.sheet`前提も、
+  現行`fullScreenCover`＋ホスト管理の縮小stripへ更新した。

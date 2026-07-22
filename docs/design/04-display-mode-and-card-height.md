@@ -119,7 +119,7 @@ Sources/
 | availableDisplayModes | `[inline]` | `[inline, fullscreen]`(pip は当面出さない) |
 | ui/request-display-mode | -32601 | typed レーンで受理 → Features へ委譲 → `result.mode` 応答(apps.mdx:787 の MUST) |
 | モード遷移通知 | なし | host-context-changed に `displayMode` + 新 containerDimensions(apps.mdx:776) |
-| fullscreen の器 | なし | SwiftUI `.sheet`(large detent)or `fullScreenCover` に同一 WKWebView を reparent |
+| fullscreen の器 | なし | SwiftUI `fullScreenCover` に同一 WKWebView を reparent |
 | caldav カード | hostContext 不読 | maxHeight を読み sticky ヘッダ + N 件畳み + 「すべて表示」→ requestDisplayMode |
 
 ## 2. 決定
@@ -139,23 +139,23 @@ Sources/
   つまり「max-content に無限追従」は spec の flexible 運用の**片側だけ**を実装した状態だった。
   4000 という番兵値は「maxHeight を実装していないことの代替」であり、本決定で廃止する。
 
-### 決定 2: fullscreen をホストの displayMode として実装し、昇格はカード発の `ui/request-display-mode` に限る
+### 決定 2: fullscreen をホストの displayModeとして実装し、自動昇格はカード発要求に限る
 
 - ホストは `availableDisplayModes: [.inline, .fullscreen]` を initialize の hostContext で広告
   (apps.mdx:768)。**ホスト側から勝手に fullscreen に切り替えることはしない** — :786 の
   「View の appCapabilities.availableDisplayModes に無いモードへ MUST NOT switch」があり、
   現行 caldav カードは appCapabilities を宣言していないため、昇格の起点は常にカード側の
-  requestDisplayMode(:772)。ホストは受理して sheet を出し、`result.mode` で実際のモードを返し
+  requestDisplayMode(:772)。ホストは受理してfullscreen coverを出し、`result.mode`で実際のモードを返し
   (:787 MUST — ユーザーが即閉じた等で昇格しなかった場合は "inline" を返してよい)、遷移確定後に
-  host-context-changed で `displayMode: "fullscreen"` + sheet 実寸の containerDimensions を通知(:776)。
-- **fullscreen の器は `.sheet` + `.presentationDetents([.large])`**(fullScreenCover ではなく)。
-  チャット文脈への「戻り」がスワイプで自然に効き、モーダル脱出の学習コストがゼロ。
+  host-context-changedで`displayMode: "fullscreen"` + cover実寸のcontainerDimensionsを通知(:776)。
+- **fullscreen の器は `fullScreenCover`**。カード最上部にホスト管理の縮小stripを置き、
+  カード内コンテンツやsafe areaと重ならない明示的な復帰導線にする。
   claude.ai の inline apps も「上限付き inline + 展開でフル表示」の文法で動いており、
-  ユーザーのメンタルモデルと一致する。sheet 却下時(スワイプで閉じる)は inline へ戻し、
+  ユーザーのメンタルモデルと一致する。ユーザーが縮小した時は inline へ戻し、
   host-context-changed で `displayMode: "inline"` + inline の containerDimensions を再通知する。
 - **同一 WKWebView を reparent する**(新規ロード禁止)。カードの状態(編集途中・楽観適用中の
   トグル)は WKWebView 内の JS 状態なので、作り直すと飛ぶ。InlineCardHost が webView を
-  強保持する既存設計(InlineCardView.swift:39-70)はそのまま使え、sheet は「host.webView を
+  強保持する既存設計(InlineCardView.swift:39-70)はそのまま使え、coverは「host.webView を
   別の場所に載せるだけ」。spec はホスト内部の実装(iframe/WebView の移設)には関知しない —
   spec 上の表現はあくまで host-context-changed による dimensions/displayMode の再通知である。
   > **2026-07-16 更新(reparent スパイクで JS 状態保持を実証・§6-1):** 同一 webView の載せ替えで
@@ -163,33 +163,45 @@ Sources/
   > AppCardView の「container 再アダプト方式」で実装する**: makeUIView は空の container UIView を
   > 返し、updateUIView が「host.webView が自分の container に載っていなければ addSubview + 制約張り直し」
   > をする(冪等)。これは inline-only 経路にも全面適用する — LazyVStack のスクロール往復(View
-  > 破棄→再生成)に対してもむしろ堅牢になる良性の波及で、Representable は inline/sheet 共通の 1 種で済む。
+  > 破棄→再生成)に対してもむしろ堅牢になる良性の波及で、Representableはinline/cover共通の1種で済む。
   > **【最重要・奪い合いガード】再アダプトは displayMode ガード付きにする**: inline 側 container は
-  > `host.displayMode == .inline` のときだけ adopt、sheet 側は `.fullscreen` のときだけ adopt する。
-  > これが無いと「sheet 表示中にチャットがスクロールして inline 行が再生成された瞬間、inline が
-  > sheet から webView を奪う」バグを踏む(スパイクの単純往復では露見しなかったシナリオ・§6)。
+  > `host.displayMode == .inline`のときだけadopt、cover側は`.fullscreen`のときだけadoptする。
+  > これが無いと「cover表示中にチャットがスクロールしてinline行が再生成された瞬間、inlineが
+  > coverからwebViewを奪う」バグを踏む(スパイクの単純往復では露見しなかったシナリオ・§6)。
   > displayMode を InlineCardHost の @Observable な単一の真実にすれば(§3 責務表)、View は
   > 「host.displayMode が自分のモードなら adopt」という純関数的振る舞いになり、このガードが自然に書ける。
   > dismiss 時の順序は **rehome(inline container へ)→ scrollEnabled=false → host-context-changed
   > (displayMode:inline + inline の containerDimensions)** に固定する(寸法通知が reparent より先だと
   > カードが旧寸法でレイアウトする)。
-- fullscreen 中は **カード側が内部スクロールを持つ**(§3)。コンテナが sheet 1 枚しかないので
+- fullscreen 中は **カード側が内部スクロールを持つ**(§3)。コンテナがcover 1枚しかないので
   二重スクロール問題は構造的に消滅する。ホスト側も fullscreen 中は
   `webView.scrollView.isScrollEnabled = true` に切り替える(inline へ戻すとき false へ)。
   ※現在 scrollEnabled は AppCardWebViewFactory.make の生成時引数(InlineCardView.swift:104-105)
   なので、動的切替の口を足す(要検証 — §6)。
-- **fullscreen 中は size-changed による `.frame` 追従を停止する**。sheet 中はカードが
-  `overflow-y:auto` で自己スクロールし寸法は sheet 固定なので、onSizeChanged の高さ反映は無視し、
+- **fullscreen 中は size-changed による `.frame` 追従を停止する**。cover中はカードが
+  `overflow-y:auto`で自己スクロールし寸法はcover固定なので、onSizeChangedの高さ反映は無視し、
   inline 復帰時に最後の値だけ反映する。
 
 ### 決定 2b: fullscreen は常に高々 1 カード(2026-07-16 追加)
 
-sheet は同時に 1 枚しか出せない。既に 1 カードが fullscreen 昇格中に別カードが
+fullscreen coverは同時に1枚しか出せない。既に1カードがfullscreen昇格中に別カードが
 `ui/request-display-mode` を投げたら、ホストは昇格させず `result.mode: "inline"` を返す
 (apps.mdx:787「モードを変えなかった場合も結果のモードを返す」に適合)。この調停(「今どのカードが
 fullscreen か」の単一状態)はカード横断の判断なので単一の InlineCardHost には置けず、
 **ChatBodyView 層(InlineCardRegistry の隣)**に置く。スパイクの単純往復では露見しなかった
 本番シナリオ(§6 の追加検証項目)。
+
+### 決定 2c: fullscreenは「変更操作」ではなく「編集セッション」の器とする(2026-07-23追加)
+
+- 汎用ホストはカード内のtap、focus、`tools/call`から編集意図を推測して自動昇格しない。
+  任意のMCP AppのDOMや操作意味論をホストが知ることは中立性に反し、chart pan、filter、tab切替等の
+  閲覧操作まで誤って昇格させるためである。自動昇格はカード発`ui/request-display-mode`に限る。
+  ユーザーがホストの明示的な最大化ボタンを押す経路は、Viewがfullscreen対応を宣言した場合だけ許可する。
+- カードはrename、新規作成、日時・場所入力、一括編集など、キーボード・複数step・広い作業領域を
+  必要とする編集セッションへ入る直前にfullscreenを要求する。ホストの`result.mode`が`inline`なら、
+  カードはinline fallbackで操作を継続できなければならない。
+- done、undo、単純toggle、favoriteのような1tap・即時・可逆な原子的変更はinlineに残す。
+  fullscreen中に操作したことを理由に自動でinlineへ戻さず、カードの明示要求またはユーザーの縮小操作に限る。
 
 ### 決定 3: 制約内のレイアウト戦略は全てカード(caldav)の責務
 
@@ -252,7 +264,7 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   カードが増えるたびにホスト改修が要る不可逆コミット。却下。
 - **インラインは表示専用・操作は全画面のみ**: 「チャットの流れの中でチェックを打つ」という
   inline カードの主価値(todos-entry.ts 冒頭 :83-88 のカード自身の設計宣言とも一致)を捨てる。
-  却下。
+  却下。複雑な編集セッションをfullscreenへ寄せる決定2cとは区別する。
 - **pip も同時に実装**: 現時点でカード側にユースケースが無く、器(フローティングオーバーレイ)の
   実装コストだけ先払いになる。availableDisplayModes への追加は後からでも 1 要素で、完全に可逆。
   今回は見送り(却下ではなく遅延)。

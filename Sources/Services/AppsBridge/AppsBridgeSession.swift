@@ -71,7 +71,8 @@ public actor AppsBridgeSession {
     // カードのfullscreen申告(apps.mdx:786)をFeaturesへ渡し、非対応カードの死にボタンを防ぐ。
     private let onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)?
 
-    private let interactionResponder: AppsBridgeInteractionResponder
+    // initialize 後に View capability を保持するため var。判定責務は responder 内へ閉じ込める。
+    private var interactionResponder: AppsBridgeInteractionResponder
 
     // 現在の displayMode(Session が最後に View へ通知した値)。単一の真実は将来
     // Features 側(InlineCardHost)に置く設計(設計 04 §3 責務表)だが、Session は
@@ -354,6 +355,8 @@ public actor AppsBridgeSession {
     }
 
     private func handleInitialize(id: RequestID, params: InitializeParams) async {
+        // 応答より先に保存し、直後の request-display-mode でも宣言を必ず参照する。
+        interactionResponder.configureDisplayModes(AppsBridgeInitializeBuilder.declaredDisplayModes(params))
         let context = AppsBridgeInitializeBuilder.Context(
             hostInfo: hostInfo,
             theme: currentTheme,

@@ -55,6 +55,14 @@ final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
 }
 
 @Suite struct AppsBridgeSessionTests {
+    /// capability gate が拒否したとき、Features の表示切替 callback まで到達していないことを確認する。
+    /// 応答 mode だけでは「callback が一度 fullscreen にしてから inline を返した」実装も通るため、
+    /// actor 記録で副作用境界そのものを固定する。
+    private actor DisplayModeRequestRecorder {
+        private(set) var requestedModes: [UIDisplayMode] = []
+        func record(_ mode: UIDisplayMode) { requestedModes.append(mode) }
+    }
+
     func makeProxy() -> AppsServerProxy {
         // 接続不要(AppsServerProxyTests と同じ理由)。displayMode テストでは呼ばれない。
         AppsServerProxy(client: Client(name: "test", version: "0"))
@@ -144,7 +152,10 @@ final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         let transport = MockTransport()
         let session = await makeReadySession(
             transport: transport,
-            onDisplayModeRequested: { _ in DisplayModeResolution(mode: .fullscreen) })
+            onDisplayModeRequested: { _ in DisplayModeResolution(mode: .fullscreen) },
+            // View が fullscreen を明示した正規の成功経路。capability と Host callback の両方が
+            // 揃った場合だけ切り替わることを、この既存の full-loop テストで固定する。
+            appCapabilitiesJSON: #"{"availableDisplayModes":["inline","fullscreen"]}"#)
 
         let beforeCount = transport.sentRawJSON.count
         transport.push(#"{"jsonrpc":"2.0","id":42,"method":"ui/request-display-mode","params":{"mode":"fullscreen"}}"#)
@@ -173,6 +184,62 @@ final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         #expect(notification.method == AppsMethod.hostContextChanged)
         #expect(notification.params?["displayMode"] == .string("fullscreen"))
         #expect(notification.params?["containerDimensions"]?["width"] == .int(390))
+
+        await session.close()
+    }
+
+    @Test("request-display-mode(fullscreen)拒否: 明示リストに fullscreen が無ければ callback を呼ばず現在 mode を返す")
+    func requestDisplayModeRejectedWhenExplicitCapabilityOmitsFullscreen() async throws {
+        let transport = MockTransport()
+        let recorder = DisplayModeRequestRecorder()
+        let session = await makeReadySession(
+            transport: transport,
+            onDisplayModeRequested: { mode in
+                await recorder.record(mode)
+                return DisplayModeResolution(mode: .fullscreen)
+            },
+            // `availableDisplayModes` は set だが fullscreen は absent。この「空集合ではなく
+            // inline だけ」という現実的な宣言で apps.mdx:786 の MUST NOT を検証する。
+            appCapabilitiesJSON: #"{"availableDisplayModes":["inline"]}"#)
+
+        let beforeCount = transport.sentRawJSON.count
+        transport.push(#"{"jsonrpc":"2.0","id":43,"method":"ui/request-display-mode","params":{"mode":"fullscreen"}}"#)
+        await waitUntil { transport.sentRawJSON.count >= beforeCount + 1 }
+
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: Data(try #require(transport.sentRawJSON.last).utf8)
+        )
+        #expect(response.result?["mode"] == .string("inline"))
+        #expect(await recorder.requestedModes.isEmpty)
+
+        await session.close()
+    }
+
+    @Test("request-display-mode(fullscreen)互換: availableDisplayModes 未設定なら callback に委譲する")
+    func requestDisplayModeDelegatesWhenCapabilityIsUnset() async throws {
+        let transport = MockTransport()
+        let recorder = DisplayModeRequestRecorder()
+        let session = await makeReadySession(
+            transport: transport,
+            onDisplayModeRequested: { mode in
+                await recorder.record(mode)
+                return DisplayModeResolution(mode: .fullscreen)
+            },
+            // apps.mdx:786 の禁止は `availableDisplayModes` が "if set" の場合だけ。
+            // 未設定を `[inline]` と同一視せず、旧カードの要求は Host 方針へ委譲する。
+            appCapabilitiesJSON: "{}")
+
+        let beforeCount = transport.sentRawJSON.count
+        transport.push(#"{"jsonrpc":"2.0","id":44,"method":"ui/request-display-mode","params":{"mode":"fullscreen"}}"#)
+        await waitUntil { transport.sentRawJSON.count >= beforeCount + 1 }
+
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: Data(try #require(transport.sentRawJSON.last).utf8)
+        )
+        #expect(response.result?["mode"] == .string("fullscreen"))
+        #expect(await recorder.requestedModes == [.fullscreen])
 
         await session.close()
     }

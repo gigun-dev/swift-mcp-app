@@ -83,8 +83,12 @@
 
 ## 3. MCPHost残E2E(優先順)
 
-- [ ] 1チャット内でcaldav/tdr-concierge両serverのtoolを混在させ、結果が由来serverへ戻る。
-- [ ] server toggle OFFが次のnew chatのtool一覧へ反映される。
+- [x] ~~1チャット内でcaldav/tdr-concierge両serverのtoolを混在させ、結果が由来serverへ戻る。~~ ✅
+  > **2026-07-23 更新:** 同一ターンでcaldav `get-current-time`とtdr-concierge `park_waits`を
+  > 順に実行し、server名付きの2 tool stepと統合応答を確認した。
+- [x] ~~server toggle OFFが次のnew chatのtool一覧へ反映される。~~ ✅
+  > **2026-07-23 更新:** tdr-conciergeをOFF後のnew chatで`park_hours`を要求してもtool stepは
+  > 生成されず、利用可能なtoolがない応答になることを確認。試験後はONへ復元した。
 - [ ] 通常チャットの⊕でfullscreen昇格し、右上ドリフトなし、scrollIntoView、keyboard自動表示を確認する。
 - [ ] todosのcollection切替、agendaの色filter/追加/行色、inline menuのclipなしを確認する。
 - [ ] 会議「参加」open-link、C3/C4作成、終日保存、action-row、カード内部scroll消滅を確認する。
@@ -92,6 +96,10 @@
 
 ## 4. host未解決論点
 
+- [x] ~~編集操作のfullscreen方針とView capability gateを確定する。~~ ✅
+  > **2026-07-23 更新:** hostは編集意図を推測しない。done/undo/toggleはinline、rename/作成/form/
+  > 一括編集はカードが編集セッション前にfullscreenを要求する。明示capabilityにfullscreenが無いViewの
+  > 要求はcallback前にinline拒否し、未宣言Viewはspecの`if set`に従って互換維持する。
 - [ ] 合成tool名が64字を超える場合の検証/短縮方針を決める。破綻条件は
   `len(slug) + len(tool) > 62`で、現状はLLM API 400になりうる。
 - [ ] ToolStepRowと履歴詳細でslugをserver表示名へ逆引きし、日本語名serverも区別できるようにする。
