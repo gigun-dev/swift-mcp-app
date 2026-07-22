@@ -153,6 +153,8 @@ public final class ChatViewModel {
         systemPrompt: String?,
         maxIterations: Int = 8,
         uiResourceURIs: [String: String] = [:],
+        serverNames: [String: String] = [:],
+        originalToolNames: [String: String] = [:],
         traceSink: (any TraceSink)? = nil,
         sessionId: String = UUID().uuidString,
         serverURL: URL = ChatViewModel.placeholderServerURL,
@@ -163,6 +165,8 @@ public final class ChatViewModel {
         self.toolCallRunner = ToolCallRunner(
             executor: toolExecutor,
             resourceURIs: uiResourceURIs,
+            serverNames: serverNames,
+            originalToolNames: originalToolNames,
             traceSink: traceSink
         )
         self.tools = tools
@@ -309,7 +313,7 @@ public final class ChatViewModel {
             // 構造化並行の子なので、この send() の外側 Task がキャンセルされれば自動的に子(tools/call)へ
             // 伝播し、URLSession 呼び出し自体が中断される(サーバー副作用が「もう見ていないチャット」で
             // 走り続ける事故を防ぐ・タスク指示)。
-            turns[assistantIndex].toolSteps = ToolCallRunner.runningSteps(for: calls)
+            turns[assistantIndex].toolSteps = toolCallRunner.runningSteps(for: calls)
             let toolBatch = await toolCallRunner.run(calls, turnId: turnId)
             recordToolBatch(toolBatch, assistantIndex: assistantIndex)
             if Task.isCancelled { return }

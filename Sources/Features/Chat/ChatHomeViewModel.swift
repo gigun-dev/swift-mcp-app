@@ -55,6 +55,8 @@ public final class ChatHomeViewModel {
     /// 現在のチャットが握る slug→proxy スナップショット(カード由来サーバーの解決に使う)。
     /// makeChatViewModel のたびに更新する。cardProxy(forToolName:) がここから引く。
     private var currentSlugProxies: [String: AppsServerProxy] = [:]
+    /// 短縮 wire 名を含む、現在のチャットの明示 route。カードも実行口と同じ逆引きを使う。
+    private var currentToolRoutes: [String: ToolRoute] = [:]
 
     public init(settings: LLMSettingsStore, registry: ServerRegistryStore) {
         self.settings = settings
@@ -94,6 +96,9 @@ public final class ChatHomeViewModel {
         let serverURL: URL          // 代表(最初の ready)。ToolStepRow attribution 等の後方互換に使う。
         let serverURLs: [URL]        // 全 ready(ChatSession.serverURLs へ)。
         let slugProxies: [String: AppsServerProxy]
+        let toolRoutes: [ToolRoute]
+        let serverNames: [String: String]
+        let originalToolNames: [String: String]
     }
 
     /// 現在 ready な接続群から ChatContext を組む(ツール定義・ui:// マップ・executor を合成)。
@@ -104,20 +109,44 @@ public final class ChatHomeViewModel {
         var toolDefs: [ToolDefinition] = []
         var uiMap: [String: String] = [:]
         var urls: [URL] = []
+        var toolRoutes: [ToolRoute] = []
+        var serverNames: [String: String] = [:]
+        var originalToolNames: [String: String] = [:]
+        var indexedRoutes: [String: ToolRoute] = [:]
+        var ambiguousWireNames = Set<String>()
         for readyConnection in ready {
             executors[readyConnection.slug] = readyConnection.proxy
             slugProxies[readyConnection.slug] = readyConnection.proxy
             toolDefs.append(contentsOf: readyConnection.toolDefs)
             for (key, value) in readyConnection.uiResourceURIs { uiMap[key] = value }
             urls.append(readyConnection.url)
+            let routes = readyConnection.tools.map {
+                ToolNamespacing.route(slug: readyConnection.slug, tool: $0.name)
+            }
+            toolRoutes.append(contentsOf: routes)
+            for route in routes {
+                if let existing = indexedRoutes[route.wireName], existing != route {
+                    indexedRoutes.removeValue(forKey: route.wireName)
+                    serverNames.removeValue(forKey: route.wireName)
+                    originalToolNames.removeValue(forKey: route.wireName)
+                    ambiguousWireNames.insert(route.wireName)
+                } else if !ambiguousWireNames.contains(route.wireName) {
+                    indexedRoutes[route.wireName] = route
+                    serverNames[route.wireName] = readyConnection.name
+                    originalToolNames[route.wireName] = route.toolName
+                }
+            }
         }
         return ChatContext(
-            executor: MultiServerToolExecutor(executors: executors),
+            executor: MultiServerToolExecutor(executors: executors, routes: toolRoutes),
             toolDefs: toolDefs,
             uiResourceURIs: uiMap,
             serverURL: urls.first ?? ChatViewModel.placeholderServerURL,
             serverURLs: urls,
-            slugProxies: slugProxies
+            slugProxies: slugProxies,
+            toolRoutes: toolRoutes,
+            serverNames: serverNames,
+            originalToolNames: originalToolNames
         )
     }
 
@@ -140,6 +169,8 @@ public final class ChatHomeViewModel {
             model: settings.model,
             systemPrompt: Self.systemPrompt,
             uiResourceURIs: context.uiResourceURIs,
+            serverNames: context.serverNames,
+            originalToolNames: context.originalToolNames,
             traceSink: OSLogTraceSink(),
             sessionId: sessionId,
             serverURL: context.serverURL,
@@ -153,6 +184,19 @@ public final class ChatHomeViewModel {
             }
         )
         currentSlugProxies = context.slugProxies
+        // あり得ないハッシュ衝突でも後勝ちにしない。executor と同じ fail-closed に揃え、
+        // 衝突した wire 名のカードは proxy を解決できない状態にする。
+        var indexedRoutes: [String: ToolRoute] = [:]
+        var ambiguousWireNames = Set<String>()
+        for route in context.toolRoutes {
+            if let existing = indexedRoutes[route.wireName], existing != route {
+                indexedRoutes.removeValue(forKey: route.wireName)
+                ambiguousWireNames.insert(route.wireName)
+            } else if !ambiguousWireNames.contains(route.wireName) {
+                indexedRoutes[route.wireName] = route
+            }
+        }
+        currentToolRoutes = indexedRoutes
         state = .ready(chatVM)
         displayMode = .live
         applyPricingToCurrentChatVM()
@@ -175,7 +219,14 @@ public final class ChatHomeViewModel {
     /// ChatBodyView → InlineCardView がカード構築時にこれで proxy を選ぶ(tools/call・resources/read が
     /// 由来サーバーへ流れる・タスク指示 §4)。未知の prefix / 切断済みサーバーは nil(カードは描画されない)。
     public func cardProxy(forToolName name: String) -> AppsServerProxy? {
-        guard let (slug, _) = ToolNamespacing.parse(prefixed: name) else { return nil }
+        let slug: String
+        if let route = currentToolRoutes[name] {
+            slug = route.slug
+        } else if let parsed = ToolNamespacing.parse(prefixed: name) {
+            slug = parsed.slug
+        } else {
+            return nil
+        }
         return currentSlugProxies[slug]
     }
 

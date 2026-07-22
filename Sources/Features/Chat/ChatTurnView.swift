@@ -239,9 +239,11 @@ struct ChatTurnView: View {
         // 出し、ツール名からは前置を剥がして元の名前を見せる(前置形のままだと読みにくい)。前置が無い
         // (旧データ・単一サーバー)場合は従来どおり接続先 URL からサーバー短縮名を導く。
         let parsed = ToolNamespacing.parse(prefixed: step.toolName)
-        let serverLabel = parsed?.slug ?? serverShortName(from: chatVM.currentSession.serverURL)
+        let serverLabel = step.serverName
+            ?? parsed?.slug
+            ?? serverShortName(from: chatVM.currentSession.serverURL)
         var display = step
-        if let parsed { display.toolName = parsed.tool }
+        display.toolName = step.originalToolName ?? parsed?.tool ?? step.toolName
         return ToolStepRow(step: display, serverName: serverLabel)
     }
 }

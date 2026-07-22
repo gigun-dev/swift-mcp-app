@@ -51,6 +51,30 @@ import Testing
         #expect(nestedParsed?.tool == "weird__tool")
     }
 
+    @Test("64文字以下のwire名は従来形を保ち、超過時だけ決定的hashへ短縮する")
+    func wireNameLengthAndCompatibility() {
+        let exactly64Tool = String(repeating: "t", count: 64 - "srv__".count)
+        let legacy = ToolNamespacing.wireName(slug: "srv", tool: exactly64Tool)
+        #expect(legacy == "srv__" + exactly64Tool)
+        #expect(legacy.count == 64)
+
+        let longTool = String(repeating: "t", count: 100)
+        let shortened = ToolNamespacing.wireName(slug: "srv", tool: longTool)
+        #expect(shortened.count == 64)
+        #expect(shortened == "srv__tttttttttttttttttttttttttttttttt__h323f398098e8e21c8d424b12")
+        #expect(shortened.contains("__h"))
+        #expect(shortened != ToolNamespacing.wireName(slug: "srv", tool: longTool + "x"))
+    }
+
+    @Test("routeは短縮wire名と元server/toolを同時に保持する")
+    func routeRetainsOriginalIdentity() {
+        let tool = "operation-" + String(repeating: "x", count: 100)
+        let route = ToolNamespacing.route(slug: "long-server", tool: tool)
+        #expect(route.wireName.count == 64)
+        #expect(route.slug == "long-server")
+        #expect(route.toolName == tool)
+    }
+
     @Test("前置されていない/壊れた名前は parse で nil")
     func parseRejectsMalformed() {
         #expect(ToolNamespacing.parse(prefixed: "list-todos") == nil)   // 境界なし。

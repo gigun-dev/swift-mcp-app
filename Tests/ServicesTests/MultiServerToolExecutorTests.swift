@@ -55,4 +55,31 @@ private actor RecordingExecutor: MCPToolExecuting {
             try await exec.callTool(name: "ghost__do-thing", arguments: nil)
         }
     }
+
+    @Test("短縮wire名は明示routeで元の長いツール名へ戻して委譲する")
+    func routesShortenedWireName() async throws {
+        let recorder = RecordingExecutor(returnValue: .string("ok"))
+        let original = "operation-" + String(repeating: "x", count: 100)
+        let route = ToolNamespacing.route(slug: "server", tool: original)
+        let exec = MultiServerToolExecutor(executors: ["server": recorder], routes: [route])
+
+        #expect(route.wireName.count == 64)
+        _ = try await exec.callTool(name: route.wireName, arguments: nil)
+        #expect(await recorder.recorded().first?.name == original)
+    }
+
+    @Test("異なるrouteが同一wire名へ衝突した場合は後勝ちにせず拒否する")
+    func rejectsAmbiguousExplicitRoute() async {
+        let recorder = RecordingExecutor(returnValue: .null)
+        let routes = [
+            ToolRoute(wireName: "same", slug: "a", toolName: "first"),
+            ToolRoute(wireName: "same", slug: "b", toolName: "second")
+        ]
+        let exec = MultiServerToolExecutor(executors: ["a": recorder, "b": recorder], routes: routes)
+
+        await #expect(throws: MultiServerToolError.self) {
+            try await exec.callTool(name: "same", arguments: nil)
+        }
+        #expect(await recorder.recorded().isEmpty)
+    }
 }

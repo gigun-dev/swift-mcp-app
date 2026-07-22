@@ -36,21 +36,35 @@ struct ToolCallRunner: Sendable {
     private static let logger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-diag")
     private let executor: any MCPToolExecuting
     private let resourceURIs: [String: String]
+    /// ChatViewModel 構築時点の wire tool名 → ユーザー表示名。長名は wire 上で hash 短縮され
+    /// slug を逆算できないため、完全な wire 名で引いて ToolCallStep へ当時値を焼き付ける。
+    private let serverNames: [String: String]
+    private let originalToolNames: [String: String]
     private let traceSink: (any TraceSink)?
 
     init(
         executor: any MCPToolExecuting,
         resourceURIs: [String: String],
+        serverNames: [String: String],
+        originalToolNames: [String: String],
         traceSink: (any TraceSink)?
     ) {
         self.executor = executor
         self.resourceURIs = resourceURIs
+        self.serverNames = serverNames
+        self.originalToolNames = originalToolNames
         self.traceSink = traceSink
     }
 
-    static func runningSteps(for calls: [ToolCall]) -> [ToolCallStep] {
+    func runningSteps(for calls: [ToolCall]) -> [ToolCallStep] {
         calls.map {
-            ToolCallStep(toolName: $0.function.name, state: .running, argumentsJSON: $0.function.arguments)
+            return ToolCallStep(
+                toolName: $0.function.name,
+                originalToolName: originalToolNames[$0.function.name],
+                serverName: serverNames[$0.function.name],
+                state: .running,
+                argumentsJSON: $0.function.arguments
+            )
         }
     }
 
@@ -87,7 +101,7 @@ struct ToolCallRunner: Sendable {
     }
 
     private func makeFinishedSteps(calls: [ToolCall], results: [Execution]) -> [ToolCallStep] {
-        var steps = Self.runningSteps(for: calls)
+        var steps = runningSteps(for: calls)
         for result in results {
             steps[result.index].state = result.failed ? .failed : .done
             steps[result.index].resultJSON = result.content

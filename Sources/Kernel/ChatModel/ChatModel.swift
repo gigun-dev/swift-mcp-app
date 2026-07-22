@@ -91,6 +91,11 @@ public struct ChatTurn: Codable, Equatable, Sendable {
 /// 状態遷移をそのまま UI に出す想定。
 public struct ToolCallStep: Codable, Equatable, Sendable {
     public var toolName: String
+    /// 64文字制限で hash 短縮される前の MCP tool 名。未保存の旧履歴は nil でdecodeする。
+    public var originalToolName: String?
+    /// ツール実行時点のサーバー表示名。slug は機械識別子なので、日本語名などを履歴で再現するには
+    /// 当時値の保存が要る。optional にして、このキーを持たない既存 JSON をそのまま読めるようにする。
+    public var serverName: String?
     public var state: State
     /// tool_call の引数(JSON 文字列。ToolCall.function.arguments と同じ形)。
     /// 表示用途(デバッグ・「こういう引数で呼んだ」の可視化)なので optional。
@@ -103,8 +108,17 @@ public struct ToolCallStep: Codable, Equatable, Sendable {
     /// argumentsJSON のみの既存データとの後方互換を保つ。
     public var resultJSON: String?
 
-    public init(toolName: String, state: State, argumentsJSON: String? = nil, resultJSON: String? = nil) {
+    public init(
+        toolName: String,
+        originalToolName: String? = nil,
+        serverName: String? = nil,
+        state: State,
+        argumentsJSON: String? = nil,
+        resultJSON: String? = nil
+    ) {
         self.toolName = toolName
+        self.originalToolName = originalToolName
+        self.serverName = serverName
         self.state = state
         self.argumentsJSON = argumentsJSON
         self.resultJSON = resultJSON

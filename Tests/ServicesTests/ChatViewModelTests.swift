@@ -194,6 +194,35 @@ actor StubToolExecutor: MCPToolExecuting {
         #expect(steps.allSatisfy { $0.state == .done })
     }
 
+    @Test func 前置ツールのステップへ実行時点の日本語サーバー表示名を保存する() async {
+        let originalToolName = String(repeating: "very-long-tool-name-", count: 5)
+        let wireName = ToolNamespacing.wireName(slug: "caldav", tool: originalToolName)
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(
+                .toolCalls,
+                [toolCall(id: "named", name: wireName, arguments: "{}")],
+                usage(1, 1)
+            )],
+            [.completed(.stop, [], usage(1, 1))]
+        ])
+        let viewModel = ChatViewModel(
+            llm: llm,
+            toolExecutor: StubToolExecutor(),
+            tools: [],
+            model: "m",
+            systemPrompt: nil,
+            serverNames: [wireName: "家族カレンダー"],
+            originalToolNames: [wireName: originalToolName]
+        )
+
+        await viewModel.send("一覧")
+
+        let step = viewModel.turns.first(where: { !$0.toolSteps.isEmpty })?.toolSteps.first
+        #expect(step?.toolName == wireName)
+        #expect(step?.originalToolName == originalToolName)
+        #expect(step?.serverName == "家族カレンダー")
+    }
+
     // 4) 最大反復ガード: 毎回 .toolCalls を返し続ける → maxIterations で打ち切りエラー。
     @Test func 最大反復で打ち切りエラー() async {
         let llm = ScriptedLLMClient(scripts: [

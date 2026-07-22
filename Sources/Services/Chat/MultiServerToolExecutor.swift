@@ -19,18 +19,45 @@ import Kernel
 public struct MultiServerToolExecutor: MCPToolExecuting {
     /// slug → 実行口。テスト差し替えのため `any MCPToolExecuting`(本番は AppsServerProxy)。
     private let executors: [String: any MCPToolExecuting]
+    /// 短縮済み wire 名を元の `(slug, tool)` へ戻す表。短い従来名も含めてよい。
+    private let routes: [String: ToolRoute]
+    /// 同一 wire 名が異なる route を指した場合は、辞書の後勝ちにせず実行時に明示拒否する。
+    private let ambiguousWireNames: Set<String>
 
-    public init(executors: [String: any MCPToolExecuting]) {
+    public init(executors: [String: any MCPToolExecuting], routes: [ToolRoute] = []) {
         self.executors = executors
+        var indexed: [String: ToolRoute] = [:]
+        var ambiguous = Set<String>()
+        for route in routes {
+            if let existing = indexed[route.wireName], existing != route {
+                indexed.removeValue(forKey: route.wireName)
+                ambiguous.insert(route.wireName)
+            } else if !ambiguous.contains(route.wireName) {
+                indexed[route.wireName] = route
+            }
+        }
+        self.routes = indexed
+        ambiguousWireNames = ambiguous
     }
 
     /// 前置ツール名(`slug__tool`)を逆引きして、該当サーバーの実行口へ元ツール名で委譲する。
     /// - 前置されていない/壊れた名前(parse 失敗)→ `unknownPrefix`(モデルにエラーが返り、ループは継続)。
     /// - 逆引きした slug に対応する executor が無い(切断済みサーバー等)→ `unknownServer`。
     public func callTool(name: String, arguments: JSONValue?) async throws -> JSONValue {
-        guard let (slug, tool) = ToolNamespacing.parse(prefixed: name) else {
+        if ambiguousWireNames.contains(name) {
+            throw MultiServerToolError.ambiguousRoute(name)
+        }
+        // 明示 route を優先する。無い場合だけ旧 `slug__tool` の parse に戻し、既に保存された
+        // チャットや短名を使う呼び出しとの後方互換を保つ。
+        let resolved: (slug: String, tool: String)
+        if let route = routes[name] {
+            resolved = (route.slug, route.toolName)
+        } else if let parsed = ToolNamespacing.parse(prefixed: name) {
+            resolved = parsed
+        } else {
             throw MultiServerToolError.unknownPrefix(name)
         }
+        let (slug, tool) = resolved
         guard let executor = executors[slug] else {
             throw MultiServerToolError.unknownServer(slug: slug, name: name)
         }
@@ -43,6 +70,7 @@ public struct MultiServerToolExecutor: MCPToolExecuting {
 public enum MultiServerToolError: Error, CustomStringConvertible {
     case unknownPrefix(String)
     case unknownServer(slug: String, name: String)
+    case ambiguousRoute(String)
 
     public var description: String {
         switch self {
@@ -50,6 +78,8 @@ public enum MultiServerToolError: Error, CustomStringConvertible {
             return "ツール名 \(name) は名前空間の前置(slug__tool)を持たないためどのサーバーにも振り分けられません。"
         case let .unknownServer(slug, name):
             return "ツール \(name) の接続先サーバー(\(slug))は現在接続されていません。"
+        case let .ambiguousRoute(name):
+            return "ツール名 \(name) は複数の接続先に対応しているため安全に実行できません。"
         }
     }
 }

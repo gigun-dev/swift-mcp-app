@@ -12,16 +12,35 @@
 // 名前の変換ロジックそのものは中立な純関数としてここに隔離する(CLAUDE.md ビジョン2)。
 //
 // 【OpenAI の name 制約】LLM(OpenAI 互換)のツール名は `^[a-zA-Z0-9_-]{1,64}$`(ToolConversion の
-// name 制約)。slug は `[a-z0-9-]` のみに正規化し、`slug__tool` 全体が 64 字を超えないよう slug を
-// 切り詰める(切り詰めは呼び出し側が maxLength で指定する — その server の最長ツール名から算出する)。
+// name 制約)。slug は `[a-z0-9-]` のみに正規化する。`slug__tool` 全体が 64 字を超える場合は
+// SHA-256由来の決定的 suffix を付けた64文字の wire 名に変え、明示 route map で元名へ戻す。
 // セパレータ `__`(アンダースコア2つ)を使う理由: slug は `[a-z0-9-]` のみ(アンダースコアを含まない)
 // なので、`__` は slug 内には決して現れない = 逆引きで「最初の `__`」を境界にすれば slug と元ツール名を
 // 曖昧さなく分離できる(元ツール名側に `__` が含まれても、境界は最初の `__` 固定なので影響しない)。
 import Foundation
+import CryptoKit
+
+/// LLM に公開する wire 名と、MCP サーバーへ渡す元名の対応。
+///
+/// 64文字を超える合成名はハッシュ付きで短縮するため、文字列の parse だけでは元ツール名を
+/// 復元できない。接続時にこの値を作り、実行時まで明示的に持ち回る。
+public struct ToolRoute: Equatable, Hashable, Sendable {
+    public let wireName: String
+    public let slug: String
+    public let toolName: String
+
+    public init(wireName: String, slug: String, toolName: String) {
+        self.wireName = wireName
+        self.slug = slug
+        self.toolName = toolName
+    }
+}
 
 public enum ToolNamespacing {
     /// 前置に使うセパレータ。slug(`[a-z0-9-]`)には現れない2文字を選ぶ(上のファイルコメント参照)。
     public static let separator = "__"
+    /// OpenAI 互換 API の function name 上限。
+    public static let maximumWireNameLength = 64
 
     /// サーバー表示名から決定的な slug を生成する。
     ///
@@ -86,9 +105,32 @@ public enum ToolNamespacing {
         return (trimmed.isEmpty ? "server" : trimmed) + suffixString
     }
 
-    /// slug と元ツール名から LLM へ見せる前置ツール名(`slug__tool`)を組む。
+    /// slug と元ツール名から LLM へ見せる wire 名を組む。
+    ///
+    /// 従来形 `slug__tool` が64文字以内なら一切変えない。超える場合だけ、先頭37文字と
+    /// `__h` + SHA-256先頭24桁(96 bit)へ置き換える。Swift の `Hasher` はプロセスごとに seed が
+    /// 変わるため永続的な wire 契約には使えない。SHA-256なら端末・起動をまたいで決定的で、
+    /// 96 bit の suffix により、同じ先頭を持つ長いツール同士も実用上衝突しない。
+    public static func wireName(slug: String, tool: String) -> String {
+        let canonical = slug + separator + tool
+        guard canonical.count > maximumWireNameLength else { return canonical }
+
+        let digest = SHA256.hash(data: Data(canonical.utf8))
+        let hash = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+        let suffix = separator + "h" + hash
+        let prefixLength = maximumWireNameLength - suffix.count
+        return String(canonical.prefix(prefixLength)) + suffix
+    }
+
+    /// wire 名と逆引き情報を同時に作る。長名は wire 名だけから復元できないため、呼び出し側は
+    /// この route を `MultiServerToolExecutor` へ渡す。
+    public static func route(slug: String, tool: String) -> ToolRoute {
+        ToolRoute(wireName: wireName(slug: slug, tool: tool), slug: slug, toolName: tool)
+    }
+
+    /// 旧API名。短い名前の出力互換を保ちながら、長名には64文字上限を適用する。
     public static func prefixed(slug: String, tool: String) -> String {
-        slug + separator + tool
+        wireName(slug: slug, tool: tool)
     }
 
     /// 前置ツール名(`slug__tool`)を slug と元ツール名へ逆引きする。

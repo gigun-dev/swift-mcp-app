@@ -1,6 +1,7 @@
 // Services/LLM(T2) A.3 ToolConversion の単体テスト。
 import Testing
 import MCP
+import Kernel
 
 @testable import Services
 
@@ -62,5 +63,16 @@ import MCP
         #expect(parameters["type"]?.stringValue == "object")
         #expect(parameters["properties"]?["city"]?["type"]?.stringValue == "string")
         #expect(parameters["required"]?.arrayValue == [.string("city")])
+    }
+
+    @Test("名前空間化した長いツール名はOpenAIの64文字上限に収まる")
+    func prefixedLongToolNameIsBounded() throws {
+        let original = "operation-" + String(repeating: "x", count: 100)
+        let tool = Tool(name: original, description: "long", inputSchema: .object([:]))
+        let definitions = try prefixedToolDefinitions(from: [tool], slug: "server", serverName: "Server")
+
+        #expect(definitions.count == 1)
+        #expect(definitions[0].function.name.count == 64)
+        #expect(definitions[0].function.name == ToolNamespacing.wireName(slug: "server", tool: original))
     }
 }

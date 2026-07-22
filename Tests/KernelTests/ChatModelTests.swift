@@ -60,6 +60,22 @@ func toolCallStepStateRoundTrip() throws {
     }
 }
 
+@Test("ToolCallStep は日本語サーバー表示名を round-trip し旧JSONでは nil に戻す")
+func toolCallStepServerNamePersistenceCompatibility() throws {
+    let named = ToolCallStep(
+        toolName: "caldav__list-todos",
+        originalToolName: "list-todos",
+        serverName: "家族カレンダー",
+        state: .done
+    )
+    #expect(try roundTrip(named) == named)
+
+    let legacyJSON = #"{"toolName":"caldav__list-todos","state":"done"}"#
+    let legacy = try JSONDecoder().decode(ToolCallStep.self, from: Data(legacyJSON.utf8))
+    #expect(legacy.serverName == nil)
+    #expect(legacy.originalToolName == nil)
+}
+
 @Test("ChatSession は serverURLs(複数接続先・M2)を round-trip する")
 func chatSessionRoundTripServerURLs() throws {
     let session = ChatSession(

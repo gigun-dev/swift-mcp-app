@@ -48,7 +48,7 @@ struct HistoryDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 // ツールステップ(req/res 展開)。ライブと同じ ToolStepRow を再利用(タスク指示 C-3)。
                 ForEach(Array(turn.toolSteps.enumerated()), id: \.offset) { _, step in
-                    ToolStepRow(step: step, serverName: serverShortName(from: session.serverURL))
+                    toolStepRow(step)
                 }
                 if !turn.text.isEmpty {
                     HStack {
@@ -65,6 +65,15 @@ struct HistoryDetailView: View {
             // wire 専用ロール。ターン表示には現れない(ChatBodyView と同じく何も出さない)。
             EmptyView()
         }
+    }
+
+    /// 保存済みの実行時表示名を優先し、旧履歴だけ名前空間 slug / 代表 URL へ順に戻す。
+    private func toolStepRow(_ step: ToolCallStep) -> some View {
+        let parsed = ToolNamespacing.parse(prefixed: step.toolName)
+        var display = step
+        display.toolName = step.originalToolName ?? parsed?.tool ?? step.toolName
+        let serverName = step.serverName ?? parsed?.slug ?? serverShortName(from: session.serverURL)
+        return ToolStepRow(step: display, serverName: serverName)
     }
 
     // MARK: - カード(スナップショット静的表示 / プレースホルダ)

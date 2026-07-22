@@ -760,3 +760,15 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   SwiftFormat 0/115、SwiftLint 0/114、`make app`もgreen。
 - agenda実カードでは色filter menuがinlineでclipしないこと、⊕でfullscreenの予定/リマインダーformが開き、
   終日が既定ONであることを確認して未保存cancelした。実collection切替、予定行色、保存往復は残す。
+
+## 2026-07-23: 複数serverの長名tool routingと履歴表示を安定化
+
+- OpenAI互換APIのfunction name上限64字に対し、従来`slug__tool`が収まる場合は一切変更せず、超過時だけ
+  37字prefix＋`__h`＋SHA-256先頭24hex（96bit）の決定的wire名へ短縮する。`ToolRoute`の明示mapを
+  executor、App resource map、card proxyで共有し、元server/toolへ可逆に振り分ける。legacy parseも維持した。
+- 異なるrouteが同じwire名へ来た場合は辞書の後勝ちにせずambiguousとして実行拒否し、表示mapからも除外する。
+- `ToolCallStep`へoptional `serverName`と`originalToolName`を追加した。日本語server名とhash短縮前tool名を
+  実行時に保存し、ライブ/履歴で同じ表示を再現する。server rename後も既存履歴は当時名、新chatは新名。
+  キーを持たない旧JSONは従来どおりslug/代表URL、wire parseへfallbackする。
+- 長さ境界、決定性、route逆引き、衝突拒否、日本語名、長名表示、旧JSON互換をtestで固定。
+  `make check`は189 tests / 19 suites、SwiftFormat 0/115、SwiftLint 0/114、`make app`もgreen。

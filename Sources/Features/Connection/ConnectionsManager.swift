@@ -85,9 +85,8 @@ public final class ConnectionsManager {
 
     /// サーバー一覧(登録順)から slug を決定的に採番する(名前ベース・衝突は -2 で回避)。
     ///
-    /// maxLength を 32 に絞る理由: LLM の name 制約は `slug__tool` 全体で 64 字。slug を 32 に抑えれば
-    /// `32 + 2 + 30` でツール名 30 字まで安全に収まる(MCP のツール名は実質これより短い)。名前が長い
-    /// サーバーでも前置名が 64 を割らないための保守的な上限(タスク指示「超過は slug 側を切り詰め」)。
+    /// slug 自体は表示・サーバー識別にも使うため32文字に抑える。ツール名との合成結果が64文字を
+    /// 超える場合は ToolNamespacing.wireName が決定的に短縮するので、ツール長への仮定は置かない。
     private func reassignSlugs(_ servers: [MCPServerEntry]) {
         var used = Set<String>()
         var map: [UUID: String] = [:]

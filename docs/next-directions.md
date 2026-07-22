@@ -114,9 +114,13 @@
   > **2026-07-23 更新:** hostは編集意図を推測しない。done/undo/toggleはinline、rename/作成/form/
   > 一括編集はカードが編集セッション前にfullscreenを要求する。明示capabilityにfullscreenが無いViewの
   > 要求はcallback前にinline拒否し、未宣言Viewはspecの`if set`に従って互換維持する。
-- [ ] 合成tool名が64字を超える場合の検証/短縮方針を決める。破綻条件は
-  `len(slug) + len(tool) > 62`で、現状はLLM API 400になりうる。
-- [ ] ToolStepRowと履歴詳細でslugをserver表示名へ逆引きし、日本語名serverも区別できるようにする。
+- [x] ~~合成tool名が64字を超える場合の検証/短縮方針を決める。~~ ✅
+  > **2026-07-23 更新:** 64字以下の`slug__tool`は完全互換。超過時だけ37字prefix＋`__h`＋
+  > SHA-256先頭24hex（96bit）で64字にし、明示`ToolRoute`で元slug/toolへ逆引きする。
+  > 異routeが同じwire名へ衝突した場合は後勝ちせずfail-closed、legacy parse fallbackも維持する。
+- [x] ~~ToolStepRowと履歴詳細でslugをserver表示名へ逆引きし、日本語名serverも区別できるようにする。~~ ✅
+  > **2026-07-23 更新:** 実行時のserver表示名とhash短縮前tool名を`ToolCallStep`へadditive保存。
+  > ライブ/履歴は保存値を優先し、rename前履歴は当時名、新chatは新名。旧JSONはslug/URLへfallbackする。
 - [ ] TodosCardSpikeViewのhard-coded URLを低優先で除去する。
 - [ ] local HTTP MCPを許可する必要性を決める。許可時はscheme検証だけでなくATSも扱う。
 - [ ] composer側のtool pickerを設計し、server/tool単位の有効化と状態表示を集約する。
