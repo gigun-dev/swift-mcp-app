@@ -13,56 +13,78 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct ChatViewModelCostTests {
-    private func usage(_ p: Int, _ c: Int) -> Usage {
-        Usage(promptTokens: p, completionTokens: c, totalTokens: p + c)
+    private func usage(_ promptTokens: Int, _ completionTokens: Int) -> Usage {
+        Usage(
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            totalTokens: promptTokens + completionTokens
+        )
     }
 
     @Test("modelPrice 未設定なら lastCostUSD/cumulativeCostUSD は nil(未知モデルは非表示)")
     func costIsNilWithoutModelPrice() async {
         let llm = ScriptedLLMClient(scripts: [[.completed(.stop, [], usage(10, 5))]])
-        let vm = ChatViewModel(llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "unknown-model", systemPrompt: nil)
+        let viewModel = ChatViewModel(
+            llm: llm,
+            toolExecutor: StubToolExecutor(),
+            tools: [],
+            model: "unknown-model",
+            systemPrompt: nil
+        )
 
-        await vm.send("hi")
+        await viewModel.send("hi")
 
-        #expect(vm.lastUsage == usage(10, 5))
-        #expect(vm.modelPrice == nil)
-        #expect(vm.lastCostUSD == nil)
-        #expect(vm.cumulativeCostUSD == nil)
+        #expect(viewModel.lastUsage == usage(10, 5))
+        #expect(viewModel.modelPrice == nil)
+        #expect(viewModel.lastCostUSD == nil)
+        #expect(viewModel.cumulativeCostUSD == nil)
     }
 
     @Test("modelPrice 設定後は lastCostUSD/cumulativeCostUSD が usage×単価で計算される")
     func costComputedFromModelPrice() async {
         let llm = ScriptedLLMClient(scripts: [
             [.completed(.stop, [], usage(1000, 500))],
-            [.completed(.stop, [], usage(2000, 1000))],
+            [.completed(.stop, [], usage(2000, 1000))]
         ])
-        let vm = ChatViewModel(llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "gpt-4o-mini", systemPrompt: nil)
+        let viewModel = ChatViewModel(
+            llm: llm,
+            toolExecutor: StubToolExecutor(),
+            tools: [],
+            model: "gpt-4o-mini",
+            systemPrompt: nil
+        )
         // gpt-4o-mini 級の単価(2026-07-16 litellm 確認・PricingTests と同値)。
-        vm.modelPrice = ModelPrice(inputCostPerToken: 1.5e-07, outputCostPerToken: 6e-07)
+        viewModel.modelPrice = ModelPrice(inputCostPerToken: 1.5e-07, outputCostPerToken: 6e-07)
 
-        await vm.send("1回目")
+        await viewModel.send("1回目")
         // 1000*1.5e-07 + 500*6e-07 = 4.5e-4
-        #expect(vm.lastCostUSD.map { abs($0 - 4.5e-4) < 1e-12 } == true)
-        #expect(vm.cumulativeCostUSD.map { abs($0 - 4.5e-4) < 1e-12 } == true)
+        #expect(viewModel.lastCostUSD.map { abs($0 - 4.5e-4) < 1e-12 } == true)
+        #expect(viewModel.cumulativeCostUSD.map { abs($0 - 4.5e-4) < 1e-12 } == true)
 
-        await vm.send("2回目")
+        await viewModel.send("2回目")
         // このターン: 2000*1.5e-07 + 1000*6e-07 = 9.0e-4
-        #expect(vm.lastCostUSD.map { abs($0 - 9.0e-4) < 1e-12 } == true)
+        #expect(viewModel.lastCostUSD.map { abs($0 - 9.0e-4) < 1e-12 } == true)
         // 累計 usage = (3000, 1500) → 3000*1.5e-07 + 1500*6e-07 = 4.5e-4 + 9.0e-4 = 1.35e-3
-        #expect(vm.cumulativeCostUSD.map { abs($0 - 1.35e-3) < 1e-11 } == true)
+        #expect(viewModel.cumulativeCostUSD.map { abs($0 - 1.35e-3) < 1e-11 } == true)
     }
 
     @Test("modelPrice を後から nil に戻すとコストは再び nil になる(設定変更・接続切替の後入れを反映)")
     func costGoesNilWhenModelPriceClearedAfterSet() async {
         let llm = ScriptedLLMClient(scripts: [[.completed(.stop, [], usage(10, 5))]])
-        let vm = ChatViewModel(llm: llm, toolExecutor: StubToolExecutor(), tools: [], model: "m", systemPrompt: nil)
-        vm.modelPrice = ModelPrice(inputCostPerToken: 1e-06, outputCostPerToken: 1e-06)
+        let viewModel = ChatViewModel(
+            llm: llm,
+            toolExecutor: StubToolExecutor(),
+            tools: [],
+            model: "m",
+            systemPrompt: nil
+        )
+        viewModel.modelPrice = ModelPrice(inputCostPerToken: 1e-06, outputCostPerToken: 1e-06)
 
-        await vm.send("hi")
-        #expect(vm.lastCostUSD != nil)
+        await viewModel.send("hi")
+        #expect(viewModel.lastCostUSD != nil)
 
-        vm.modelPrice = nil
-        #expect(vm.lastCostUSD == nil)
-        #expect(vm.cumulativeCostUSD == nil)
+        viewModel.modelPrice = nil
+        #expect(viewModel.lastCostUSD == nil)
+        #expect(viewModel.cumulativeCostUSD == nil)
     }
 }

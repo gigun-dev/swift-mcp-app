@@ -26,7 +26,8 @@ extension RequestID: Codable {
         } else {
             throw DecodingError.dataCorruptedError(
                 in: container,
-                debugDescription: "RequestID は string か int のみ対応(null id は非対応)")
+                debugDescription: "RequestID は string か int のみ対応(null id は非対応)"
+            )
         }
     }
 
@@ -165,7 +166,9 @@ extension JSONRPCMessage: Decodable {
             throw DecodingError.dataCorrupted(
                 DecodingError.Context(
                     codingPath: container.codingPath,
-                    debugDescription: "method も id も無い JSON-RPC メッセージは判別できません"))
+                    debugDescription: "method も id も無い JSON-RPC メッセージは判別できません"
+                )
+            )
         }
     }
 }

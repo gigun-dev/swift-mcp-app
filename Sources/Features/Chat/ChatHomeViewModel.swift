@@ -104,12 +104,12 @@ public final class ChatHomeViewModel {
         var toolDefs: [ToolDefinition] = []
         var uiMap: [String: String] = [:]
         var urls: [URL] = []
-        for rc in ready {
-            executors[rc.slug] = rc.proxy
-            slugProxies[rc.slug] = rc.proxy
-            toolDefs.append(contentsOf: rc.toolDefs)
-            for (key, value) in rc.uiResourceURIs { uiMap[key] = value }
-            urls.append(rc.url)
+        for readyConnection in ready {
+            executors[readyConnection.slug] = readyConnection.proxy
+            slugProxies[readyConnection.slug] = readyConnection.proxy
+            toolDefs.append(contentsOf: readyConnection.toolDefs)
+            for (key, value) in readyConnection.uiResourceURIs { uiMap[key] = value }
+            urls.append(readyConnection.url)
         }
         return ChatContext(
             executor: MultiServerToolExecutor(executors: executors),
@@ -232,7 +232,10 @@ public final class ChatHomeViewModel {
             displayMode = .viewingHistory(session)
             logger.notice("履歴を開いた id=\(id.uuidString, privacy: .public) turns=\(session.turns.count)")
         } catch {
-            logger.error("履歴の読み込みに失敗 id=\(id.uuidString, privacy: .public): \(String(reflecting: error), privacy: .public)")
+            logger
+                .error(
+                    "履歴の読み込みに失敗 id=\(id.uuidString, privacy: .public): \(String(reflecting: error), privacy: .public)"
+                )
             historyLoadError = "履歴の読み込みに失敗しました。ファイルが壊れている可能性があります。"
         }
     }

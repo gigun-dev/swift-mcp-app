@@ -196,6 +196,8 @@ public final class WebViewTransport: NSObject, AppsBridgeTransport, @unchecked S
     public func deliver(response: JSONRPCResponse) async {
         do {
             let data = try JSONEncoder().encode(response)
+            // JSONEncoder出力はUTF-8保証済み。非optionalな文字列化を明示する。
+            // swiftlint:disable:next optional_data_string_conversion
             await deliver(rawJSON: String(decoding: data, as: UTF8.self))
         } catch {
             logger.error("response エンコード失敗: \(String(reflecting: error), privacy: .public)")
@@ -224,18 +226,20 @@ extension WebViewTransport: WKScriptMessageHandler {
             let decoded = try JSONRPCMessage.decode(from: Data(raw.utf8))
             // 節目を unified log に .notice で残す(P1 と同様 log show で追える)。method を出す。
             switch decoded {
-            case .request(let r):
-                logger.notice("View→Host 受信: request method=\(r.method, privacy: .public)")
-            case .notification(let n):
-                logger.notice("View→Host 受信: notification method=\(n.method, privacy: .public)")
-            case .response(let r):
-                logger.notice("View→Host 受信: response id=\(String(describing: r.id), privacy: .public)")
+            case .request(let request):
+                logger.notice("View→Host 受信: request method=\(request.method, privacy: .public)")
+            case .notification(let notification):
+                logger.notice("View→Host 受信: notification method=\(notification.method, privacy: .public)")
+            case .response(let response):
+                logger.notice("View→Host 受信: response id=\(String(describing: response.id), privacy: .public)")
             }
             incomingContinuation.yield((message: decoded, raw: raw))
         } catch {
             // malformed(jsonrpc:"2.0" だが判別不能)は握って落とす。上位で onerror 相当に
             // 昇格させるのは S3 の状態機械の仕事(設計 §1: transport は「未知は黙殺」規約)。
-            logger.error("View→Host 受信のデコード失敗: \(String(reflecting: error), privacy: .public) raw=\(raw, privacy: .public)")
+            logger
+                .error(
+                    "View→Host 受信のデコード失敗: \(String(reflecting: error), privacy: .public) raw=\(raw, privacy: .public)")
         }
     }
 }

@@ -27,28 +27,28 @@ import Testing
     @Test("maxLength を超える slug は切り詰められ、サフィックス込みでも収まる")
     func slugTruncates() {
         let long = String(repeating: "a", count: 100)
-        let s = ToolNamespacing.slug(for: long, existing: [], maxLength: 10)
-        #expect(s.count <= 10)
-        #expect(s == "aaaaaaaaaa")
+        let slug = ToolNamespacing.slug(for: long, existing: [], maxLength: 10)
+        #expect(slug.count <= 10)
+        #expect(slug == "aaaaaaaaaa")
         // 衝突時のサフィックスも maxLength を守る。
-        let s2 = ToolNamespacing.slug(for: long, existing: [s], maxLength: 10)
-        #expect(s2.count <= 10)
-        #expect(s2.hasSuffix("-2"))
+        let deduplicatedSlug = ToolNamespacing.slug(for: long, existing: [slug], maxLength: 10)
+        #expect(deduplicatedSlug.count <= 10)
+        #expect(deduplicatedSlug.hasSuffix("-2"))
     }
 
     @Test("prefixed と parse は対称(元ツール名に __ を含んでも境界は最初の __)")
     func prefixParseRoundTrip() {
-        let p = ToolNamespacing.prefixed(slug: "caldav", tool: "list-todos")
-        #expect(p == "caldav__list-todos")
-        let parsed = ToolNamespacing.parse(prefixed: p)
+        let prefixedName = ToolNamespacing.prefixed(slug: "caldav", tool: "list-todos")
+        #expect(prefixedName == "caldav__list-todos")
+        let parsed = ToolNamespacing.parse(prefixed: prefixedName)
         #expect(parsed?.slug == "caldav")
         #expect(parsed?.tool == "list-todos")
 
         // 元ツール名に __ が含まれても、slug 側は最初の __ までで確定する。
-        let p2 = ToolNamespacing.prefixed(slug: "srv", tool: "weird__tool")
-        let parsed2 = ToolNamespacing.parse(prefixed: p2)
-        #expect(parsed2?.slug == "srv")
-        #expect(parsed2?.tool == "weird__tool")
+        let nestedPrefixedName = ToolNamespacing.prefixed(slug: "srv", tool: "weird__tool")
+        let nestedParsed = ToolNamespacing.parse(prefixed: nestedPrefixedName)
+        #expect(nestedParsed?.slug == "srv")
+        #expect(nestedParsed?.tool == "weird__tool")
     }
 
     @Test("前置されていない/壊れた名前は parse で nil")

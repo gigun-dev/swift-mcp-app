@@ -39,54 +39,51 @@ public enum ToolNamespacing {
     ///   - maxLength: slug の最大長(既定 48。`slug__tool` 全体で 64 に収めるため呼び出し側が調整)。
     /// - Returns: 一意な slug。
     public static func slug(for name: String, existing: Set<String>, maxLength: Int = 48) -> String {
-        // 1) 正規化: 小文字化して各文字を [a-z0-9-] に絞る(それ以外はハイフンに寄せて語境界を残す)。
-        let lowered = name.lowercased()
-        var mapped = ""
-        for ch in lowered {
-            if ch.isASCII, (ch.isLetter || ch.isNumber) {
-                mapped.append(ch)
-            } else {
-                // 空白・記号・非 ASCII はハイフンに寄せる(語の切れ目を潰さない)。連続はあとで畳む。
-                mapped.append("-")
-            }
-        }
-        // 2) 連続ハイフンを1つに畳み、先頭末尾のハイフンを削る。
-        var collapsed = ""
-        var lastWasHyphen = false
-        for ch in mapped {
-            if ch == "-" {
-                if !lastWasHyphen { collapsed.append(ch) }
-                lastWasHyphen = true
-            } else {
-                collapsed.append(ch)
-                lastWasHyphen = false
-            }
-        }
-        var base = collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        // 3) 空フォールバック。
-        if base.isEmpty { base = "server" }
-        // 4) maxLength への切り詰め(サフィックス無しの素の長さで先に丸める)。
         let cap = max(1, maxLength)
-        if base.count > cap {
-            base = String(base.prefix(cap))
-            // 切り詰めで末尾がハイフンになったら削る(見栄え・"-2" と繋がって "--2" になるのを避ける)。
-            base = base.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-            if base.isEmpty { base = "server" }
-        }
-        // 5) 衝突回避: そのままで空きならそれを、埋まっていれば -2, -3, … を付ける。
-        //    サフィックスを足すと cap を超えうるので、超えるぶんは base を削って収める。
+        let normalized = normalizedBase(name)
+        let base = cappedBase(normalized, cap: cap)
+
         if !existing.contains(base) { return base }
-        var suffix = 2
-        while true {
-            let suffixStr = "-\(suffix)"
-            let room = max(1, cap - suffixStr.count)
-            var trimmedBase = String(base.prefix(room))
-            trimmedBase = trimmedBase.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-            if trimmedBase.isEmpty { trimmedBase = "server" }
-            let candidate = trimmedBase + suffixStr
-            if !existing.contains(candidate) { return candidate }
-            suffix += 1
+
+        // 2から始める無限列を候補へ写像し、最初の空きを取る。衝突探索と文字列整形を
+        // 分離することで、slug() 本体が正規化の分岐を抱え込まないようにする。
+        return sequence(first: 2, next: { $0 + 1 })
+            .lazy
+            .map { suffixedCandidate(base: base, suffix: $0, cap: cap) }
+            .first(where: { !existing.contains($0) })!
+    }
+
+    /// 表示名をASCII slugの素材へ正規化する。置換後に正規表現で連続区切りを畳むため、
+    /// 文字走査と「直前がハイフンか」という状態管理を分けられる。
+    private static func normalizedBase(_ name: String) -> String {
+        let mapped = name.lowercased().map { character in
+            character.isASCII && (character.isLetter || character.isNumber) ? character : "-"
         }
+        let collapsed = String(mapped).replacingOccurrences(
+            of: "-+",
+            with: "-",
+            options: .regularExpression
+        )
+        let trimmed = collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return trimmed.isEmpty ? "server" : trimmed
+    }
+
+    /// OpenAIのname上限から呼び出し側が算出したcapへ、素のslugを収める。
+    private static func cappedBase(_ base: String, cap: Int) -> String {
+        guard base.count > cap else { return base }
+        let trimmed = String(base.prefix(cap))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        // 既存挙動を維持するため、極端に小さいcapで素材が空になった場合もserverへ戻す。
+        return trimmed.isEmpty ? "server" : trimmed
+    }
+
+    /// `-N`を含めてcapへ収めた衝突回避候補を組み立てる。
+    private static func suffixedCandidate(base: String, suffix: Int, cap: Int) -> String {
+        let suffixString = "-\(suffix)"
+        let room = max(1, cap - suffixString.count)
+        let trimmed = String(base.prefix(room))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return (trimmed.isEmpty ? "server" : trimmed) + suffixString
     }
 
     /// slug と元ツール名から LLM へ見せる前置ツール名(`slug__tool`)を組む。

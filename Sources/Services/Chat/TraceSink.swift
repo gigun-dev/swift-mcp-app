@@ -34,23 +34,30 @@ public struct OSLogTraceSink: TraceSink {
     public func emit(_ event: ChatTraceEvent) {
         switch event {
         case .turnStarted(let chatId, let turnId, let model):
-            logger.notice("turnStarted chat=\(chatId, privacy: .public) turn=\(turnId, privacy: .public) model=\(model, privacy: .public)")
+            logger.notice("turnStarted chat=\(chatId, privacy: .public) turn=\(turnId, privacy: .public)")
+            logger.notice("turnStarted model=\(model, privacy: .public)")
 
         case .llmCompleted(let turnId, let finishReason, let usage):
             // usage が届かないターン(ストリーム中断・02 §2 の但し書き)もあるので "-" で欠損を明示。
             let usageText = usage.map { "prompt=\($0.promptTokens) completion=\($0.completionTokens)" } ?? "-"
-            logger.notice("llmCompleted turn=\(turnId, privacy: .public) reason=\(finishReason, privacy: .public) usage=\(usageText, privacy: .public)")
+            logger.notice("llmCompleted turn=\(turnId, privacy: .public) reason=\(finishReason, privacy: .public)")
+            logger.notice("llmCompleted usage=\(usageText, privacy: .public)")
 
         case .toolCallStarted(let turnId, let callId, let name, _):
             // arguments 本体はログに出さない(ユーザーデータを unified log に平文で残さない判断・
             // 設計に明記は無いが「フル JSON をログに残す」はプライバシー上望ましくないためこう解釈)。
-            logger.notice("toolCallStarted turn=\(turnId, privacy: .public) call=\(callId, privacy: .public) tool=\(name, privacy: .public)")
+            logger.notice("toolCallStarted turn=\(turnId, privacy: .public) call=\(callId, privacy: .public)")
+            logger.notice("toolCallStarted tool=\(name, privacy: .public)")
 
         case .toolCallFinished(let turnId, let callId, let isError, let resultBytes, let durationMs):
-            logger.notice("toolCallFinished turn=\(turnId, privacy: .public) call=\(callId, privacy: .public) bytes=\(resultBytes) err=\(isError) ms=\(durationMs)")
+            logger.notice("toolCallFinished turn=\(turnId, privacy: .public) call=\(callId, privacy: .public)")
+            logger.notice("toolCallFinished bytes=\(resultBytes) err=\(isError) ms=\(durationMs)")
 
         case .turnSettled(let turnId, let iterations, let cumulativeUsage):
-            logger.notice("turnSettled turn=\(turnId, privacy: .public) iterations=\(iterations) cumPrompt=\(cumulativeUsage.promptTokens) cumCompletion=\(cumulativeUsage.completionTokens)")
+            logger.notice("turnSettled turn=\(turnId, privacy: .public) iterations=\(iterations)")
+            logger.notice(
+                "turnSettled prompt=\(cumulativeUsage.promptTokens) completion=\(cumulativeUsage.completionTokens)"
+            )
         }
     }
 }

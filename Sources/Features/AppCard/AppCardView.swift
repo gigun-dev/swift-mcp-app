@@ -69,7 +69,7 @@ struct AppCardView: UIViewRepresentable {
     ///
     /// 既定 nil = 何もしない(StaticCardView・TodosCardSpikeView 等 displayMode 遷移を持たない
     /// 呼び出し元を壊さない)。冪等に呼ばれること前提(呼び出し側が pending 判定で二重発火を吸収する)。
-    var onAdopted: (() -> Void)? = nil
+    var onAdopted: (() -> Void)?
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
@@ -101,7 +101,7 @@ struct AppCardView: UIViewRepresentable {
             webView.topAnchor.constraint(equalTo: container.topAnchor),
             webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         ])
         // 実際の再アダプトが起きた瞬間だけ呼ぶ(shouldOwn だが既に正しい container に居るだけの
         // no-op 経路では呼ばない — 上の adoptIfOwned の if 節がこの adopt() 自体をガードしている)。
@@ -135,7 +135,10 @@ final class AppCardWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
             return
         }
         // 2回目以降のあらゆる navigation は封じる(設計 §6: 初回以外は cancel)。
-        logger.notice("navigation を cancel(初回以外は遮断) url=\(navigationAction.request.url?.absoluteString ?? "nil", privacy: .public)")
+        logger
+            .notice(
+                "navigation を cancel(初回以外は遮断) url=\(navigationAction.request.url?.absoluteString ?? "nil", privacy: .public)"
+            )
         decisionHandler(.cancel)
     }
 

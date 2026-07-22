@@ -135,6 +135,8 @@ public final class LLMSettingsStore {
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
+        // Keychain値が壊れていても置換文字で復元し、空判定まで安全に進める。
+        // swiftlint:disable:next optional_data_string_conversion
         let key = String(decoding: data, as: UTF8.self)
         return key.isEmpty ? nil : key
     }
@@ -143,7 +145,7 @@ public final class LLMSettingsStore {
         [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: keychainService,
-            kSecAttrAccount: keychainAccount,
+            kSecAttrAccount: keychainAccount
         ]
     }
 }

@@ -37,7 +37,8 @@ enum WebViewProgrammaticFocus {
         guard let contentViewClass: AnyClass = NSClassFromString("WKContentView") else { return }
         // iOS 13.0+ のセレクタ(それ以前の変遷は対象 OS(iOS 17+)外なので分岐しない)。
         let selector = sel_getUid(
-            "_elementDidFocus:userIsInteracting:blurPreviousNode:activityStateChanges:userObject:")
+            "_elementDidFocus:userIsInteracting:blurPreviousNode:activityStateChanges:userObject:"
+        )
         guard let method = class_getInstanceMethod(contentViewClass, selector) else {
             // セレクタが OS 更新で消えた場合はここに落ちる(機能は静かに無効化・クラッシュしない)。
             return
@@ -45,11 +46,14 @@ enum WebViewProgrammaticFocus {
         // 引数: (self, _cmd, node*, userIsInteracting, blurPreviousNode, activityStateChanges, userObject)
         typealias OriginalImp = @convention(c) (Any, Selector, UnsafeRawPointer, Bool, Bool, UInt, Any?) -> Void
         let original = unsafeBitCast(method_getImplementation(method), to: OriginalImp.self)
-        let block: @convention(block) (Any, UnsafeRawPointer, Bool, Bool, UInt, Any?) -> Void = {
-            me, node, _, blurPrevious, stateChanges, userObject in
+        // ObjC ABIの全引数を同一closureで受けるため、改行するとSwiftLint規則とは両立しない。
+        // swiftlint:disable closure_parameter_position
+        let block: @convention(block) (Any, UnsafeRawPointer, Bool, Bool, UInt, Any?) -> Void = { hostView, node,
+            _, blurPrevious, stateChanges, userObject in
             // userIsInteracting を true に固定して元実装へ(これがゲート解除の全て)。
-            original(me, selector, node, true, blurPrevious, stateChanges, userObject)
+            original(hostView, selector, node, true, blurPrevious, stateChanges, userObject)
         }
+        // swiftlint:enable closure_parameter_position
         method_setImplementation(method, imp_implementationWithBlock(block))
     }()
 }

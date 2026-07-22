@@ -34,7 +34,7 @@ func chatSessionRoundTripWithTurns() throws {
                 role: .assistant,
                 text: "今日の予定はこちらです。",
                 toolSteps: [
-                    ToolCallStep(toolName: "list-events", state: .done, argumentsJSON: "{\"date\":\"2026-07-16\"}"),
+                    ToolCallStep(toolName: "list-events", state: .done, argumentsJSON: "{\"date\":\"2026-07-16\"}")
                 ],
                 cards: [
                     CardEmbed(
@@ -42,10 +42,10 @@ func chatSessionRoundTripWithTurns() throws {
                         resourceUri: "ui://agenda/list",
                         snapshotHTML: "<html><body>agenda</body></html>",
                         structuredContent: ["events": []]
-                    ),
+                    )
                 ],
                 usage: Usage(promptTokens: 200, completionTokens: 30, totalTokens: 230)
-            ),
+            )
         ],
         model: "gpt-5-mini"
     )
@@ -67,7 +67,7 @@ func chatSessionRoundTripServerURLs() throws {
         serverURL: URL(string: "https://a.example.com/mcp")!,
         serverURLs: [
             URL(string: "https://a.example.com/mcp")!,
-            URL(string: "https://b.example.com/mcp")!,
+            URL(string: "https://b.example.com/mcp")!
         ],
         createdAt: Date(timeIntervalSince1970: 0),
         updatedAt: Date(timeIntervalSince1970: 0),

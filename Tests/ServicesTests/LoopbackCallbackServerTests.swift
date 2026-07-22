@@ -24,13 +24,13 @@ import Testing
         var callbackURL = URLComponents(url: redirectURI, resolvingAgainstBaseURL: false)!
         callbackURL.queryItems = [
             URLQueryItem(name: "code", value: "test-code"),
-            URLQueryItem(name: "state", value: "test-state"),
+            URLQueryItem(name: "state", value: "test-state")
         ]
         let (body, response) = try await URLSession.shared.data(from: callbackURL.url!)
 
         // ブラウザ側に 200 が返ること(ハング表示防止の応答)
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
-        #expect(String(decoding: body, as: UTF8.self).contains("MCPHost"))
+        #expect(String(bytes: body, encoding: .utf8)?.contains("MCPHost") == true)
 
         // リダイレクト URL が code/state ごと正確に復元されること
         // (swift-sdk の extractCode がこの URL を authorizationRedirectURI と突き合わせる)
@@ -53,17 +53,17 @@ import Testing
         async let callback = server.waitForCallback()
 
         // 事前接続を模倣: 生 TCP で繋いで何も送らず閉じる
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        let socketDescriptor = socket(AF_INET, SOCK_STREAM, 0)
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = in_port_t(UInt16(redirectURI.port!)).bigEndian
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
         _ = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                connect(socketDescriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        close(fd)
+        close(socketDescriptor)
         // サーバー側が空接続を処理する猶予
         try await Task.sleep(for: .milliseconds(100))
 

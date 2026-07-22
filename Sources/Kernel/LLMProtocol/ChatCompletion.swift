@@ -9,6 +9,22 @@
 // CodingKeys で Swift 側は camelCase に寄せる。
 import Foundation
 
+/// streaming時にusage専用チャンクを要求するOpenAI wire option。
+///
+/// 以前は `ChatCompletionRequest` 内に実体をネストしていたが、その中の `CodingKeys` が
+/// さらに深い型階層を作っていた。実体をfile scopeへ出し、下のtypealiasで従来APIを保つ。
+public struct ChatCompletionStreamOptions: Codable, Equatable, Sendable {
+    public var includeUsage: Bool
+
+    public init(includeUsage: Bool) {
+        self.includeUsage = includeUsage
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case includeUsage = "include_usage"
+    }
+}
+
 /// chat/completions へのリクエスト本体。
 ///
 /// - `tools`: MCP tools/list を visibility フィルタ(§7)してから変換したもの。
@@ -18,6 +34,9 @@ import Foundation
 ///   既定は false なので明示指定を必須にしておくほうが事故が少ない)。
 /// - `streamOptions.includeUsage`: SSE で usage チャンクを受け取るために必須(§6)。
 public struct ChatCompletionRequest: Codable, Equatable, Sendable {
+    /// `ChatCompletionRequest.StreamOptions` という既存の公開APIを維持する互換alias。
+    public typealias StreamOptions = ChatCompletionStreamOptions
+
     public var model: String
     public var messages: [ChatMessage]
     public var tools: [ToolDefinition]?
@@ -44,18 +63,6 @@ public struct ChatCompletionRequest: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case model, messages, tools, stream, temperature
         case streamOptions = "stream_options"
-    }
-
-    public struct StreamOptions: Codable, Equatable, Sendable {
-        public var includeUsage: Bool
-
-        public init(includeUsage: Bool) {
-            self.includeUsage = includeUsage
-        }
-
-        enum CodingKeys: String, CodingKey {
-            case includeUsage = "include_usage"
-        }
     }
 }
 

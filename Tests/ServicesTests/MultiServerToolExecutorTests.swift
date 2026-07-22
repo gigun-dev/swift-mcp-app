@@ -28,8 +28,8 @@ private actor RecordingExecutor: MCPToolExecuting {
         let other = RecordingExecutor(returnValue: .string("other-result"))
         let exec = MultiServerToolExecutor(executors: ["caldav": caldav, "other": other])
 
-        let r = try await exec.callTool(name: "caldav__list-todos", arguments: .object(["a": .string("b")]))
-        #expect(r == .string("caldav-result"))
+        let result = try await exec.callTool(name: "caldav__list-todos", arguments: .object(["a": .string("b")]))
+        #expect(result == .string("caldav-result"))
 
         // 元ツール名(前置なし)で委譲されている。
         let caldavCalls = await caldav.recorded()

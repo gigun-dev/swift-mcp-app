@@ -6,15 +6,12 @@
 //   sendToolResult) → teardown、参照の強保持
 // を「CardEmbed 1件を描画する」形に落とす。
 //
-// ---------------------------------------------------------------------------------------------
 // 【最重要の設計判断: カードのライフサイクルと LazyVStack のスクロール問題】(設計 §4「カードの生存」)
-//
 // 設計 §4 は「チャットスクロールで画面外に出ても WKWebView は保持(再生成は高コスト・状態が飛ぶ)」を
 // 要求する。ところが ChatBodyView のメッセージ列は LazyVStack で、行が画面外に出ると View が破棄され
 // onDisappear が呼ばれる。もし InlineCardView 自体が session/webView を @State で持つと、スクロールで
 // 破棄 → 再表示のたびに作り直し(fetchAppHTML から握手まで全部やり直し)になり、カード内で進めた
 // 往復状態(complete したチェック等)が飛ぶ。これは §4 の生存方針に反する。
-//
 // 【採った解(タスク指示の「現実解」)】セッション群(webView + transport + coordinator + session)を
 // **InlineCardView の外**、すなわちチャット画面が生きている限り生存する `InlineCardRegistry`
 // (ChatBodyView が @State で1個所有)に **cardID キーで保持**する。InlineCardView は「registry から
@@ -22,21 +19,18 @@
 //  - スクロールで InlineCardView が破棄・再生成されても、registry の host は生き続けるので
 //    buildIfNeeded は2回目以降 no-op(既存 webView をそのまま再表示)= 往復状態が飛ばない。
 //  - AppCardView が「準備済み WKWebView を載せるだけ」の設計(AppCardView.swift 冒頭)とも整合する。
-//
 // 【teardown の方針】スクロールアウト(onDisappear)では teardown しない(§4 の生存優先)。teardown は
 // チャット画面そのものが閉じるとき(ChatBodyView.onDisappear)に registry がまとめて行う。
 //
 // 【ライブ WKWebView の枚数上限(§4 の5枚→スナップショット降格)は T5 では未実装】スナップショット機構
 // (outerHTML 取得・JS 無効ロード)は T6 で作るので、その転用である枚数上限も T6 送り(設計 §4 も
 // 「スナップショット機構を作る以上、転用はほぼタダ」と T6 前提で書く)。ここでは上限を設けない。
-// ---------------------------------------------------------------------------------------------
 import SwiftUI
 import UIKit     // UIScreen(fullscreen 推定寸法の算出・§5 H4)
 import WebKit
 import OSLog
 import Kernel    // CardEmbed・JSONValue・UIDisplayMode・ContainerDimensions
 import Services  // AppsServerProxy・AppsBridgeSession・WebViewTransport・AppCardWebCoordinator 等
-
 /// 1枚のインラインカードの「構築物」を強参照で束ねて生存させるホスト(設計 §4 の生存単位)。
 ///
 /// @MainActor @Observable: `webView`(構築完了で nil→非nil)を SwiftUI が観測し、プレースホルダ→カードへ
@@ -110,15 +104,9 @@ final class InlineCardHost: Identifiable {
     /// AppCardView/スパイクと共有の高さ状態型)なのでそのまま流用する。
     let cardState = AppCardState()
 
-    /// スナップショット(outerHTML)取得時に呼ばれるコールバック(T6・設計 §5)。
-    /// InlineCardView が build 前に host へ差し込む(identity=(turnIndex,cardIndex) を閉じ込めた
-    /// closure で、最終的に ChatViewModel.setCardSnapshot を叩く)。@MainActor: evaluateJavaScript の
-    /// 完了ハンドラはメインスレッドで呼ばれ、setCardSnapshot も @MainActor なので整合する。
+    /// outerHTML の取得時機・重複防止は専用 collaborator に閉じる。
     var onSnapshot: (@MainActor (String) -> Void)?
-
-    /// size-changed 到達を合図に一度スナップショットを取ったか(設計 §5「第一候補」)。
-    /// teardown 時の取り直し(保険)は didCapture に関わらず毎回行う。
-    private var didCaptureOnSizeChanged = false
+    private let snapshotter = InlineCardSnapshotter()
 
     // 生存させ続ける参照群(手放すと停止する。TodosCardSpikeViewModel のプロパティ群と同じ役割)。
     private var transport: WebViewTransport?
@@ -160,16 +148,34 @@ final class InlineCardHost: Identifiable {
     ///     containerDimensions.width としてカードへ渡り、caldav カードがこの幅にレイアウトする。
     ///   - maxHeight: inline の実 maxHeight(可視高 × 0.65・H1)。containerDimensions.maxHeight として
     ///     広告され、size-changed のクランプ上限を兼ねる。
-    func buildIfNeeded(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat, colorScheme: ColorScheme) {
+    func buildIfNeeded(
+        proxy: AppsServerProxy,
+        card: CardEmbed,
+        containerWidth: CGFloat,
+        maxHeight: CGFloat,
+        colorScheme: ColorScheme
+    ) {
         guard buildTask == nil else { return }  // 既に構築開始済み(= host は生存中)なら何もしない。
         // 寸法を保持(onSizeChanged クランプ・inline 復帰通知で使う)。build は非同期なのでここで確定させる。
         self.containerWidth = containerWidth
         self.inlineMaxHeight = maxHeight
         self.currentColorScheme = colorScheme  // #5: initialize の theme/styles に載せる初期外観。
-        buildTask = Task { await self.build(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight, colorScheme: colorScheme) }
+        buildTask = Task { await self.build(
+            proxy: proxy,
+            card: card,
+            containerWidth: containerWidth,
+            maxHeight: maxHeight,
+            colorScheme: colorScheme
+        ) }
     }
 
-    private func build(proxy: AppsServerProxy, card: CardEmbed, containerWidth: CGFloat, maxHeight: CGFloat, colorScheme: ColorScheme) async {
+    private func build(
+        proxy: AppsServerProxy,
+        card: CardEmbed,
+        containerWidth: CGFloat,
+        maxHeight: CGFloat,
+        colorScheme: ColorScheme
+    ) async {
         do {
             // 1. HTML プリフェッチ(接続内キャッシュが効くので2枚目以降の同一 URI は resources/read を省く)。
             //    uiMeta = content-level の _meta.ui(#6: prefersBorder はここに載る・AppsServerProxy.fetchAppHTML)。
@@ -186,101 +192,35 @@ final class InlineCardHost: Identifiable {
             let coordinator = AppCardWebCoordinator()
             self.coordinator = coordinator
             let webView = await AppCardWebViewFactory.make(
-                transport: transport, html: html, coordinator: coordinator, scrollEnabled: false)
+                transport: transport, html: html, coordinator: coordinator, scrollEnabled: false
+            )
             // #5: WKWebView 自体の外観をホストに合わせる。カード CSS が prefers-color-scheme を見る場合、
             // overrideUserInterfaceStyle を明示すると環境ではなくこの値でメディアクエリが解決される
             // (styles トークンを見ないカードでも、素の prefers-color-scheme だけでダーク化できる)。
             webView.overrideUserInterfaceStyle = colorScheme == .dark ? .dark : .light
 
-            // 3. セッション起動。onSizeChanged は高さを cardState へ流し込み、実 maxHeight(可視高×0.65・H1)で
-            //    クランプしてチャットを食い潰さない(設計 04 §5 H1)。
-            let cardState = self.cardState
+            // 3. セッション起動。イベントごとの判断は専用メソッドへ分け、構築手順を直線に保つ。
             let session = AppsBridgeSession(
                 transport: transport,
                 proxy: proxy,
                 containerWidth: Double(containerWidth),
                 maxHeight: Double(maxHeight),
-                // #5: build 時の外観から導出した theme/styles を initialize に載せる(HostThemeBuilder)。
                 theme: HostThemeBuilder.theme(for: colorScheme),
                 styles: HostThemeBuilder.styles(for: colorScheme),
                 onSizeChanged: { [weak self] height in
-                    await MainActor.run {
-                        guard let self else { return }
-                        // 【fullscreen 中は .frame 追従を停止(P4-DM 決定2・設計 04 §5 H4-E)】sheet 中は
-                        // カードが overflow-y:auto で自己スクロールし、器(sheet)の寸法は固定なので、
-                        // size-changed の高さは inline の枠に反映しない(反映すると sheet を閉じた瞬間に
-                        // 巨大高さが残る)。inline 復帰後の次の size-changed で最新値が入る。
-                        guard self.displayMode == .inline else {
-                            self.captureSnapshotOnFirstSizeChanged()
-                            return
-                        }
-                        // 【inline は実 maxHeight でクランプ(H1・設計 04 決定1)】旧実装は 4000 番兵で
-                        // 実質無制限追従だったが、可視高×0.65 の実制約に置換した。maxHeight 内に収まる
-                        // (少数件)ならカードは内容ぴったりで全部見え、超える場合はここでクランプされる
-                        // (超過分はカード側が畳み UI = caldav C2/C3 で自己整形する。caldav 未デプロイ時は
-                        // クランプで内容が見切れるが、これは設計どおりの既知の中間状態)。
-                        withAnimation(.easeOut(duration: 0.3)) {
-                            cardState.desiredHeight = min(CGFloat(height), self.inlineMaxHeight)
-                        }
-                        // スナップショット取得の第一候補(設計 §5): tool-result 配送後、カードが
-                        // 描画確定した合図として size-changed が到達した時点で outerHTML を取る。
-                        // 初回到達で1度だけ(以降の size-changed は同じ DOM の再計測が主で、
-                        // 取り直しは teardown 時にまとめて行う——毎 size-changed で JS 評価すると
-                        // スクロール中に無駄な評価が積み上がるため)。
-                        self.captureSnapshotOnFirstSizeChanged()
-                    }
+                    await self?.handleSizeChange(height, webView: webView)
                 },
-                // fullscreen 昇格の受理判断(P4-DM・設計 04 §5 H4-D)。カード発 request-display-mode を
-                // 受けて、調停役(coordinator)に「今 fullscreen を出せるか(高々1枚・決定2b)」を問う。
-                // このハンドラを注入すること自体が「fullscreen を広告する」意味を持つ(H4-F)。
                 onDisplayModeRequested: { [weak self] requested in
-                    // @Sendable クロージャ。MainActor 隔離の host/coordinator を触るので hop する。
-                    await MainActor.run {
-                        // fullscreen 以外(pip 等)は当面非対応 → 現状維持(inline)。
-                        guard requested == .fullscreen else {
-                            return DisplayModeResolution(mode: .inline)
-                        }
-                        guard let self, let coordinator = self.fullscreenCoordinator else {
-                            return DisplayModeResolution(mode: .inline)  // 調停役未接続なら安全に拒否。
-                        }
-                        // 推定寸法(large detent ≒ 可視高 − トップインセット・§5 H4-D)。sheet 実寸は提示
-                        // 完了まで確定しないので、まずこの推定を返す(必要なら提示後に補正・§5 H4-E)。
-                        let dims = self.estimatedFullscreenDimensions()
-                        let resolution = coordinator.requestFullscreen(self, estimatedDimensions: dims)
-                        // 【監査 2026-07-18 HIGH #1】ここでは host-context-changed をまだ送らない
-                        // (Session 側は応答だけを返す・AppsBridgeSession.swift の requestDisplayMode
-                        // ハンドラのコメント参照)。受理されたときだけ保留箱に積み、実際の reparent
-                        // 完了(FullscreenCardView 側 AppCardView.onAdopted)で notifyReparented() が
-                        // 拾って送る。拒否(.inline のまま)は何も変わっていないので積まない。
-                        if resolution.mode == .fullscreen {
-                            self.pendingDisplayModeNotification = (.fullscreen, dims)
-                        }
-                        return resolution
-                    }
+                    await self?.resolveDisplayMode(requested) ?? DisplayModeResolution(mode: .inline)
                 },
-                // カードが fullscreen を宣言しているか(⤢ ボタンの出し分け・UX #1・fable #1)を受け取り、
-                // @Observable の cardSupportsFullscreen に反映する。actor(Session)→ MainActor へ hop する。
                 onCardCapabilities: { [weak self] supports in
                     await MainActor.run { self?.cardSupportsFullscreen = supports }
                 },
-                // カード内操作(tools/call 素通し)の触覚(ユーザー要望 2026-07-17・host プロパティの
-                // onCardToolCall コメント参照)。actor(Session)→ MainActor へ hop して発火。
                 onCardToolCall: { [weak self] in
                     await MainActor.run { self?.onCardToolCall?() }
                 },
-                // ui/open-link の配線(監査 2026-07-18 HIGH #2)。URL 検証は Session 側
-                // (Kernel.OpenLinkPolicy)で既に済んでいるので、ここでは開くだけに徹する。
-                // UIApplication.open はメインスレッド呼び出しが要るため main queue へ dispatch し、
-                // 完了ハンドラの成否をそのまま Session の応答(result:{} / error -32000)に反映する。
-                onOpenLink: { url in
-                    await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-                        DispatchQueue.main.async {
-                            UIApplication.shared.open(url, options: [:]) { success in
-                                continuation.resume(returning: success)
-                            }
-                        }
-                    }
-                })
+                onOpenLink: Self.openLink
+            )
             self.session = session
             await session.start()
 
@@ -300,8 +240,44 @@ final class InlineCardHost: Identifiable {
             // チャット全体は壊さない(1カードの失敗に閉じる)。
             // 【リトライは今回スコープ外】もし将来 retry ボタンを足すなら、buildTask を nil に戻して
             // buildFailed も false に戻す必要がある(buildIfNeeded の guard buildTask == nil に依存するため)。
-            logger.error("インラインカード構築失敗 uri=\(card.resourceUri, privacy: .public): \(String(reflecting: error), privacy: .public)")
+            logger
+                .error(
+                    "インラインカード構築失敗 uri=\(card.resourceUri, privacy: .public): \(String(reflecting: error), privacy: .public)"
+                )
             self.buildFailed = true
+        }
+    }
+
+    /// inline は実 maxHeight でクランプし、fullscreen 中は高さ追従を止める。
+    /// 初回 size-changed は描画確定の合図でもあるため、どちらの mode でも snapshot を取る。
+    private func handleSizeChange(_ height: Double, webView: WKWebView) {
+        if displayMode == .inline {
+            withAnimation(.easeOut(duration: 0.3)) {
+                cardState.desiredHeight = min(CGFloat(height), inlineMaxHeight)
+            }
+        }
+        snapshotter.captureFirst(from: webView, receiver: onSnapshot)
+    }
+
+    /// カード発の fullscreen 要求を高々1枚の調停役へ渡す。通知は実際の reparent 後まで保留する。
+    private func resolveDisplayMode(_ requested: UIDisplayMode) -> DisplayModeResolution {
+        guard requested == .fullscreen, let fullscreenCoordinator else {
+            return DisplayModeResolution(mode: .inline)
+        }
+        let dimensions = estimatedFullscreenDimensions()
+        let resolution = fullscreenCoordinator.requestFullscreen(self, estimatedDimensions: dimensions)
+        if resolution.mode == .fullscreen {
+            pendingDisplayModeNotification = (.fullscreen, dimensions)
+        }
+        return resolution
+    }
+
+    /// URL 検証は Session 済み。UIKit の completion を async の成否へ橋渡しする。
+    private static func openLink(_ url: URL) async -> Bool {
+        await withCheckedContinuation { continuation in
+            UIApplication.shared.open(url, options: [:]) { success in
+                continuation.resume(returning: success)
+            }
         }
     }
 
@@ -310,7 +286,7 @@ final class InlineCardHost: Identifiable {
         // 保険のスナップショット取り直し(設計 §5「保険としてターン確定時にも取り直す」)。
         // カード離脱/画面クローズ時点の最終状態(size-changed 後に往復で内容が変わった等)を
         // 取りこぼさないため、didCapture に関わらず最後に1度取る。webView 破棄前に評価する。
-        captureSnapshot()
+        snapshotter.capture(from: webView, receiver: onSnapshot)
         let session = self.session
         Task { await session?.teardown() }
     }
@@ -345,7 +321,8 @@ final class InlineCardHost: Identifiable {
         let topReserve: CGFloat = 60
         return ContainerDimensions(
             width: Double(screen.width),
-            maxHeight: Double(max(0, screen.height - topReserve)))
+            maxHeight: Double(max(0, screen.height - topReserve))
+        )
     }
 
     /// webView 内部スクロールの動的切替(§5 H4・§6-2)。fullscreen ではカード自己スクロールを許し、
@@ -418,249 +395,5 @@ final class InlineCardHost: Identifiable {
         let styles = HostThemeBuilder.styles(for: scheme)
         let session = self.session
         Task { await session?.notifyThemeChanged(theme: theme, styles: styles) }
-    }
-
-    // MARK: - スナップショット取得(設計 §5)
-
-    /// size-changed 初回到達時に1度だけ outerHTML を取る(第一候補のタイミング)。
-    private func captureSnapshotOnFirstSizeChanged() {
-        guard !didCaptureOnSizeChanged else { return }
-        didCaptureOnSizeChanged = true
-        captureSnapshot()
-    }
-
-    /// 現在の webView の DOM を `document.documentElement.outerHTML` でシリアライズし、
-    /// onSnapshot へ渡す(設計 §5)。webView 未構築や onSnapshot 未設定なら何もしない。
-    /// 【outerHTML の限界(設計 §5 記載)】input の入力途中値・canvas は落ちるが、caldav の
-    /// todos/agenda はリスト表示なので実害なし。再訪側は allowsContentJavaScript=false でロードする。
-    private func captureSnapshot() {
-        guard let webView, let onSnapshot else { return }
-        webView.evaluateJavaScript("document.documentElement.outerHTML") { result, error in
-            // 完了ハンドラはメインスレッド。MainActor 隔離をコンパイラに伝えるため Task で包む
-            // (evaluateJavaScript の completion は @Sendable 非分離クロージャなので、
-            //  @MainActor の onSnapshot を直接は呼べない)。
-            if let html = result as? String {
-                Task { @MainActor in onSnapshot(html) }
-            } else if let error {
-                self.logger.error("outerHTML 取得に失敗: \(String(reflecting: error), privacy: .public)")
-            }
-        }
-    }
-}
-
-/// cardID → InlineCardHost の台帳。ChatBodyView が @State で1個所有し、チャット画面の生存期間中
-/// カード群を生かし続ける(上のファイル冒頭「最重要の設計判断」参照)。@Observable にしないのは、
-/// この dict 自体の変化を View が観測する必要がないため(観測対象は各 host.webView・そちらが @Observable)。
-@MainActor
-final class InlineCardRegistry {
-    private var hosts: [String: InlineCardHost] = [:]
-
-    /// key に対応する host を返す(無ければ生成して登録)。get-or-create なので body から呼んでも
-    /// 同一インスタンスが返り、スクロール再生成に耐える。
-    /// - Parameter coordinator: fullscreen 昇格の調停役(ChatBodyView 所有)。生成時に host へ注入する
-    ///   (registry 経由が自然・設計 04 §5 H4-D)。既存 host には再注入しない(生存中は同一 coordinator)。
-    func host(for key: String, coordinator: FullscreenCoordinator) -> InlineCardHost {
-        if let existing = hosts[key] { return existing }
-        let host = InlineCardHost()
-        host.attach(fullscreenCoordinator: coordinator)
-        hosts[key] = host
-        return host
-    }
-
-    /// 全カードを破棄(チャット画面クローズ時)。以降の再表示は無いので session を畳んでよい。
-    func teardownAll() {
-        for host in hosts.values { host.teardown() }
-        hosts.removeAll()
-    }
-}
-
-/// 1枚のインラインカードを描画する View。実体(webView/session)は host が持ち、この View は
-/// 「host の準備済み webView を高さ追従で載せるだけ」(AppCardView と同じ薄さ)。
-struct InlineCardView: View {
-    let host: InlineCardHost
-    let proxy: AppsServerProxy
-    let card: CardEmbed
-    let containerWidth: CGFloat
-    /// inline の実 maxHeight(可視高 × 0.65・P4-DM 決定1・設計 04 §5 H1)。ChatBodyView が可視高から算出して渡す。
-    let maxHeight: CGFloat
-    /// スナップショット取得時に呼ばれる(T6・設計 §5)。ChatBodyView が identity=(turnIndex,cardIndex)
-    /// を閉じ込めて渡し、最終的に ChatViewModel.setCardSnapshot を叩く。既定 nil で T5 の既存呼び出し
-    /// (スナップショット不要のプレビュー等)を壊さない。
-    var onSnapshot: (@MainActor (String) -> Void)?
-
-    // 高さ(desiredHeight)は AppCardState(ObservableObject)で観測する。@Observable の host とは
-    // 別機構だが、既存の高さ状態型を作り替えない方針(ファイル冒頭 InlineCardHost.cardState 参照)。
-    @ObservedObject private var cardState: AppCardState
-
-    // #5: ホストの現在外観。initialize に載せる初期 theme と、変化時の host-context-changed 追送に使う。
-    @Environment(\.colorScheme) private var colorScheme
-
-    init(
-        host: InlineCardHost,
-        proxy: AppsServerProxy,
-        card: CardEmbed,
-        containerWidth: CGFloat,
-        maxHeight: CGFloat,
-        onSnapshot: (@MainActor (String) -> Void)? = nil
-    ) {
-        self.host = host
-        self.proxy = proxy
-        self.card = card
-        self.containerWidth = containerWidth
-        self.maxHeight = maxHeight
-        self.onSnapshot = onSnapshot
-        // @ObservedObject を host の cardState に束ねる(init で _cardState を組む標準パターン)。
-        self._cardState = ObservedObject(wrappedValue: host.cardState)
-    }
-
-    var body: some View {
-        content
-            // 構築は host に一任(2回目以降 no-op)。containerWidth が未確定(初期 0)の間は構築を保留し、
-            // 実測幅が来てから1度だけ構築する(狭すぎる幅でカードがレイアウトされるのを避ける)。
-            .task(id: containerWidth > 0) {
-                guard containerWidth > 0 else { return }
-                // スナップショット取得口を host に差し込んでから構築する(build 中の size-changed で
-                // 取得が走るので、それより前に設定しておく)。host は生存し続けるが closure は
-                // View 再生成のたびに新しくなりうるので、毎回入れ替える(identity は同じなので実害なし)。
-                host.onSnapshot = onSnapshot
-                host.buildIfNeeded(proxy: proxy, card: card, containerWidth: containerWidth, maxHeight: maxHeight, colorScheme: colorScheme)
-            }
-            // #5: ホスト外観の変化をカードへ追送する(ライト⇄ダーク切替・システム設定変更)。build 後の
-            // 変更のみが対象で、host 側が同値ガード・session 未生成ガードを持つので初回や build 前は no-op。
-            .onChange(of: colorScheme) { _, newScheme in
-                host.updateColorScheme(newScheme)
-            }
-        // onDisappear では teardown しない(設計 §4 の生存優先・ファイル冒頭の判断)。スクロールアウトは
-        // 一時的な View 破棄にすぎず、host は registry が生かし続ける。teardown はチャット画面クローズ時に
-        // ChatBodyView が registry.teardownAll() でまとめて行う。
-    }
-
-    /// カード**外**・カード上に置く極薄のホストクローム行(⤢ のみ・右寄せ)。
-    ///
-    /// 【なぜオーバーレイをやめたか(設計 04 決定2・2026-07-17 追記)】旧実装はカード右上に
-    /// `.overlay(alignment: .topTrailing)` で ⤢ を重ねていたが、caldav の sticky ヘッダ「完了」
-    /// (todos-app.ts:1173)と実機で衝突し押せなくなった(ユーザー実機報告)。設計 04 は fullscreen 側の
-    /// 対称なボタン(⤡)について既に「カード右上へのオーバーレイはボツ、位置はカード外」と裁定済み
-    /// (04 §5 H4・2026-07-17 更新)。ホストはカードの内部レイアウト(ヘッダがどこにあるか)を知らない
-    /// (CLAUDE.md ビジョン2: AppsBridge は caldav 非依存)ため、「ホストクロームをカードのコンテンツ
-    /// 領域に重ねない」が任意のカードに対して安全な唯一の一般解。inline 側もこの原則を適用し、
-    /// ⤢ を**カード枠の外・カードの上**の行に出す(fullscreen の上端ストリップと対称の位置づけ)。
-    ///
-    /// 【ボツ案: オーバーレイのまま位置だけずらす】カードごとに sticky ヘッダの配置(高さ・左右)が
-    /// 違いうる(caldav は上端固定だが、他の任意の MCP App が同じ保証をする理由がない)ため、
-    /// 「ずらせば直る」は特定カードへの場当たり対応でしかなく構造的に解決しない。却下(財産として残す)。
-    ///
-    /// 表示条件: cardSupportsFullscreen && displayMode==.inline のときだけ行自体を出す
-    /// (非対応カードでは行が無い=余白を増やさない・押しても拒否される死にボタンにしない)。
-    @ViewBuilder
-    private var chromeRow: some View {
-        if host.cardSupportsFullscreen && host.displayMode == .inline {
-            HStack {
-                Spacer()
-                Button {
-                    host.requestFullscreenFromHost()
-                } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("最大化")
-            }
-            .frame(height: 24)  // 極薄・背景なし(カード枠の外なので同居に制約は無いが、控えめに保つ)。
-            .padding(.trailing, 4)
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        // host.webView(@Observable)を読むことで、構築完了(nil→非nil)時に自動で差し替わる。
-        if let webView = host.webView {
-            // role:.inline + host.displayMode を渡す(P4-DM・container 再アダプト方式)。host.displayMode を
-            // ここで読むことで @Observable 依存が張られ、fullscreen 昇格/復帰で content が再評価され、
-            // AppCardView の updateUIView が走って webView の載せ替え(奪い合いガード込み)が起きる。
-            // fullscreen 中はこの inline 側 AppCardView は webView を所有しない(sheet 側が持つ)ため
-            // 空の枠が cardState.desiredHeight で残る(カードは sheet に居る・設計 04 §6)。
-            // #6 prefersBorder: カードが枠+背景を望むか。nil(未指定)= ホスト既定で「枠+背景あり」に倒す
-            // (現行の見た目を維持・退行ゼロ)。false のときだけ枠・背景・角丸クリップを外して素のカードにする。
-            let showBorder = host.prefersBorder ?? true
-            // 【カード外クローム行(2026-07-17 追記)】⤢ はカードの上・カード枠の**外**に置く(chromeRow
-            // 冒頭コメント参照)。VStack で縦積みするだけで、カード自体のレイアウト(background/clipShape/
-            // overlay の枠線)には一切手を入れない — オーバーレイ撤去に伴う変更はここだけに閉じる。
-            VStack(spacing: 4) {
-                chromeRow
-                AppCardView(
-                    webView: webView, role: .inline, activeDisplayMode: host.displayMode,
-                    // 監査 2026-07-18 HIGH #1: 実際に inline へ再アダプトされた直後に保留中の
-                    // host-context-changed(inline 復帰)があれば送る(InlineCardHost.notifyReparented
-                    // コメント参照)。
-                    onAdopted: { host.notifyReparented() }
-                )
-                    .frame(height: cardState.desiredHeight)  // size-changed 追従(設計 §5・fullscreen 中は停止)。
-                    .frame(maxWidth: .infinity)
-                    // #5 ダークモード: 枠・背景はシステム意味カラーにして外観に追従する(旧: Color(white:) 固定は
-                    // ダークで白浮きする)。webView 自体は透過なのでカードの地色は styles トークン由来で入る。
-                    .background(showBorder ? Color(uiColor: .secondarySystemBackground) : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: showBorder ? 12 : 0))
-                    // 角丸+枠(TodosCardSpike の見た目を踏襲・showBorder のときだけ描く)。
-                    .overlay {
-                        if showBorder {
-                            RoundedRectangle(cornerRadius: 12).stroke(Color(uiColor: .separator))
-                        }
-                    }
-            }
-        } else if host.buildFailed {
-            // 【fable #3: 構築失敗のエラー表示】旧実装はこの分岐が無く、失敗時も下のローディングに
-            // 落ちてスピナーが回り続けていた(ファイル冒頭 buildFailed 宣言のコメント参照)。
-            // プレースホルダと同じ角丸+枠のトーンを踏襲しつつ、エラーだと分かる見た目(warning 色の
-            // 三角アイコン+文言+ツール名)にする。リトライは今回のスコープ外(上の build() コメント参照)。
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(white: 0.96))
-                .frame(height: 120)
-                .overlay(
-                    VStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.title3)
-                            .foregroundStyle(.orange)
-                        Text("カードを読み込めませんでした")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text(card.toolName)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                )
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
-                // #8 随伴: エラーの意味をまとめて1つのアクセシビリティ要素として読み上げる。
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("カードを読み込めませんでした: \(card.toolName)")
-        } else {
-            // 【fable #7: ローディング改善】旧実装は無地の ProgressView(無名スピナー)だけで、
-            // 何を読み込んでいるか分からなかった。ツール名ラベル + skeleton 風の薄いバー2本を添える
-            // ことで「何を待っているか」を示す(caldav カード側の skeleton に寄せる必要はなく、
-            // ホスト側は素朴な表現で良い・タスク指示)。HTML 取得〜握手までの数百 ms の間だけ見える。
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(white: 0.96))
-                .frame(height: 120)
-                .overlay(
-                    VStack(spacing: 10) {
-                        ProgressView()
-                        Text("\(card.toolName) を読み込み中…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        // skeleton 風の薄いバー(内容が来る前の骨格を示唆する程度。派手にしない)。
-                        VStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(Color(white: 0.88))
-                                .frame(width: 120, height: 6)
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(Color(white: 0.88))
-                                .frame(width: 80, height: 6)
-                        }
-                    }
-                )
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.85)))
-                .accessibilityLabel("\(card.toolName) を読み込み中")
-        }
     }
 }

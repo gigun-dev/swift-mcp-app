@@ -31,7 +31,7 @@ public enum ChatTraceEvent: Sendable, Codable, Equatable {
     /// arguments は decodeArguments 済みの JSONValue(素通し・設計 02 §1 の JSONValue 方針)。
     case toolCallStarted(turnId: String, callId: String, name: String, arguments: JSONValue)
 
-    /// ツール実行1本の終了。resultBytes は結果 JSON の UTF-8 バイト数(設計 03 §3
+    // ツール実行1本の終了。resultBytes は結果 JSON の UTF-8 バイト数(設計 03 §3
     // 「result 本体は ChatStore 側が持つ」— ここではサイズだけを持ち、本体は積まない
     // ことで「フル JSON 要約化は据え置き」の方針とも独立に、トレースは軽量に保つ)。
     // durationMs は execute の呼び出し前後で計測する実測値(Date().timeIntervalSince で算出。

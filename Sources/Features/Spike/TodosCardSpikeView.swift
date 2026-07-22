@@ -61,7 +61,8 @@ final class TodosCardSpikeViewModel: ObservableObject {
             let redirectURI = try delegate.prepareRedirectURI()
             logger.notice("S4 接続開始 \(url.absoluteString, privacy: .public)")
             let connection = try await MCPConnection.connect(
-                serverURL: url, redirectURI: redirectURI, authorizationDelegate: delegate)
+                serverURL: url, redirectURI: redirectURI, authorizationDelegate: delegate
+            )
             logger.notice("S4 接続成功 tools=\(connection.tools.count)")
             setStatus("接続成功(tools=\(connection.tools.count))。カード準備中…")
 
@@ -89,7 +90,8 @@ final class TodosCardSpikeViewModel: ObservableObject {
             // スパイクは単カード全画面デモなので WKWebView の内部スクロールを許す
             // (カードを画面いっぱいに広げ、伸びるコンテンツはスクロールで見せる)。
             let webView = await AppCardWebViewFactory.make(
-                transport: transport, html: html, coordinator: coordinator, scrollEnabled: true)
+                transport: transport, html: html, coordinator: coordinator, scrollEnabled: true
+            )
 
             // --- 5. セッション起動(initialize 握手)-----------------------------------
             // onSizeChanged: 高さを cardState へ(300ms ease-out・上限 600・設計 §5)。
@@ -101,20 +103,7 @@ final class TodosCardSpikeViewModel: ObservableObject {
             // 本番のチャット内インラインカード幅は P3 で親 View の実測幅を流し込む(設計 §5)。
             let screenWidth = await MainActor.run { UIScreen.main.bounds.width }
             let cardWidth = screenWidth - 32
-            let session = AppsBridgeSession(
-                transport: transport,
-                proxy: proxy,
-                containerWidth: Double(cardWidth),
-                // スパイクは単カードで画面を占有できるので上限を高めに(チャット内の 600 上限は P3)。
-                maxHeight: 5000,
-                onSizeChanged: { height in
-                    await MainActor.run {
-                        withAnimation(.easeOut(duration: 0.3)) {
-                            // スパイクは単カード占有なので高さはほぼ素通し(上限 5000 = 実質無制限)。
-                            cardState.desiredHeight = min(CGFloat(height), 5000)
-                        }
-                    }
-                })
+            let session = makeSession(transport: transport, proxy: proxy, cardWidth: cardWidth, state: cardState)
             self.session = session
             await session.start()
 
@@ -136,15 +125,37 @@ final class TodosCardSpikeViewModel: ObservableObject {
         }
     }
 
+    /// スパイク固有の「単カードは内部スクロール・高さは実質無制限」という Session 契約を組み立てる。
+    private func makeSession(
+        transport: WebViewTransport,
+        proxy: AppsServerProxy,
+        cardWidth: CGFloat,
+        state: AppCardState
+    ) -> AppsBridgeSession {
+        AppsBridgeSession(
+            transport: transport,
+            proxy: proxy,
+            containerWidth: Double(cardWidth),
+            maxHeight: 5000,
+            onSizeChanged: { height in
+                await MainActor.run {
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        state.desiredHeight = min(CGFloat(height), 5000)
+                    }
+                }
+            }
+        )
+    }
+
     /// 明示破棄(画面離脱時)。teardown を投げてから片付ける(設計 §6)。
     func teardown() {
         let session = self.session
         Task { await session?.teardown() }
     }
 
-    private func setStatus(_ s: String) {
-        status = s
-        logger.notice("status: \(s, privacy: .public)")
+    private func setStatus(_ newStatus: String) {
+        status = newStatus
+        logger.notice("status: \(newStatus, privacy: .public)")
     }
 
     private func fail(_ message: String) {

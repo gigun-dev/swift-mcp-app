@@ -1,26 +1,11 @@
-// MCP Apps のライフサイクル状態機械(設計 §2)。1 セッション = 1 WKWebView = 1 ツールカード。
-//
-// 仕様の順序制約(apps.mdx:485):
-//   View → `ui/initialize`(request) → Host が hostContext 入り result を返す
-//        → View → `ui/notifications/initialized` → **それまで Host は View に
-//          いかなる request/notification も送ってはならない(MUST NOT)**。
-//   破棄前は Host → `ui/resource-teardown`(request)(app-bridge.ts:811-827)。
-//
-// この MUST NOT を「機械的に」守るために、ready 前の Host→View 通知(tool-input/tool-result/
-// host-context-changed)はすべて outbox に積み、initialized 受信で ready へ遷移した瞬間に
-// FIFO で flush する。ready 前に View へ1バイトも送らないことがコードで保証される。
-//
-// スレッド/隔離(設計 §2 + S2 申し送り): このセッションは actor。WKWebView 操作は
-// WebViewTransport.deliver 内で MainActor へホップ済み(WebViewTransport のコメント参照)なので、
-// ここは actor のまま transport.deliver を await するだけでよい。
+// MCP Appsのinitialize→initialized→teardown順序を守る、1 WKWebView単位のactor状態機械。
+// initialized前のHost通知はoutboxへ積み、ready遷移時にFIFO配送する(apps.mdx:485 MUST NOT)。
+// passthroughの並行処理とJSON配送は協調オブジェクトへ分離し、Sessionは順序制約だけを所有する。
 import Foundation
 import OSLog
 import Kernel
 
-/// request-display-mode の解決結果(P4-DM・設計 04 §5 H3)。Kernel の wire 型
-/// (RequestDisplayModeResult 等)とは別に Services 側で持つ小さな struct —— containerDimensions
-/// という「結果に付随する追加情報」を wire 型に足すと Kernel が displayMode ごとの寸法計算という
-/// ホスト側の判断ロジックを知ることになり、Kernel のプラットフォーム非依存性(CLAUDE.md)を汚す。
+/// request-display-modeのホスト判断。wire型へホスト固有の寸法計算を持ち込まないためServicesに置く。
 public struct DisplayModeResolution: Sendable {
     /// 実際に設定するモード(拒否時は現状維持のモード。要求どおりとは限らない)。
     public let mode: UIDisplayMode
@@ -56,15 +41,16 @@ public actor AppsBridgeSession {
     private var state: State = .loadingResource
 
     // ready 前に積まれた Host→View 通知。ready 遷移で FIFO flush(仕様 MUST NOT の機械的遵守)。
-    private var outbox: [JSONRPCNotification] = []
+    private var outbox = AppsBridgeOutbox()
 
     // MARK: - 協調オブジェクト
 
     private let transport: any AppsBridgeTransport
+    private let delivery: AppsBridgeDelivery
     // HOLB S0: 具象 AppsServerProxy でなくプロトコル越しに持つ。テストでゲート式モックを挿し、
     // passthrough 往復 await 中に size-changed を interleave できるかを決定的に固定するため。
     // 生成箇所は具象 AppsServerProxy(actor= AppsServerProxying 適合)を渡すので本番挙動は不変。
-    private let proxy: any AppsServerProxying
+    private let passthroughDispatcher: AppsBridgePassthroughDispatcher
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "appssession")
 
     // initialize 応答に載せる Host 情報と hostContext の材料(設計 §2/§3-2 の最小集合)。
@@ -74,12 +60,7 @@ public actor AppsBridgeSession {
     private var containerWidth: Double
     private let maxHeight: Double
 
-    // 現在のテーマとスタイルトークン(#5 ダークモード)。Session は状態を「持たない」設計だが、
-    // theme/styles は containerWidth と同じく「initialize 応答に載せる材料 + 変化時に
-    // host-context-changed で再通知する相関用の影」として保持する(単一の真実は Features 側の
-    // colorScheme。設計 04 の責務表に合わせ、Session はホストから受けた値を反映するだけ)。
-    // 既定は .light / styles 無し(従来挙動 = テーマ非提供と等価)。Features が init と
-    // notifyThemeChanged で実値を注入する。
+    // initialize応答と変更通知に使うテーマの影。単一の真実はFeatures側のcolorScheme。
     private var currentTheme: UITheme
     private var currentStyles: HostStyles?
 
@@ -87,40 +68,10 @@ public actor AppsBridgeSession {
     // actor から MainActor の @Observable を直接触らないための注入点(設計 §5)。
     private let onSizeChanged: @Sendable (Double) async -> Void
 
-    // カードが initialize で申告した appCapabilities.availableDisplayModes に fullscreen が
-    // 含まれるか(= カードがホスト発 fullscreen 昇格に対応するか)を Features へ流す注入点
-    // (UX #1・fable ベスプラ調査 #1)。onSizeChanged と同型で、actor から MainActor の
-    // @Observable(InlineCardHost.cardSupportsFullscreen)を直接触らないためにコールバックにする。
-    //
-    // 【なぜカード側の申告を見るのか(spec 上の合法性・apps.mdx:786)】ホスト発の displayMode 切替は
-    // 「その mode がカードの appCapabilities.availableDisplayModes に含まれるとき」だけ合法。よって
-    // ホスト UI(⤢ ボタン)も「カードが fullscreen を宣言しているとき」だけ出す。宣言していない
-    // カードに ⤢ を出すと、押しても spec 違反の要求になる(=死にボタン)。この判定を Features へ渡し、
-    // Features が ⤢ の表示可否に使う。パース失敗・欠落は false(=⤢ を出さない)で安全側に倒す。
+    // カードのfullscreen申告(apps.mdx:786)をFeaturesへ渡し、非対応カードの死にボタンを防ぐ。
     private let onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)?
 
-    /// カード発 tools/call 素通しの開始フック(ハプティクス用・init コメント参照)。nil = 無効。
-    private let onCardToolCall: (@Sendable () async -> Void)?
-
-    // ui/open-link(カード発の外部 URL オープン要求)の実行フック(監査 2026-07-18 HIGH #2)。
-    // UIApplication.open は UIKit 依存で Services/actor には持ち込めないため、実行は Features
-    // (InlineCardHost)に委譲する注入点(onDisplayModeRequested と同型)。戻り値は「実際に開けたか」
-    // (ユーザーが拒否した・システムがハンドラを持たない等で false もありうる)。
-    // nil(既定)= 機能未配線のホスト構成では常に拒否応答(-32000)を返す(スパイク/テストを壊さない)。
-    private let onOpenLink: (@Sendable (URL) async -> Bool)?
-
-    // request-display-mode を受けたとき、実際にどのモードへ遷移するかを決める注入点
-    // (P4-DM・設計 04 §5 H3 + H4-F)。Features(H4)が sheet 器を持つかどうかを知っているのは
-    // Features 側なので、Session 自身は「昇格してよいか」を判断しない。
-    //
-    // 【optional にした理由(設計 04 §5 H3 追補「fullscreen 広告はハンドラ注入時のみ」= H4-F)】
-    // fullscreen の広告は「このハンドラが注入されたときだけ」にする。ハンドラが無い(nil)= sheet 器を
-    // 持たないホスト構成では fullscreen を広告しない([inline] だけ)ことで、「押すと必ず拒否される
-    // 死にボタン」を構造的に排除する(availableDisplayModes に fullscreen が出る ⇔ 実際に昇格できる、を
-    // 一致させる)。nil のとき request-display-mode が来ても現状維持(currentDisplayMode)を応答して
-    // 安全に拒否する(spec 上は View が apps.mdx:786 の MUST を守れば非広告モードへ要求してこないが、
-    // 来ても壊れない)。本番 InlineCardHost は常にこのハンドラを注入するので fullscreen が広告される。
-    private let onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)?
+    private let interactionResponder: AppsBridgeInteractionResponder
 
     // 現在の displayMode(Session が最後に View へ通知した値)。単一の真実は将来
     // Features 側(InlineCardHost)に置く設計(設計 04 §3 責務表)だが、Session は
@@ -129,30 +80,12 @@ public actor AppsBridgeSession {
     private var currentDisplayMode: UIDisplayMode = .inline
 
     // teardown の応答待ち continuation とその id(応答相関に使う)。
-    private var teardownContinuation: CheckedContinuation<Void, Never>?
-    private var teardownRequestID: RequestID?
+    private let teardownWaiter = TeardownResponseWaiter()
 
     // Host→View request(teardown)に振る id 採番。負値を使い View 由来 id と衝突させない。
-    private var nextHostRequestID = -1
+    private var hostRequestIDs = HostRequestIDGenerator()
 
     private var consumeTask: Task<Void, Never>?
-
-    // 実行中の passthrough(tools/call・resources/read)の追跡テーブル(HOLB S1)。
-    // なぜ passthrough だけ非直列化するのか(Why・順序不変条件):
-    //   - typed/response レーンは直列でなければならない: initialize→initialized→outbox flush の直列性と
-    //     teardown の request↔response 相関が受信順処理に依存する。順序を崩すと ready ゲートの機械的遵守や
-    //     teardown 相関が壊れる。
-    //   - passthrough の応答は id 相関で順不同 OK: tools/call/resources/read は JSON-RPC id で一意相関する
-    //     ので、複数を並行に流し到着順に応答しても View は正しく突き合わせる。よって passthrough だけは
-    //     「実サーバー往復 await 中に後続の size-changed 等を先に処理させてよい」。これで実機 ~730ms の
-    //     head-of-line blocking が消える。
-    // 実装(追跡付き非構造化 Task): UUID 採番して Task 登録・完了時に自身を除去。actor リエントランシーで
-    // Task が proxy 往復を await 中、受信ループは即次メッセージへ進み typed/notification が interleave できる。
-    // close() で全 Task cancel(寿命 S2)。
-    // Why not(back-pressure のハード上限を今は設けない): 暴走的な tools/call 連打はサンドボックス(WKWebView)
-    // 側の脅威モデルで扱う領域。上限を入れるならここ(登録前に inflightPassthrough.count を見て超過なら
-    // proxyRequest を呼ばず JSONRPCError(code: -32000) を即 deliver)。今は素直に無制限で持つ。
-    private var inflightPassthrough: [UUID: Task<Void, Never>] = [:]
 
     // テスト専用の readiness プローブ。ready 遷移(initialized 受信→outbox flush)は受信ループの非同期消化に
     // 依存するため、テストが「ready になったか」を決定的に待つ手段が要る。HOLB テストで並行スケジューリング
@@ -166,35 +99,35 @@ public actor AppsBridgeSession {
         hostInfo: Implementation = Implementation(name: "MCPHost", version: "0.1.0"),
         containerWidth: Double,
         maxHeight: Double = 600,
-        // #5: 初期テーマとスタイルトークン。Features(InlineCardHost)が build 時の colorScheme から
-        // 導出して渡す。既定は従来挙動(theme=.light・styles 無し)で、渡さない呼び出し(スパイク/テスト)を壊さない。
+        // 初期theme/stylesはFeaturesがcolorSchemeから導出する。
         theme: UITheme = .light,
         styles: HostStyles? = nil,
         onSizeChanged: @escaping @Sendable (Double) async -> Void = { _ in },
-        // 既定 nil = fullscreen を広告しない・request-display-mode は拒否(H4-F)。本番は Features が注入する。
         onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil,
-        // 既定 nil = カード capability を Features へ通知しない(⤢ ボタン不要のホスト構成)。本番は Features が注入する。
         onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil,
-        // カード発 tools/call(素通し)の開始フック(ユーザー要望 2026-07-17: カード内の done/undo 等の
-        // 操作にハプティクスを付ける)。カード内のタップ自体はホストから不可視だが、ユーザー操作は必ず
-        // tools/call 素通しとしてここを通るので、任意の MCP アプリに対して中立にフックできる(ビジョン2)。
-        // 既定 nil = 何もしない(スパイク/テストを壊さない)。
+        // カード発tools/callのハプティクスフック。
         onCardToolCall: (@Sendable () async -> Void)? = nil,
         // ui/open-link の実行フック(既定 nil = 常に拒否)。本番は Features が UIApplication.open へ配線する。
         onOpenLink: (@Sendable (URL) async -> Bool)? = nil
     ) {
         self.transport = transport
-        self.proxy = proxy
+        self.delivery = AppsBridgeDelivery(transport: transport)
+        self.passthroughDispatcher = AppsBridgePassthroughDispatcher(
+            transport: transport,
+            proxy: proxy,
+            onCardToolCall: onCardToolCall
+        )
         self.hostInfo = hostInfo
         self.containerWidth = containerWidth
         self.maxHeight = maxHeight
         self.currentTheme = theme
         self.currentStyles = styles
         self.onSizeChanged = onSizeChanged
-        self.onDisplayModeRequested = onDisplayModeRequested
         self.onCardCapabilities = onCardCapabilities
-        self.onCardToolCall = onCardToolCall
-        self.onOpenLink = onOpenLink
+        self.interactionResponder = AppsBridgeInteractionResponder(
+            onDisplayModeRequested: onDisplayModeRequested,
+            onOpenLink: onOpenLink
+        )
     }
 
     // MARK: - 起動 / 受信ループ
@@ -209,7 +142,7 @@ public actor AppsBridgeSession {
         consumeTask = Task { [weak self] in
             guard let self else { return }
             // transport.incoming は (message, raw) のタプル。ここでは判別済み message だけ使う。
-            for await item in await self.transport.incoming {
+            for await item in self.transport.incoming {
                 await self.handleIncoming(item.message)
             }
         }
@@ -255,7 +188,7 @@ public actor AppsBridgeSession {
         let note = JSONRPCNotification(
             method: AppsMethod.hostContextChanged,
             params: try? JSONValue(encoding: patch))
-        await deliver(notification: note)
+        await delivery.send(note)
         logger.notice("host-context-changed 送信 width=\(width)")
     }
 
@@ -263,7 +196,10 @@ public actor AppsBridgeSession {
     /// View 発の request-display-mode と違い応答は無く、host-context-changed 通知だけ送る
     /// (apps.mdx:776)。H4(Features の sheet 器)未実装の現時点では誰も呼ばないが、
     /// H3 の API としてここに用意しておく。
-    public func notifyDisplayModeChanged(to mode: UIDisplayMode, containerDimensions: ContainerDimensions? = nil) async {
+    public func notifyDisplayModeChanged(
+        to mode: UIDisplayMode,
+        containerDimensions: ContainerDimensions? = nil
+    ) async {
         guard state == .ready else {
             // ready 前(MUST NOT の対象)は送らず、記憶だけ更新する。setContainerWidth の
             // ready-前分岐と同じ考え方(design 04 §5 H3・ready 後の再遷移で改めて通知される想定)。
@@ -274,7 +210,7 @@ public actor AppsBridgeSession {
         currentDisplayMode = mode
         let dims = containerDimensions ?? ContainerDimensions(width: containerWidth, maxHeight: maxHeight)
         let patch = HostContext(displayMode: mode, containerDimensions: dims)
-        await deliver(notification: JSONRPCNotification(
+        await delivery.send(JSONRPCNotification(
             method: AppsMethod.hostContextChanged, params: try? JSONValue(encoding: patch)))
         logger.notice("host-context-changed 送信(ホスト起点) mode=\(String(describing: mode))")
     }
@@ -296,7 +232,7 @@ public actor AppsBridgeSession {
         }
         // 部分更新(spec: params は「変わったフィールドだけ」の Partial context)。theme と styles だけ載せる。
         let patch = HostContext(theme: theme, styles: styles)
-        await deliver(notification: JSONRPCNotification(
+        await delivery.send(JSONRPCNotification(
             method: AppsMethod.hostContextChanged, params: try? JSONValue(encoding: patch)))
         logger.notice("host-context-changed 送信(theme 変更) theme=\(theme.rawValue)")
     }
@@ -308,12 +244,12 @@ public actor AppsBridgeSession {
     public func teardown(timeout: Duration = .seconds(2)) async {
         guard state == .ready else {
             logger.notice("teardown: ready でないので即 closed(state=\(String(describing: self.state)))")
-            close()
+            await close()
             return
         }
         state = .tearingDown
-        let id = RequestID.int(makeHostRequestID())
-        teardownRequestID = id
+        let id = RequestID.int(hostRequestIDs.make())
+        await teardownWaiter.begin(requestID: id)
         let request = JSONRPCRequest(
             id: id,
             method: AppsMethod.resourceTeardown,
@@ -323,13 +259,15 @@ public actor AppsBridgeSession {
         // 応答 or タイムアウトのどちらか早い方で先に進む。
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [weak self] in
-                await self?.awaitTeardownResponse()
+                await self?.teardownWaiter.wait()
             }
             group.addTask {
                 try? await Task.sleep(for: timeout)
             }
             // request をここで投げる(応答待ちタスク登録より後でも、応答は continuation で待つので競合しない)。
             if let data = try? JSONEncoder().encode(request) {
+                // JSONEncoder出力はUTF-8保証済み。失敗しない文字列化を使う。
+                // swiftlint:disable:next optional_data_string_conversion
                 await self.transport.deliver(rawJSON: String(decoding: data, as: UTF8.self))
             }
             // 最初に終わった一方で group を畳む(残りは破棄)。
@@ -337,24 +275,20 @@ public actor AppsBridgeSession {
             group.cancelAll()
         }
         // teardown 応答の continuation がまだ生きていれば(タイムアウト勝ち)ここで解放。
-        if let cont = teardownContinuation {
-            teardownContinuation = nil
-            cont.resume()
-        }
+        await teardownWaiter.release()
         logger.notice("teardown 完了 → closed")
-        close()
+        await close()
     }
 
     /// 明示クローズ(webView 破棄時など)。ストリームを閉じ、以後の送受信を止める。
-    public func close() {
+    public func close() async {
         guard state != .closed else { return }
         state = .closed
         consumeTask?.cancel()
         consumeTask = nil
         // HOLB S2: 実行中の passthrough Task を全 cancel しテーブルクリア(consumeTask 停止と同じ寿命管理)。
         // cancel されても各 Task は proxyRequest 内の closed ガードで配送を握り潰すので破棄後の配送は起きない。
-        for task in inflightPassthrough.values { task.cancel() }
-        inflightPassthrough.removeAll()
+        await passthroughDispatcher.close()
         transport.finish()
     }
 
@@ -375,26 +309,13 @@ public actor AppsBridgeSession {
         case let .typed(typed):
             await handleTyped(typed)
         case let .passthrough(method, id, params):
-            // HOLB S1: passthrough は await せず追跡付き Task へ逃がす。ここで await すると proxy 往復が終わるまで
-            // 受信ループが止まり、直後の size-changed が詰まる(実機 ~730ms)。Task 登録後は即 return し次メッセージへ。
-            // [weak self]: 既存流儀(consumeTask)に合わせる。actor が Task を保持する構造で強参照でもリークしないが、
-            // consumeTask と同じく弱参照で統一し「Session が Task を生かし続ける」誤読を避ける(自己参照の輪を作らない)。
-            // カード発 tools/call はユーザー操作(done/undo・追加等)の合図なのでハプティクスフックを叩く
-            // (2026-07-17 ユーザー要望)。resources/read はカードの内部都合(データ再取得)で操作ではない
-            // ため鳴らさない。応答待ちをしない fire-and-forget(触覚は「タップした瞬間」の確認であって
-            // 結果の成否ではない — 成否は楽観 UI とエラーバナーの担当)。
-            if method == "tools/call", let onCardToolCall {
-                Task { await onCardToolCall() }
-            }
-            let key = UUID()
-            let task = Task { [weak self] in
-                guard let self else { return }
-                await self.handlePassthrough(method: method, id: id, params: params)
-                await self.removeInflightPassthrough(key)
-            }
-            inflightPassthrough[key] = task
+            await passthroughDispatcher.dispatch(method: method, id: id, params: params)
         case let .response(response):
-            handleResponse(response)
+            if await teardownWaiter.receive(response) {
+                logger.notice("resource-teardown 応答受信")
+            } else {
+                logger.notice("相関先の無い response id=\(String(describing: response.id))(無視)")
+            }
         }
     }
 
@@ -407,7 +328,9 @@ public actor AppsBridgeSession {
             // ready へ遷移し outbox を flush。ここが「送信解禁」の唯一の起点。
             logger.notice("ui/notifications/initialized 受信 → ready 遷移・outbox flush(件数=\(self.outbox.count))")
             state = .ready
-            await flushOutbox()
+            let pending = outbox.drain()
+            await delivery.send(pending)
+            if !pending.isEmpty { logger.notice("outbox flush 完了(\(pending.count) 件)") }
 
         case let .sizeChanged(params):
             // 高さだけ採用(幅はホスト固定・設計 §5)。height が来たら Features へ流す。
@@ -417,180 +340,40 @@ public actor AppsBridgeSession {
             }
 
         case let .openLink(id, params):
-            // ui/open-link の配線(監査 2026-07-18 HIGH #2)。出典 apps.mdx:965-985:
-            //   成功 → result:{}(空オブジェクト)、失敗/拒否 → error{code:-32000, message}。
-            // URL 検証は Kernel の純関数(OpenLinkPolicy)に切り出す(サンドボックス脱出経路の
-            // 入口になりうるため — javascript:/file: 等を拒否・OpenLinkPolicy.swift 冒頭コメント参照)。
-            guard let url = OpenLinkPolicy.resolve(urlString: params.url) else {
-                logger.error("open-link: 不正な URL を拒否 url=\(params.url, privacy: .public)")
-                await deliver(response: JSONRPCResponse(
-                    id: id, error: JSONRPCError(code: -32000, message: "Invalid URL")))
-                break
-            }
-            guard let onOpenLink else {
-                // ハンドラ未配線(nil)のホスト構成。仕様上「拒否」として振る舞う(既定 nil の設計は
-                // onDisplayModeRequested と同じ考え方 — 死にボタンにはならない。open-link は結果を
-                // 返すだけで広告フラグが無いのでボタンにはならないが、機能していないことを誠実に
-                // エラーで伝える)。
-                logger.notice("open-link: ハンドラ未注入のため拒否 url=\(params.url, privacy: .public)")
-                await deliver(response: JSONRPCResponse(
-                    id: id, error: JSONRPCError(code: -32000, message: "Link opening not supported")))
-                break
-            }
-            let opened = await onOpenLink(url)
-            if opened {
-                logger.notice("open-link: オープン成功 url=\(params.url, privacy: .public)")
-                await deliver(response: JSONRPCResponse(id: id, result: .object([:])))
-            } else {
-                logger.notice("open-link: オープン失敗/拒否 url=\(params.url, privacy: .public)")
-                await deliver(response: JSONRPCResponse(
-                    id: id, error: JSONRPCError(code: -32000, message: "Link opening denied by user")))
-            }
+            let response = await interactionResponder.openLink(id: id, params: params)
+            await delivery.send(response)
 
         case let .requestDisplayMode(id, params):
-            // カード発のモード変更要求。Features(H4)が実モードを決めて返す。既定は拒否(inline)。
-            // ハンドラ未注入(nil = fullscreen 非広告構成)なら現状維持を応答して拒否する(H4-F)。
-            let resolution = await onDisplayModeRequested?(params.mode)
-                ?? DisplayModeResolution(mode: currentDisplayMode)
-            // apps.mdx:787 MUST: 変えなかった場合も「結果のモード」を必ず返す。
-            // ここでは**応答だけ**を即返す(このタイミングで JSON-RPC 応答を出すこと自体は
-            // apps.mdx:965-985 の request/response 契約に沿う正当な即時応答 — 遅らせて良いのは
-            // 寸法を運ぶ host-context-changed の方であって応答そのものではない)。
-            let result = RequestDisplayModeResult(mode: resolution.mode)
-            await deliver(response: JSONRPCResponse(
-                id: id, result: (try? JSONValue(encoding: result)) ?? .object([:])))
-            // 【host-context-changed(寸法)をここで送らない理由(監査 2026-07-18 HIGH #1)】
-            // 昇格時、この通知が WKWebView の fullscreen コンテナへの reparent(SwiftUI
-            // fullScreenCover の提示・数百 ms かかりうる)より先に届くと、カードはまだ inline 幅の
-            // コンテナに載ったまま全画面寸法で DOM リフローし、遷移中に見た目が右上へズレる実機不具合の
-            // 根因になっていた(反証検証済み)。応答(above)と通知(host-context-changed)は apps.mdx 上
-            // 別個の配送であり、通知を遅らせても「結果のモードを返す」MUST は満たしたまま守れる。
-            // よって寸法通知は Session からは送らず、Features 側(InlineCardHost)が実際の reparent
-            // 完了(AppCardView.onAdopted フック)を検知してから session.notifyDisplayModeChanged を
-            // 呼ぶ形に一本化する(ホスト発 fullscreen 昇格・inline 復帰と同じ終着点 — InlineCardHost.swift
-            // の requestFullscreenFromHost / restoreInline / notifyReparented コメント参照)。
-            // currentDisplayMode(Session 内の「影」)も、実際に通知を送る notifyDisplayModeChanged 側で
-            // 更新する(このハンドラでは更新しない — 二重更新や「まだ送っていない値」を先取りしない)。
+            let response = await interactionResponder.displayMode(
+                id: id,
+                params: params,
+                currentMode: currentDisplayMode
+            )
+            await delivery.send(response)
         }
     }
 
-    /// ui/initialize への応答。hostContext(theme/locale/displayMode/containerDimensions/
-    /// availableDisplayModes)を載せて result を返す(設計 §2)。
     private func handleInitialize(id: RequestID, params: InitializeParams) async {
-        logger.notice("ui/initialize 受信 appInfo=\(params.appInfo.name, privacy: .public) proto=\(params.protocolVersion, privacy: .public)")
-
-        // availableDisplayModes: fullscreen は onDisplayModeRequested ハンドラが注入されたときだけ
-        // 広告する(設計 04 §5 H3 追補「fullscreen 広告はハンドラ注入時のみ」= H4-F)。nil = sheet 器の
-        // 無いホスト構成では [inline] だけを広告し、「押すと必ず拒否される死にボタン」を排除する。
-        // pip は見送り(設計 04 §4 ボツ案 — ユースケースが薄く、host-context-changed の寸法契約も未整理)。
-        let availableModes: [UIDisplayMode] = onDisplayModeRequested != nil ? [.inline, .fullscreen] : [.inline]
-        // #5: theme/styles はホスト(Features)が build 時の colorScheme から導出し init で注入した値。
-        // 以後の外観変更は notifyThemeChanged が host-context-changed で追送する(apps.mdx:822-882)。
-        let hostContext = HostContext(
+        let context = AppsBridgeInitializeBuilder.Context(
+            hostInfo: hostInfo,
             theme: currentTheme,
             styles: currentStyles,
-            locale: "ja-JP",
             displayMode: currentDisplayMode,
-            availableDisplayModes: availableModes,
-            containerDimensions: ContainerDimensions(width: containerWidth, maxHeight: maxHeight))
-
-        // protocolVersion は View が送ってきたものをそのまま返す(バージョン交渉はスパイク外・
-        // 同一版を echo するのが最小の合法応答)。hostCapabilities は最小(空オブジェクト)。
-        let result = InitializeResult(
-            protocolVersion: params.protocolVersion,
-            hostInfo: hostInfo,
-            hostCapabilities: .object([:]),
-            hostContext: hostContext)
-
-        if let resultJSON = try? JSONValue(encoding: result) {
-            await deliver(response: JSONRPCResponse(id: id, result: resultJSON))
-            logger.notice("ui/initialize 応答済み(availableDisplayModes=\(availableModes.map(\.rawValue), privacy: .public))")
-        } else {
-            await deliver(response: JSONRPCResponse(
-                id: id, error: JSONRPCError(code: -32603, message: "initialize result のエンコードに失敗")))
+            containerWidth: containerWidth,
+            maxHeight: maxHeight,
+            supportsDisplayModeRequests: interactionResponder.supportsDisplayModeRequests
+        )
+        do {
+            let result = try AppsBridgeInitializeBuilder.result(params: params, context: context)
+            await delivery.send(JSONRPCResponse(id: id, result: result))
+        } catch {
+            let error = JSONRPCError(code: -32603, message: "initialize result のエンコードに失敗")
+            await delivery.send(JSONRPCResponse(id: id, error: error))
         }
 
-        // カードが fullscreen を宣言しているか(appCapabilities.availableDisplayModes に "fullscreen" が
-        // あるか)を Features へ通知する(UX #1・fable #1)。JSONValue のアクセサ(subscript / arrayValue /
-        // stringValue・JSONValue.swift の便利アクセサ群)で素直に引く。appCapabilities 欠落・型違い・
-        // fullscreen 未宣言はすべて false(⤢ を出さない)に倒す —— apps.mdx:786 の「宣言されたモードにしか
-        // ホスト発切替できない」を守り、押しても違反になる死にボタンを構造的に排除する。
-        // 応答を返した後に呼ぶ(initialize の result 配送を capability 通知より先に確定させる)。
-        let supportsFullscreen = params.appCapabilities["availableDisplayModes"]?
-            .arrayValue?.contains { $0.stringValue == UIDisplayMode.fullscreen.rawValue } ?? false
+        let supportsFullscreen = AppsBridgeInitializeBuilder.supportsFullscreen(params)
         await onCardCapabilities?(supportsFullscreen)
         logger.notice("カード capability 判定: supportsFullscreen=\(supportsFullscreen)")
-    }
-
-    /// passthrough レーン(tools/call・resources/read・ping・未知)。状態を持たない素通しプロキシ。
-    private func handlePassthrough(method: String, id: RequestID?, params: JSONValue?) async {
-        switch method {
-        case AppsMethod.toolsCall:
-            await proxyRequest(id: id, label: "tools/call") {
-                try await self.proxy.passthroughToolsCall(params: params)
-            }
-
-        case AppsMethod.resourcesRead:
-            await proxyRequest(id: id, label: "resources/read") {
-                try await self.proxy.passthroughResourcesRead(params: params)
-            }
-
-        case AppsMethod.ping:
-            // ping はホストが自分で答える(空 result)。サーバーへは流さない。
-            if let id { await deliver(response: JSONRPCResponse(id: id, result: .object([:]))) }
-
-        default:
-            // 未知メソッド。request には -32601、notification はログのみ(設計 §2)。
-            if let id {
-                logger.error("未知 request method=\(method, privacy: .public) → -32601")
-                await deliver(response: JSONRPCResponse(id: id, error: JSONRPCError.methodNotFound(method)))
-            } else {
-                logger.notice("未知 notification method=\(method, privacy: .public)(黙殺)")
-            }
-        }
-    }
-
-    /// passthrough リクエストの共通処理: プロキシを呼び、成功なら result、失敗なら error を返す。
-    /// notification(id なし)で来た passthrough はサーバーへ流すが応答は返せないので投げっぱなし。
-    private func proxyRequest(id: RequestID?, label: String, _ work: @Sendable () async throws -> JSONValue) async {
-        do {
-            let result = try await work()
-            // HOLB S1: 往復 await から戻った時点で closed(webView 破棄後)なら配送しない。非直列化で往復中に
-            // close() が走りうる=応答到着時に配送先 View が無いレース。closed への配送は無意味なので握り潰す。
-            // Why not tearingDown も弾く: teardown 中は View がまだ生存しているので配送は許容する。
-            guard state != .closed else {
-                logger.notice("\(label, privacy: .public) 応答破棄(往復完了時に既に closed)")
-                return
-            }
-            if let id {
-                await deliver(response: JSONRPCResponse(id: id, result: result))
-                logger.notice("\(label, privacy: .public) 素通し応答済み")
-            } else {
-                logger.notice("\(label, privacy: .public) 通知として素通し(応答なし)")
-            }
-        } catch {
-            logger.error("\(label, privacy: .public) 素通し失敗: \(String(reflecting: error), privacy: .public)")
-            if let id {
-                // -32603 = Internal error。サーバー起因の失敗を View へ透過的に伝える。
-                await deliver(response: JSONRPCResponse(
-                    id: id, error: JSONRPCError(code: -32603, message: "\(label) 失敗: \(error)")))
-            }
-        }
-    }
-
-    /// View からの応答(ホストが投げた teardown への返答など)を相関して解消する。
-    private func handleResponse(_ response: JSONRPCResponse) {
-        if let expected = teardownRequestID, response.id == expected {
-            logger.notice("resource-teardown 応答受信")
-            teardownRequestID = nil
-            if let cont = teardownContinuation {
-                teardownContinuation = nil
-                cont.resume()
-            }
-        } else {
-            // 相関先の無い応答。ホストは teardown 以外の request を View に投げていないので通常来ない。
-            logger.notice("相関先の無い response id=\(String(describing: response.id))(無視)")
-        }
     }
 
     // MARK: - outbox / 配送ヘルパ
@@ -598,54 +381,12 @@ public actor AppsBridgeSession {
     /// ready なら即送信、そうでなければ outbox に積む(MUST NOT の機械的遵守)。
     private func enqueueOrSend(_ note: JSONRPCNotification, label: String) async {
         if state == .ready {
-            await deliver(notification: note)
+            await delivery.send(note)
             logger.notice("\(label, privacy: .public) 即送信(ready)")
         } else {
             outbox.append(note)
-            logger.notice("\(label, privacy: .public) を outbox に退避(state=\(String(describing: self.state)) 現在 \(self.outbox.count) 件)")
+            logger.notice("\(label, privacy: .public) を outbox に退避 state=\(String(describing: self.state))")
+            logger.notice("outbox 現在 \(self.outbox.count) 件")
         }
-    }
-
-    /// outbox を FIFO で flush する。ready 遷移直後にのみ呼ぶ。
-    private func flushOutbox() async {
-        let pending = outbox
-        outbox.removeAll()
-        for note in pending {
-            await deliver(notification: note)
-        }
-        if !pending.isEmpty {
-            logger.notice("outbox flush 完了(\(pending.count) 件)")
-        }
-    }
-
-    private func deliver(notification: JSONRPCNotification) async {
-        guard let data = try? JSONEncoder().encode(notification) else { return }
-        await transport.deliver(rawJSON: String(decoding: data, as: UTF8.self))
-    }
-
-    private func deliver(response: JSONRPCResponse) async {
-        await transport.deliver(response: response)
-    }
-
-    private func awaitTeardownResponse() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // すでに応答済み(相関が先に解消)なら即 resume。そうでなければ保持して待つ。
-            if teardownRequestID == nil {
-                continuation.resume()
-            } else {
-                teardownContinuation = continuation
-            }
-        }
-    }
-
-    // HOLB S1: 完了した passthrough Task を追跡テーブルから外す(Task の末尾で自身を除去)。
-    private func removeInflightPassthrough(_ key: UUID) {
-        inflightPassthrough[key] = nil
-    }
-
-    private func makeHostRequestID() -> Int {
-        let id = nextHostRequestID
-        nextHostRequestID -= 1
-        return id
     }
 }

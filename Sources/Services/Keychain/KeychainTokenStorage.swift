@@ -33,11 +33,11 @@ public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
     // トークンを分離して保存できるようにするための最小限のキー設計。
     private let account: String
 
-    /// - Parameters:
-    ///   - serverURL: 接続先 MCP サーバーのエンドポイント URL。このインスタンスが保存/読込する
-    ///     トークンはこの URL に紐づく(同じ Keychain サービス内で複数サーバー分を account で書き分ける)。
-    ///   - bundleIdentifier: kSecAttrService の接頭辞。project.yml の
-    ///     PRODUCT_BUNDLE_IDENTIFIER と同じ値を既定にしている。
+    // Parameters:
+    //   - serverURL: 接続先 MCP サーバーのエンドポイント URL。このインスタンスが保存/読込する
+    //     トークンはこの URL に紐づく(同じ Keychain サービス内で複数サーバー分を account で書き分ける)。
+    //   - bundleIdentifier: kSecAttrService の接頭辞。project.yml の
+    //     PRODUCT_BUNDLE_IDENTIFIER と同じ値を既定にしている。
     // 【重要】メモリ上のトークンを一次層にし、Keychain は「再起動をまたぐ永続化」の
     // ベストエフォート層に格下げする。
     // 経緯: シミュレータの無署名ビルド(make app の CODE_SIGNING_ALLOWED=NO)では
@@ -67,7 +67,8 @@ public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
         // 項目が無ければ(errSecItemNotFound)SecItemAdd にフォールバックする定型パターン。
         let query = baseQuery()
         let updateStatus = SecItemUpdate(
-            query as CFDictionary, [kSecValueData: data] as CFDictionary)
+            query as CFDictionary, [kSecValueData: data] as CFDictionary
+        )
 
         if updateStatus == errSecItemNotFound {
             var addQuery = query
@@ -115,7 +116,7 @@ public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
         [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
-            kSecAttrAccount: account,
+            kSecAttrAccount: account
         ]
     }
 }

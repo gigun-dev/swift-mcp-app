@@ -13,6 +13,16 @@ import Foundation
 import Kernel
 import OSLog
 
+private struct PricingRawEntry: Decodable {
+    let inputCostPerToken: Double
+    let outputCostPerToken: Double
+
+    enum CodingKeys: String, CodingKey {
+        case inputCostPerToken = "input_cost_per_token"
+        case outputCostPerToken = "output_cost_per_token"
+    }
+}
+
 /// litellm pricing データの取得・ディスクキャッシュ・ルックアップを担う。
 ///
 /// **@MainActor class にした判断(設計に並行性の指定なし・こう解釈)**: 呼び出し元
@@ -95,16 +105,6 @@ public final class PricingStore {
     /// mode・max_tokens 等の数十フィールド)は無視する(タスク指示「その他は無視」)。
     /// input/output いずれかが欠ける・数値でないエントリは decode 失敗として弾く
     /// (`try?` で個別に握りつぶす・全体を壊さない)。
-    private struct RawEntry: Decodable {
-        let inputCostPerToken: Double
-        let outputCostPerToken: Double
-
-        enum CodingKeys: String, CodingKey {
-            case inputCostPerToken = "input_cost_per_token"
-            case outputCostPerToken = "output_cost_per_token"
-        }
-    }
-
     /// litellm JSON(トップレベル = modelId → エントリの辞書)を `[modelId: ModelPrice]` に変換。
     /// - "sample_spec" は除外(スキーマ例・タスク指示)。
     /// - input/output 両方が数値で取れたエントリだけ採用(embedding 等コスト欠損は自然に脱落)。
@@ -120,7 +120,7 @@ public final class PricingStore {
         for (modelId, value) in top {
             guard modelId != "sample_spec" else { continue }
             guard let entryData = try? JSONEncoder().encode(value),
-                  let raw = try? entryDecoder.decode(RawEntry.self, from: entryData)
+                  let raw = try? entryDecoder.decode(PricingRawEntry.self, from: entryData)
             else { continue }
             result[modelId] = ModelPrice(
                 inputCostPerToken: raw.inputCostPerToken,

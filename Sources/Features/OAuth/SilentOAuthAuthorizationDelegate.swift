@@ -16,8 +16,7 @@ import Services  // OAuthAuthorizationDelegate(@_exported import MCP 経由)
 /// presentAuthorizationURL を即 throw する delegate。トークンが生きていれば呼ばれず接続成功、
 /// 対話が要るときだけ呼ばれて `NeedsInteraction` を投げる(= 呼び出し側が needsAuth と判定する材料)。
 public final class SilentOAuthAuthorizationDelegate: NSObject, OAuthAuthorizationDelegate,
-    @unchecked Sendable
-{
+    @unchecked Sendable {
     /// 「ブラウザ提示(対話)が必要だった」ことを表すエラー。ConnectionsManager がこの型かどうかでは
     /// なく、下の `didRequestInteraction` フラグで needsAuth を判定する(swift-sdk がエラーを
     /// ラップして別の型で再送出しても取りこぼさないため — 失敗の分類はフラグに一本化する)。

@@ -78,7 +78,7 @@ public final class ConnectionsManager {
 
     /// いま ready な接続の一覧(登録順は保証しない — 呼び出し側が必要なら並べ替える)。
     public var readyConnections: [ReadyConnection] {
-        states.values.compactMap { if case .ready(let rc) = $0 { return rc } else { return nil } }
+        states.values.compactMap { if case .ready(let connection) = $0 { return connection } else { return nil } }
     }
 
     // MARK: - slug 採番
@@ -191,7 +191,10 @@ public final class ConnectionsManager {
                 logger.notice("無言接続 要認証 \(entry.url.absoluteString, privacy: .public)")
             } else {
                 states[entry.id] = .failed(shortError(error))
-                logger.error("無言接続 失敗 \(entry.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)")
+                logger
+                    .error(
+                        "無言接続 失敗 \(entry.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)"
+                    )
             }
             connectingIdentities[entry.id] = nil
         }
@@ -233,7 +236,10 @@ public final class ConnectionsManager {
             if Task.isCancelled { return }
             states[entry.id] = .failed(shortError(error))
             connectingIdentities[entry.id] = nil
-            logger.error("対話接続 失敗 \(entry.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)")
+            logger
+                .error(
+                    "対話接続 失敗 \(entry.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)"
+                )
         }
         _ = delegate  // 明示保持(この行まで delegate を生存させる意図の可視化)。
     }
@@ -263,28 +269,46 @@ public final class ConnectionsManager {
     /// refreshToolsAndInvalidateHTMLCache のコメント参照)。取得失敗したサーバーは既存 ready のまま残す
     /// (鮮度リフレッシュの失敗でチャット全体を殺さない)。
     public func refreshReadyConnections() async {
-        for rc in readyConnections {
+        for readyConnection in readyConnections {
             do {
-                let tools = try await rc.proxy.refreshToolsAndInvalidateHTMLCache()
-                let toolDefs = try prefixedToolDefinitions(from: tools, slug: rc.slug, serverName: rc.name)
+                let tools = try await readyConnection.proxy.refreshToolsAndInvalidateHTMLCache()
+                let toolDefs = try prefixedToolDefinitions(
+                    from: tools,
+                    slug: readyConnection.slug,
+                    serverName: readyConnection.name
+                )
                 var uiMap: [String: String] = [:]
                 for tool in tools {
-                    if let uri = rc.proxy.resolveUIResourceURI(for: tool) {
-                        uiMap[ToolNamespacing.prefixed(slug: rc.slug, tool: tool.name)] = uri
+                    if let uri = readyConnection.proxy.resolveUIResourceURI(for: tool) {
+                        uiMap[ToolNamespacing.prefixed(slug: readyConnection.slug, tool: tool.name)] = uri
                     }
                 }
-                states[rc.serverID] = .ready(ReadyConnection(
-                    serverID: rc.serverID, name: rc.name, url: rc.url, slug: rc.slug,
-                    proxy: rc.proxy, tools: tools, toolDefs: toolDefs, uiResourceURIs: uiMap))
+                states[readyConnection.serverID] = .ready(ReadyConnection(
+                    serverID: readyConnection.serverID,
+                    name: readyConnection.name,
+                    url: readyConnection.url,
+                    slug: readyConnection.slug,
+                    proxy: readyConnection.proxy,
+                    tools: tools,
+                    toolDefs: toolDefs,
+                    uiResourceURIs: uiMap
+                ))
             } catch {
-                logger.error("tools/list 再取得 失敗 \(rc.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)")
+                logger
+                    .error(
+                        "tools/list 再取得 失敗 \(readyConnection.url.absoluteString, privacy: .public): \(String(reflecting: error), privacy: .public)"
+                    )
             }
         }
     }
 
     // MARK: - 内部: ReadyConnection の組み立て
 
-    private func makeReady(entry: MCPServerEntry, slug: String, connection: MCPConnectionResult) async throws -> ReadyConnection {
+    private func makeReady(
+        entry: MCPServerEntry,
+        slug: String,
+        connection: MCPConnectionResult
+    ) async throws -> ReadyConnection {
         let proxy = AppsServerProxy(client: connection.client)
         // app 発 tools/call の visibility 判定用に一覧を注入(設計 §7 の 401 MUST)。
         await proxy.setTools(connection.tools)
@@ -299,7 +323,8 @@ public final class ConnectionsManager {
         }
         return ReadyConnection(
             serverID: entry.id, name: entry.name, url: entry.url, slug: slug,
-            proxy: proxy, tools: connection.tools, toolDefs: toolDefs, uiResourceURIs: uiMap)
+            proxy: proxy, tools: connection.tools, toolDefs: toolDefs, uiResourceURIs: uiMap
+        )
     }
 
     /// エラー文言を画面表示用に短くする(全容は logger に String(reflecting:) で残す)。

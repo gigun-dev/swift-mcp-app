@@ -10,6 +10,29 @@
 import Foundation
 import Kernel
 
+private struct SSECompletionAccumulator {
+    var toolCalls = ToolCallAccumulator()
+    var finishReason: FinishReason?
+    var usage: Usage?
+
+    mutating func handle(
+        payload: String,
+        continuation: AsyncThrowingStream<LLMEvent, Error>.Continuation
+    ) throws -> Bool {
+        if payload == "[DONE]" { return true }
+        let chunk = try JSONDecoder().decode(ChatCompletionChunk.self, from: Data(payload.utf8))
+        if let chunkUsage = chunk.usage { usage = chunkUsage }
+        for choice in chunk.choices {
+            if let content = choice.delta.content, !content.isEmpty {
+                continuation.yield(.textDelta(content))
+            }
+            if let calls = choice.delta.toolCalls { toolCalls.accumulate(calls) }
+            if let reason = choice.finishReason { finishReason = reason }
+        }
+        return false
+    }
+}
+
 /// OpenAI 互換 SSE アダプタ。
 ///
 /// actor でなく struct + Sendable: 保持する状態は不変(baseURL/apiKey/urlSession)だけで、
@@ -128,37 +151,9 @@ public struct OpenAICompatClient: LLMClient {
         into continuation: AsyncThrowingStream<LLMEvent, Error>.Continuation
     ) async throws {
         var parser = SSELineParser()
-        var accumulator = ToolCallAccumulator()
-        var finishReason: FinishReason?
-        var usage: Usage?
+        var completion = SSECompletionAccumulator()
         // usage-only チャンク(choices:[])で choices[0] を触らないため、蓄積は choices を
         // for で回す(空配列なら何もしない)。設計 §2 の MUST。
-        let decoder = JSONDecoder()
-
-        // 1つの data ペイロード(1 SSE イベント)を処理する。[DONE] なら true を返す(終端合図)。
-        func handle(payload: String) throws -> Bool {
-            if payload == "[DONE]" {
-                return true
-            }
-            let chunk = try decoder.decode(ChatCompletionChunk.self, from: Data(payload.utf8))
-            // usage は finish_reason チャンクの後、choices 空の追加チャンクで届く(§2)。
-            // choices を持つ通常チャンクにも usage:null が載るだけなので、非 nil のときだけ採る。
-            if let chunkUsage = chunk.usage {
-                usage = chunkUsage
-            }
-            for choice in chunk.choices {
-                if let content = choice.delta.content, !content.isEmpty {
-                    continuation.yield(.textDelta(content))
-                }
-                if let toolCalls = choice.delta.toolCalls {
-                    accumulator.accumulate(toolCalls)
-                }
-                if let reason = choice.finishReason {
-                    finishReason = reason
-                }
-            }
-            return false
-        }
 
         // 【重要・なぜ bytes.lines を使わないか】URLSession.AsyncBytes の `.lines`(stdlib の
         // AsyncSequence.lines)は、この開発機の Swift 6.3(macOS 26)で **本当に空の行を
@@ -178,9 +173,12 @@ public struct OpenAICompatClient: LLMClient {
             guard byte != 0x0A else {
                 // 行確定。CRLF の場合の末尾 \r を落としてからデコードする。
                 if lineBuffer.last == 0x0D { lineBuffer.removeLast() }
+                // SSEの不正UTF-8はストリーム全体を失敗させず置換文字としてパーサへ渡す。
+                // swiftlint:disable:next optional_data_string_conversion
                 let line = String(decoding: lineBuffer, as: UTF8.self)
                 lineBuffer.removeAll(keepingCapacity: true)
-                if let payload = parser.consume(line: line), try handle(payload: payload) {
+                if let payload = parser.consume(line: line),
+                   try completion.handle(payload: payload, continuation: continuation) {
                     // [DONE] を受けた。ループを抜けて completed を1回 yield する。
                     done = true
                     break
@@ -193,19 +191,25 @@ public struct OpenAICompatClient: LLMClient {
         // 改行で締めずに切れた末尾行(最後のチャンクに \n が付かない実装揺れ)を拾う。
         if !done, !lineBuffer.isEmpty {
             if lineBuffer.last == 0x0D { lineBuffer.removeLast() }
+            // 末尾断片も上と同じlossy UTF-8方針で回収する。
+            // swiftlint:disable:next optional_data_string_conversion
             let line = String(decoding: lineBuffer, as: UTF8.self)
             if let payload = parser.consume(line: line) {
-                done = try handle(payload: payload)
+                done = try completion.handle(payload: payload, continuation: continuation)
             }
         }
         // ストリームが空行/[DONE] で締めずに切れたときの取りこぼし対策(保険・SSELineParser.flush)。
         if !done, let tail = parser.flush() {
-            _ = try handle(payload: tail)
+            _ = try completion.handle(payload: tail, continuation: continuation)
         }
 
         // finish_reason が最後まで来ないケース(中断・プロバイダ実装揺れ)は .other で可視化する
         // (握りつぶして .stop に寄せると「正常終了」に見えてしまうため)。
-        continuation.yield(.completed(finishReason ?? .other("no_finish_reason"), accumulator.finalize(), usage))
+        continuation.yield(.completed(
+            completion.finishReason ?? .other("no_finish_reason"),
+            completion.toolCalls.finalize(),
+            completion.usage
+        ))
         continuation.finish()
     }
 
@@ -229,6 +233,8 @@ public struct OpenAICompatClient: LLMClient {
         for try await byte in bytes {
             data.append(byte)
         }
+        // HTTPエラー本文は診断用なので、不正バイトがあっても本文全体を捨てない。
+        // swiftlint:disable:next optional_data_string_conversion
         return String(decoding: data, as: UTF8.self)
     }
 }

@@ -86,7 +86,7 @@ struct ChatHistorySidebar: View {
         let filtered = filteredSummaries
         if filtered.isEmpty {
             // 空状態(モックの .empty)。検索で0件か、そもそも履歴が無いかで文言を分ける
-            //(「検索に一致しない」と「まだ何も無い」は原因が違うので握りつぶさず区別する)。
+            // (「検索に一致しない」と「まだ何も無い」は原因が違うので握りつぶさず区別する)。
             VStack(spacing: 10) {
                 Spacer()
                 Image(systemName: query.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass")
@@ -179,16 +179,7 @@ struct ChatHistorySidebar: View {
         .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
         // 実装メモ6: アクティブ行は柔らかい角丸ピル塗り(accent は使わない・手本準拠)。
         // 背景 View は行サイズへ引き伸ばされるので padding で内側に寄せてピル状にする。
-        .listRowBackground(
-            isActive
-                ? AnyView(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(SidebarPalette.pillActive)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                )
-                : AnyView(SidebarPalette.paper)
-        )
+        .listRowBackground(historyRowBackground(isActive: isActive))
         // アクティブ行はピルとヘアラインが衝突するため区切り線を消す(モックの .hrow.active::before)。
         .listRowSeparator(isActive ? .hidden : .visible)
         .listRowSeparatorTint(SidebarPalette.hairline)
@@ -200,6 +191,17 @@ struct ChatHistorySidebar: View {
                 Label("削除", systemImage: "trash")
             }
         }
+    }
+
+    /// List の型消去を行描画から隔離し、アクティブ時だけ柔らかいピル背景へ切り替える。
+    private func historyRowBackground(isActive: Bool) -> AnyView {
+        guard isActive else { return AnyView(SidebarPalette.paper) }
+        return AnyView(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(SidebarPalette.pillActive)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+        )
     }
 
     /// 下部フローティングの新規チャットピル(モックの .fab .pill)。
@@ -245,10 +247,11 @@ struct ChatHistorySidebar: View {
     /// title / preview の部分一致(大文字小文字無視)でローカルフィルタ。空クエリなら全件。
     /// preview は行表示からは消えたが検索対象としては残す(実装メモ3・ボツ案メモ(d))。
     private var filteredSummaries: [ChatSessionSummary] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return summaries }
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else { return summaries }
         return summaries.filter {
-            $0.title.localizedCaseInsensitiveContains(q) || $0.preview.localizedCaseInsensitiveContains(q)
+            $0.title.localizedCaseInsensitiveContains(normalizedQuery)
+                || $0.preview.localizedCaseInsensitiveContains(normalizedQuery)
         }
     }
 

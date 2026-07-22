@@ -35,9 +35,9 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
 
         public var errorDescription: String? {
             switch self {
-            case .socketFailed(let e): return "socket() に失敗しました(errno \(e))"
-            case .bindFailed(let e): return "bind() に失敗しました(errno \(e))"
-            case .listenFailed(let e): return "listen() に失敗しました(errno \(e))"
+            case .socketFailed(let errorCode): return "socket() に失敗しました(errno \(errorCode))"
+            case .bindFailed(let errorCode): return "bind() に失敗しました(errno \(errorCode))"
+            case .listenFailed(let errorCode): return "listen() に失敗しました(errno \(errorCode))"
             case .malformedRequest: return "コールバックの HTTP リクエストを解釈できませんでした"
             case .notStarted: return "start() 前に waitForCallback() が呼ばれました"
             }
@@ -66,12 +66,12 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
     /// ポートは bind(port=0)で OS に選ばせる(BSD レイヤではこれが普通に通る —
     /// NWListener の requiredLocalEndpoint が拒否した組み合わせも socket API では合法)。
     public func start() throws -> URL {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw ServerError.socketFailed(errno) }
+        let socketDescriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard socketDescriptor >= 0 else { throw ServerError.socketFailed(errno) }
 
         // close 直後の再起動で TIME_WAIT に阻まれないように。
         var yes: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(socketDescriptor, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -79,18 +79,18 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")  // loopback 以外からは到達不能に固定
         let bindResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                bind(socketDescriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bindResult == 0 else {
-            let e = errno
-            close(fd)
-            throw ServerError.bindFailed(e)
+            let errorCode = errno
+            close(socketDescriptor)
+            throw ServerError.bindFailed(errorCode)
         }
-        guard listen(fd, 1) == 0 else {
-            let e = errno
-            close(fd)
-            throw ServerError.listenFailed(e)
+        guard listen(socketDescriptor, 1) == 0 else {
+            let errorCode = errno
+            close(socketDescriptor)
+            throw ServerError.listenFailed(errorCode)
         }
 
         // OS が選んだポートを取得
@@ -98,11 +98,11 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
         withUnsafeMutablePointer(to: &boundAddr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                _ = getsockname(fd, $0, &len)
+                _ = getsockname(socketDescriptor, $0, &len)
             }
         }
         port = UInt16(bigEndian: boundAddr.sin_port)
-        listenFD = fd
+        listenFD = socketDescriptor
 
         // 【重要】accept ループは start() 時点で起動する。初版は waitForCallback() の中で
         // 起動していたため、waitForCallback() 登録前に届いたリクエストが応答されないまま
@@ -128,7 +128,7 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
             // (recv が 1 パケット目でリクエストライン全体を含む前提は、
             // ローカルループバック + ブラウザの GET では実用上崩れない)
             var buffer = [UInt8](repeating: 0, count: 4096)
-            let n = recv(clientFD, &buffer, buffer.count, 0)
+            let receivedByteCount = recv(clientFD, &buffer, buffer.count, 0)
 
             // 【重要】Safari/WebKit は本命リクエストの前に投機的な事前接続
             // (preconnect)を張ることがある。その接続はデータを送らずに
@@ -138,12 +138,14 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
             // (docs/log.md 2026-07-15)。空・不正なコネクションはその1本だけ
             // 閉じて listen を継続し、サーバーを畳むのは正規コールバック受信
             // または明示キャンセルのときだけにする。
-            guard n > 0 else {
+            guard receivedByteCount > 0 else {
                 close(clientFD)
                 return
             }
 
-            let requestLine = String(decoding: buffer[0 ..< n], as: UTF8.self)
+            // 不正バイトは置換した上でHTTPリクエストとして検証し、接続単位で400へ落とす。
+            // swiftlint:disable:next optional_data_string_conversion
+            let requestLine = String(decoding: buffer[0 ..< receivedByteCount], as: UTF8.self)
                 .split(separator: "\r\n").first.map(String.init)
             let redirectURL = requestLine.flatMap { line -> URL? in
                 let parts = line.split(separator: " ")
@@ -155,8 +157,7 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
                 // 解釈不能なリクエスト(favicon 取得等の可能性もある)。
                 // 400 を返してその接続だけ閉じ、本命を待ち続ける。
                 let body = "<html><body>MCPHost: 不正なリクエストです。</body></html>"
-                let response =
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                let response = Self.httpResponse(status: "400 Bad Request", body: body)
                 _ = response.withCString { send(clientFD, $0, strlen($0), 0) }
                 close(clientFD)
                 return
@@ -165,13 +166,22 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
             // ブラウザ(アプリ内シート)に完了を一言返す。応答を返さないと
             // レンダラがハング表示になることがあるため明示的に 200 を返す。
             let body = "<html><body>MCPHost: 認可が完了しました。</body></html>"
-            let response =
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+            let response = Self.httpResponse(status: "200 OK", body: body)
             _ = response.withCString { send(clientFD, $0, strlen($0), 0) }
             close(clientFD)
             finish(.success(url))
         }
         source.resume()
+    }
+
+    private static func httpResponse(status: String, body: String) -> String {
+        let headers = [
+            "HTTP/1.1 \(status)",
+            "Content-Type: text/html; charset=utf-8",
+            "Content-Length: \(body.utf8.count)",
+            "Connection: close"
+        ]
+        return headers.joined(separator: "\r\n") + "\r\n\r\n" + body
     }
 
     /// コールバック(1リクエスト)を待ち、`http://127.0.0.1:<port><path?query>` を返す。

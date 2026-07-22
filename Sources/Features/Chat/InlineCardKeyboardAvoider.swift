@@ -152,7 +152,7 @@ enum InlineCardKeyboardAvoider {
     private static func currentFirstResponderView() -> UIView? {
         _firstResponder = nil
         UIApplication.shared.sendAction(
-            #selector(UIResponder._inlineCardAvoider_findFirstResponder(_:)), to: nil, from: nil, for: nil)
+            #selector(UIResponder.inlineCardAvoiderFindFirstResponder(_:)), to: nil, from: nil, for: nil)
         return _firstResponder as? UIView
     }
 
@@ -165,9 +165,9 @@ enum InlineCardKeyboardAvoider {
     /// view から superview 鎖を上って最初の WKWebView 祖先を返す(自身が WKWebView ならそれ)。
     private static func enclosingWebView(from view: UIView) -> WKWebView? {
         var current: UIView? = view
-        while let v = current {
-            if let webView = v as? WKWebView { return webView }
-            current = v.superview
+        while let currentView = current {
+            if let webView = currentView as? WKWebView { return webView }
+            current = currentView.superview
         }
         return nil
     }
@@ -176,9 +176,9 @@ enum InlineCardKeyboardAvoider {
     /// webView 内部の WKScrollView(webView.scrollView)を飛ばして外側のチャット ScrollView に到達する。
     private static func enclosingScrollView(from webView: WKWebView) -> UIScrollView? {
         var current: UIView? = webView.superview
-        while let v = current {
-            if let scrollView = v as? UIScrollView { return scrollView }
-            current = v.superview
+        while let currentView = current {
+            if let scrollView = currentView as? UIScrollView { return scrollView }
+            current = currentView.superview
         }
         return nil
     }
@@ -186,7 +186,7 @@ enum InlineCardKeyboardAvoider {
 
 // first responder 捕獲用トラップ。名前衝突を避けるためプレフィクス付きセレクタにする。
 private extension UIResponder {
-    @objc func _inlineCardAvoider_findFirstResponder(_ sender: Any?) {
+    @objc func inlineCardAvoiderFindFirstResponder(_ sender: Any?) {
         InlineCardKeyboardAvoider._firstResponder = self
     }
 }

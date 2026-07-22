@@ -26,7 +26,7 @@ import MCP
             description: "test",
             inputSchema: .object([:]),
             _meta: Metadata(additionalFields: [
-                "ui": .object(["resourceUri": .string("ui://caldav/todos.html")]),
+                "ui": .object(["resourceUri": .string("ui://caldav/todos.html")])
             ]))
         #expect(proxy.resolveUIResourceURI(for: tool) == "ui://caldav/todos.html")
     }
@@ -39,7 +39,7 @@ import MCP
             description: "test",
             inputSchema: .object([:]),
             _meta: Metadata(additionalFields: [
-                "ui/resourceUri": .string("ui://legacy/card.html"),
+                "ui/resourceUri": .string("ui://legacy/card.html")
             ]))
         #expect(proxy.resolveUIResourceURI(for: tool) == "ui://legacy/card.html")
     }
@@ -53,7 +53,7 @@ import MCP
             inputSchema: .object([:]),
             _meta: Metadata(additionalFields: [
                 "ui": .object(["resourceUri": .string("ui://new.html")]),
-                "ui/resourceUri": .string("ui://old.html"),
+                "ui/resourceUri": .string("ui://old.html")
             ]))
         #expect(proxy.resolveUIResourceURI(for: tool) == "ui://new.html")
     }
@@ -75,8 +75,8 @@ import MCP
                 description: "test",
                 inputSchema: .object([:]),
                 _meta: Metadata(additionalFields: [
-                    "ui": .object(["resourceUri": .string("ui://caldav/todos.html")]),
-                ])),
+                    "ui": .object(["resourceUri": .string("ui://caldav/todos.html")])
+                ]))
         ]
         #expect(proxy.resolveUIResourceURI(in: tools, toolName: "list-todos") == "ui://caldav/todos.html")
         #expect(proxy.resolveUIResourceURI(in: tools, toolName: "does-not-exist") == nil)

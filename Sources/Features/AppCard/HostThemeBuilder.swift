@@ -44,7 +44,7 @@ enum HostThemeBuilder {
             UIStyleVariableKey.colorTextSecondary: css(.secondaryLabel, trait),
             UIStyleVariableKey.colorBorderPrimary: css(.separator, trait),
             // tintColor = システムのアクセント(既定はシステムブルー)。フォーカスリング色に流用する。
-            UIStyleVariableKey.colorRingPrimary: css(.tintColor, trait),
+            UIStyleVariableKey.colorRingPrimary: css(.tintColor, trait)
         ]
         return HostStyles(variables: variables)
     }
@@ -54,11 +54,14 @@ enum HostThemeBuilder {
     /// 必ず resolvedColor(with:) で明示解決する。r/g/b は 0-255 整数、a は小数3桁。
     private static func css(_ color: UIColor, _ trait: UITraitCollection) -> String {
         let resolved = color.resolvedColor(with: trait)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let ri = Int((r * 255).rounded())
-        let gi = Int((g * 255).rounded())
-        let bi = Int((b * 255).rounded())
-        return "rgba(\(ri), \(gi), \(bi), \(String(format: "%.3f", a)))"
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        let redByte = Int((red * 255).rounded())
+        let greenByte = Int((green * 255).rounded())
+        let blueByte = Int((blue * 255).rounded())
+        return "rgba(\(redByte), \(greenByte), \(blueByte), \(String(format: "%.3f", alpha)))"
     }
 }

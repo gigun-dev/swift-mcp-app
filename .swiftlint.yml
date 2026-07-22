@@ -1,5 +1,5 @@
-# 2026-07-23 時点の既存違反は baseline に固定し、以後の新規違反だけを失敗させる。
-# baseline を一括削除するための規約緩和はせず、触るコードから段階的に解消する。
+# Sources/Testsの全違反を毎回評価する。既存違反をbaselineで不可視化せず、
+# lint整理タスクでコード側を直して0件を維持する。
 included:
   - Sources
   - Tests
@@ -7,4 +7,20 @@ included:
 excluded:
   - .build
 
-baseline: .swiftlint-baseline.json
+# Swift Testing の日本語関数名は、そのまま仕様として読めることを優先する。
+# ASCII識別子には通常の命名規則を引き続き適用する。
+identifier_name:
+  excluded:
+    # JSON-RPC・MCP・Identifiableで使う標準的な識別子名。
+    - '^id$'
+    - '^[^\x00-\x7F].*$'
+
+line_length:
+  warning: 120
+  # os.Logger の privacy 補間は途中で分割するとログ本文や可読性を損なう。
+  # 通常の式・引数・コメントには120文字制限を維持する。
+  ignores_interpolated_strings: true
+  # JSON-RPC / OpenAI SSE のwire fixtureは改行すると受信データ自体が変わる。
+  excluded_lines_patterns:
+    - '"jsonrpc"'
+    - '"choices"'

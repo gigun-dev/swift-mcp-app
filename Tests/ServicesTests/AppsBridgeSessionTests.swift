@@ -16,7 +16,7 @@ import MCP
 
 /// `AppsBridgeTransport` のインメモリ実装。View→Host は `push` で注入し、Host→View は
 /// `sentRawJSON` に蓄積する(FIFO・送信順序をそのままテストで検証できる)。
-private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
+final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     let incoming: AsyncStream<(message: JSONRPCMessage, raw: String)>
     private let continuation: AsyncStream<(message: JSONRPCMessage, raw: String)>.Continuation
 
@@ -44,7 +44,9 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
 
     func deliver(response: JSONRPCResponse) async {
         guard let data = try? JSONEncoder().encode(response) else { return }
-        sentRawJSON.append(String(decoding: data, as: UTF8.self))
+        if let json = String(bytes: data, encoding: .utf8) {
+            sentRawJSON.append(json)
+        }
     }
 
     func finish() {
@@ -53,7 +55,7 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
 }
 
 @Suite struct AppsBridgeSessionTests {
-    private func makeProxy() -> AppsServerProxy {
+    func makeProxy() -> AppsServerProxy {
         // 接続不要(AppsServerProxyTests と同じ理由)。displayMode テストでは呼ばれない。
         AppsServerProxy(client: Client(name: "test", version: "0"))
     }
@@ -61,7 +63,7 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     /// initialize→initialized を送り込んで ready まで持っていく共通 helper。
     /// `start()` してから initialize を push し、応答が sentRawJSON に積まれるのを待ってから
     /// initialized を push する(Session の受信ループは非同期なので、応答到着を軽くポーリングする)。
-    private func makeReadySession(
+    func makeReadySession(
         transport: MockTransport,
         // HOLB: passthrough レーンのゲート式モックを挿すための注入点(既定は接続不要の実 proxy)。
         proxy: (any AppsServerProxying)? = nil,
@@ -107,7 +109,7 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     /// 受信ループ(consumeTask)の非同期消化を待つための軽量ポーリング。CheckedContinuation を
     /// 使わないのは、テストしたい対象が「複数ステップにまたがる副作用の有無」であって
     /// 単発の応答相関ではないため(teardown の continuation とは事情が違う)。
-    private func waitUntil(timeout: Duration = .seconds(1), _ condition: @Sendable () -> Bool) async {
+    func waitUntil(timeout: Duration = .seconds(1), _ condition: @Sendable () -> Bool) async {
         let deadline = ContinuousClock.now + timeout
         while !condition(), ContinuousClock.now < deadline {
             await Task.yield()
@@ -118,7 +120,7 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     /// 上の同期版の async クロージャ版オーバーロード(HOLB)。actor 隔離状態(session.isReadyForTests・
     /// SizeRecorder.count など)を await で覗きながら待つために要る。sync 版はそのまま残す
     /// (既存呼び出しは exact match で sync 版を選ぶ)。
-    private func waitUntil(timeout: Duration = .seconds(1), _ condition: @Sendable () async -> Bool) async {
+    func waitUntil(timeout: Duration = .seconds(1), _ condition: @Sendable () async -> Bool) async {
         let deadline = ContinuousClock.now + timeout
         while await !condition(), ContinuousClock.now < deadline {
             await Task.yield()
@@ -158,10 +160,16 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
 
         // Features 側の reparent 完了フックに相当する明示呼び出しで、初めて host-context-changed が出る。
         let afterNotifyCount = transport.sentRawJSON.count
-        await session.notifyDisplayModeChanged(to: .fullscreen, containerDimensions: ContainerDimensions(width: 390, maxHeight: 700))
+        await session.notifyDisplayModeChanged(
+            to: .fullscreen,
+            containerDimensions: ContainerDimensions(width: 390, maxHeight: 700)
+        )
         let notificationMessages = transport.sentRawJSON[afterNotifyCount...]
         #expect(notificationMessages.count == 1)
-        let notification = try JSONDecoder().decode(JSONRPCNotification.self, from: Data(notificationMessages.first!.utf8))
+        let notification = try JSONDecoder().decode(
+            JSONRPCNotification.self,
+            from: Data(notificationMessages.first!.utf8)
+        )
         #expect(notification.method == AppsMethod.hostContextChanged)
         #expect(notification.params?["displayMode"] == .string("fullscreen"))
         #expect(notification.params?["containerDimensions"]?["width"] == .int(390))
@@ -219,7 +227,7 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         let transport = MockTransport()
         let styles = HostStyles(variables: [
             UIStyleVariableKey.colorBackgroundPrimary: "rgba(0, 0, 0, 1.000)",
-            UIStyleVariableKey.colorTextPrimary: "rgba(255, 255, 255, 1.000)",
+            UIStyleVariableKey.colorTextPrimary: "rgba(255, 255, 255, 1.000)"
         ])
         let session = await makeReadySession(transport: transport, theme: .dark, styles: styles)
 
@@ -260,8 +268,11 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
     // MARK: - availableDisplayModes 広告のハンドラ分岐(H4-F・死にボタン排除)
 
     /// initialize 応答の hostContext.availableDisplayModes を取り出す(sentRawJSON の先頭 = initialize 応答)。
-    private func advertisedModes(_ transport: MockTransport) throws -> [UIDisplayMode] {
-        let response = try JSONDecoder().decode(JSONRPCResponse.self, from: Data(try #require(transport.sentRawJSON.first).utf8))
+    func advertisedModes(_ transport: MockTransport) throws -> [UIDisplayMode] {
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: Data(try #require(transport.sentRawJSON.first).utf8)
+        )
         let result = try #require(response.result).decode(InitializeResult.self)
         return try #require(result.hostContext.availableDisplayModes)
     }
@@ -282,171 +293,5 @@ private final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
             onDisplayModeRequested: { _ in DisplayModeResolution(mode: .inline) })
         #expect(try advertisedModes(transport) == [.inline, .fullscreen])
         await session.close()
-    }
-
-    // MARK: - カード capability(fullscreen 対応)の検出(UX #1・fable #1・apps.mdx:786)
-
-    /// onCardCapabilities の受領値を記録する actor(initialize の非同期消化を跨いで観測する)。
-    private actor CapabilityRecorder {
-        private(set) var received: [Bool] = []
-        func record(_ v: Bool) { received.append(v) }
-        var count: Int { received.count }
-    }
-
-    @Test("appCapabilities に fullscreen があれば onCardCapabilities(true)")
-    func cardCapabilitiesTrueWhenFullscreenDeclared() async throws {
-        let transport = MockTransport()
-        let recorder = CapabilityRecorder()
-        let session = await makeReadySession(
-            transport: transport,
-            onCardCapabilities: { await recorder.record($0) },
-            appCapabilitiesJSON: #"{"availableDisplayModes":["inline","fullscreen"]}"#)
-        await waitUntil { await recorder.count >= 1 }
-        #expect(await recorder.received == [true])
-        await session.close()
-    }
-
-    @Test("appCapabilities に fullscreen が無ければ onCardCapabilities(false)")
-    func cardCapabilitiesFalseWhenNotDeclared() async throws {
-        let transport = MockTransport()
-        let recorder = CapabilityRecorder()
-        // 空の appCapabilities(availableDisplayModes 欠落)→ false に倒す(死にボタン排除)。
-        let session = await makeReadySession(
-            transport: transport,
-            onCardCapabilities: { await recorder.record($0) })
-        await waitUntil { await recorder.count >= 1 }
-        #expect(await recorder.received == [false])
-        await session.close()
-    }
-
-    // MARK: - HOLB(head-of-line blocking の解消)
-
-    /// passthrough(tools/call)の実往復を手動開放の CheckedContinuation でゲートするモック proxy。
-    /// sleep で待つのではなく、テストが `open(_:result:)` を呼ぶまで往復を止める(決定的)。
-    /// 呼び出しは params.arguments.k をキーに識別する(複数 in-flight を別々に開放するため)。
-    private actor GatedMockProxy: AppsServerProxying {
-        private var waiters: [String: CheckedContinuation<Void, Never>] = [:]
-        private var opened: [String: JSONValue] = [:]
-
-        /// キーの往復が現在ゲートで停止中か(テストの観測用)。
-        func isWaiting(_ key: String) -> Bool { waiters[key] != nil }
-
-        func passthroughToolsCall(params: JSONValue?) async throws -> JSONValue {
-            let key = params?["arguments"]?["k"]?.stringValue ?? "default"
-            await gate(key)
-            // open で渡された結果を id 相関確認用に返す(なければ最小の object)。
-            return opened[key] ?? .object(["ok": .bool(true)])
-        }
-
-        func passthroughResourcesRead(params: JSONValue?) async throws -> JSONValue {
-            .object([:])
-        }
-
-        private func gate(_ key: String) async {
-            if opened[key] != nil { return }   // 既に開放済みなら止めない。
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                waiters[key] = c
-            }
-        }
-
-        /// ゲートを開けて往復を先へ進める。result は passthroughToolsCall の戻り値になる。
-        func open(_ key: String, result: JSONValue) {
-            opened[key] = result
-            if let c = waiters.removeValue(forKey: key) { c.resume() }
-        }
-    }
-
-    /// onSizeChanged の呼び出しを記録する actor(応答との順序を決定的に観測する)。
-    private actor SizeRecorder {
-        private(set) var heights: [Double] = []
-        func record(_ h: Double) { heights.append(h) }
-        var count: Int { heights.count }
-    }
-
-    @Test("HOLB①: ゲート停止中の tools/call を追い越して size-changed が応答より先に処理される")
-    func sizeChangedNotBlockedByInflightToolsCall() async throws {
-        let transport = MockTransport()
-        let proxy = GatedMockProxy()
-        let recorder = SizeRecorder()
-        let session = await makeReadySession(
-            transport: transport, proxy: proxy,
-            onSizeChanged: { await recorder.record($0) })
-
-        let beforeCount = transport.sentRawJSON.count
-        // tools/call を push(proxy 往復がゲートで停止)。
-        transport.push(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"k":"slow"}}}"#)
-        // 続けて size-changed を push。直列実装だと tools/call の往復完了まで詰まる。
-        transport.push(#"{"jsonrpc":"2.0","method":"ui/notifications/size-changed","params":{"height":222}}"#)
-
-        // 応答より前に onSizeChanged が呼ばれる(HOLB 解消の中核)。
-        await waitUntil { await recorder.count >= 1 }
-        #expect(await recorder.heights == [222])
-        // この時点で tools/call 応答はまだ配送されていない。
-        #expect(transport.sentRawJSON.count == beforeCount)
-
-        // ゲート開放 → id 相関した応答が配送される。
-        await proxy.open("slow", result: .object(["ok": .bool(true)]))
-        await waitUntil { transport.sentRawJSON.count > beforeCount }
-        let response = try JSONDecoder().decode(
-            JSONRPCResponse.self, from: Data(transport.sentRawJSON.last!.utf8))
-        #expect(response.id == .int(1))
-        #expect(response.result?["ok"] == .bool(true))
-
-        await session.close()
-    }
-
-    @Test("HOLB②: 複数 in-flight — 速い tools/call(id=2)が遅い(id=1)より先に応答・両者 id 相関が正")
-    func multipleInflightRespondOutOfOrder() async throws {
-        let transport = MockTransport()
-        let proxy = GatedMockProxy()
-        let session = await makeReadySession(transport: transport, proxy: proxy)
-
-        let beforeCount = transport.sentRawJSON.count
-        transport.push(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow","arguments":{"k":"slow"}}}"#)
-        transport.push(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fast","arguments":{"k":"fast"}}}"#)
-        // 両方の往復がゲートに到達するのを待つ(非直列に両方 in-flight)。
-        // && の右辺は非 async autoclosure になり await を通せないので、2つの await を別々に評価して畳む。
-        await waitUntil {
-            let slow = await proxy.isWaiting("slow")
-            let fast = await proxy.isWaiting("fast")
-            return slow && fast
-        }
-
-        // 速い方(id=2)を先に開放 → 先に応答が来る。
-        await proxy.open("fast", result: .object(["r": .int(2)]))
-        await waitUntil { transport.sentRawJSON.count >= beforeCount + 1 }
-        let first = try JSONDecoder().decode(
-            JSONRPCResponse.self, from: Data(transport.sentRawJSON.last!.utf8))
-        #expect(first.id == .int(2))
-        #expect(first.result?["r"] == .int(2))
-
-        // 遅い方(id=1)を後で開放。
-        await proxy.open("slow", result: .object(["r": .int(1)]))
-        await waitUntil { transport.sentRawJSON.count >= beforeCount + 2 }
-        let second = try JSONDecoder().decode(
-            JSONRPCResponse.self, from: Data(transport.sentRawJSON.last!.utf8))
-        #expect(second.id == .int(1))
-        #expect(second.result?["r"] == .int(1))
-
-        await session.close()
-    }
-
-    @Test("HOLB③(S2): ゲート停止中に close → 開放後も応答は配送されない")
-    func closedSessionDropsInflightResponse() async throws {
-        let transport = MockTransport()
-        let proxy = GatedMockProxy()
-        let session = await makeReadySession(transport: transport, proxy: proxy)
-
-        transport.push(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"k":"slow"}}}"#)
-        await waitUntil { await proxy.isWaiting("slow") }
-
-        // ゲート閉のまま close(webView 破棄相当)。
-        await session.close()
-        let afterClose = transport.sentRawJSON.count
-
-        // 開放しても、proxyRequest の closed ガードで応答は握り潰される。
-        await proxy.open("slow", result: .object(["ok": .bool(true)]))
-        try? await Task.sleep(for: .milliseconds(50))
-        #expect(transport.sentRawJSON.count == afterClose)
     }
 }

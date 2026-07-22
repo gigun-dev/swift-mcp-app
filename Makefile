@@ -3,6 +3,8 @@
 # `make check` は「ロジック層(Kernel/Services)が壊れていないか」を素早く見る用途で、
 # Xcode/xcodebuild を経由しない(swift build/test の方が xcodebuild よりずっと速く、
 # CI 導入前の手元検証ループとして十分。CI 導入は授業の提出形態が決まってから — CLAUDE.md)。
+# 静的解析だけを再実行できる `make lint` も用意するが、変更完了の統合ゲートである
+# `make check` は build・test・lint のすべてが通ったときだけ成功する。
 # `make app` は逆にアプリターゲット(SwiftUI + XcodeGen 生成物)まで含めた
 # 実機/シミュレータ相当のビルド確認に使う。
 #
@@ -26,7 +28,7 @@
 # 秘密(API キー)だけは .envrc(direnv)が .env から読む。こちらは PATH と違って
 # シェルに自動で入らないので、`make run` の中で明示的に direnv へ取りに行く。
 
-.PHONY: check gen app doctor
+.PHONY: check lint gen app doctor
 
 # ツールが揃っているかの確認。何かおかしいと思ったらまずこれ。
 # 「無いなら無いと言う」ことが目的なので、1つ足りなくても最後まで走って全部報告する。
@@ -48,13 +50,19 @@ doctor:
 		echo "!! direnv: 見つかりません（.env から鍵を読むのに使っています）"; \
 	fi
 
-# swiftformat/swiftlint が無いときは **skip せず落とす**。
-# 旧実装は「未インストールなので skipping」と出して緑で終わっていたため、
-# **lint が一度も走っていないのに check が通っている**状態を長く見逃していた
-# (2026-07-22 に発覚)。走らなかったことと通ったことは区別できなければならない。
+# 変更完了の統合ゲート。個別のbuild/test結果とlint診断は出力上で分かれるが、
+# check全体は3工程のどれか1つでも失敗すれば失敗する。
 check:
 	swift build
 	swift test
+	$(MAKE) lint
+
+# swiftformat/swiftlint が無いときは **skip せず lint target を落とす**。
+# 旧実装は「未インストールなので skipping」と出して緑で終わっていたため、
+# **lint が一度も走っていないのに通ったように見える**状態を長く見逃していた
+# (2026-07-22 に発覚)。`swift build`/`swift test`は単独実行できる一方、
+# 完了判定の`make check`ではlint tool不在・違反も見逃さない。
+lint:
 	@command -v swiftformat >/dev/null 2>&1 || { echo "!! swiftformat が無い。make doctor を見よ" >&2; exit 1; }
 	@echo "==> swiftformat --lint"
 	@swiftformat Sources Tests Package.swift --lint --config .swiftformat --cache ignore

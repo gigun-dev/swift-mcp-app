@@ -34,7 +34,7 @@ import Testing
             updatedAt: updatedAt,
             turns: [
                 ChatTurn(role: .user, text: "今日の予定を見せて"),
-                ChatTurn(role: .assistant, text: "今日の予定はこちらです。"),
+                ChatTurn(role: .assistant, text: "今日の予定はこちらです。")
             ],
             model: "gpt-5-mini"
         )

@@ -60,7 +60,8 @@ extension JSONValue: Codable {
         } else {
             throw DecodingError.dataCorruptedError(
                 in: container,
-                debugDescription: "JSONValue にデコードできない JSON トークンです")
+                debugDescription: "JSONValue にデコードできない JSON トークンです"
+            )
         }
     }
 

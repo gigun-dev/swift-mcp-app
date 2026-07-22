@@ -30,7 +30,7 @@ func jsonValueRoundTrip() throws {
         "d": 3.5,
         "s": "hello",
         "arr": [1, 2, 3],
-        "obj": ["nested": "yes"],
+        "obj": ["nested": "yes"]
     ]
     #expect(try roundTrip(value) == value)
 }
@@ -112,7 +112,7 @@ func hostContextThemeStylesRoundTrip() throws {
         theme: .dark,
         styles: HostStyles(variables: [
             UIStyleVariableKey.colorBackgroundPrimary: "rgba(0, 0, 0, 1.000)",
-            UIStyleVariableKey.colorTextPrimary: "rgba(255, 255, 255, 1.000)",
+            UIStyleVariableKey.colorTextPrimary: "rgba(255, 255, 255, 1.000)"
         ]),
         displayMode: .inline)
     let back = try roundTrip(ctx)
@@ -124,7 +124,10 @@ func hostContextThemeStylesRoundTrip() throws {
 @Test("HostContext の部分更新は載せないフィールドを JSON から省く(spec の Partial context)")
 func hostContextPartialOmitsNilFields() throws {
     // notifyThemeChanged が送る patch 相当: theme と styles だけ。
-    let patch = HostContext(theme: .dark, styles: HostStyles(variables: ["--color-text-primary": "rgba(1, 2, 3, 1.000)"]))
+    let patch = HostContext(
+        theme: .dark,
+        styles: HostStyles(variables: ["--color-text-primary": "rgba(1, 2, 3, 1.000)"])
+    )
     let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(patch)) as? [String: Any]
     #expect(json?["theme"] as? String == "dark")
     // displayMode / containerDimensions / locale / availableDisplayModes は nil なので書き出さない。

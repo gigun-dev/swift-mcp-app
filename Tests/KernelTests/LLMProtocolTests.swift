@@ -25,14 +25,14 @@ func chatCompletionRequestRoundTrip() throws {
         model: "gpt-4o-mini",
         messages: [
             ChatMessage(role: .system, content: "You are a helpful assistant."),
-            ChatMessage(role: .user, content: "今日の予定を教えて"),
+            ChatMessage(role: .user, content: "今日の予定を教えて")
         ],
         tools: [
             ToolDefinition(function: .init(
                 name: "list-todos",
                 description: "未完了タスク一覧を返す",
                 parameters: ["type": "object", "properties": [:]]
-            )),
+            ))
         ],
         stream: true,
         temperature: 0.7,
@@ -161,13 +161,13 @@ func chunkUsageOnlyEmptyChoices() throws {
 func accumulatorSingleToolCallFragments() {
     var accumulator = ToolCallAccumulator()
     accumulator.accumulate([
-        ToolCallDelta(index: 0, id: "call_1", function: .init(name: "list-todos", arguments: "")),
+        ToolCallDelta(index: 0, id: "call_1", function: .init(name: "list-todos", arguments: ""))
     ])
     accumulator.accumulate([
-        ToolCallDelta(index: 0, function: .init(arguments: "{\"limit\":")),
+        ToolCallDelta(index: 0, function: .init(arguments: "{\"limit\":"))
     ])
     accumulator.accumulate([
-        ToolCallDelta(index: 0, function: .init(arguments: "5}")),
+        ToolCallDelta(index: 0, function: .init(arguments: "5}"))
     ])
     let result = accumulator.finalize()
     #expect(result == [ToolCall(id: "call_1", function: .init(name: "list-todos", arguments: "{\"limit\":5}"))])
@@ -178,13 +178,13 @@ func accumulatorMultipleToolCalls() {
     var accumulator = ToolCallAccumulator()
     // わざと index=1 を先に流す(プロバイダ・ネットワークの並び揺れへの耐性を確認)。
     accumulator.accumulate([
-        ToolCallDelta(index: 1, id: "call_2", function: .init(name: "list-events", arguments: "{}")),
+        ToolCallDelta(index: 1, id: "call_2", function: .init(name: "list-events", arguments: "{}"))
     ])
     accumulator.accumulate([
-        ToolCallDelta(index: 0, id: "call_1", function: .init(name: "list-todos", arguments: "")),
+        ToolCallDelta(index: 0, id: "call_1", function: .init(name: "list-todos", arguments: ""))
     ])
     accumulator.accumulate([
-        ToolCallDelta(index: 0, function: .init(arguments: "{}")),
+        ToolCallDelta(index: 0, function: .init(arguments: "{}"))
     ])
     let result = accumulator.finalize()
     #expect(result.map(\.id) == ["call_1", "call_2"])
@@ -199,7 +199,7 @@ func accumulatorMixedIndicesInSingleChunk() {
     var accumulator = ToolCallAccumulator()
     accumulator.accumulate([
         ToolCallDelta(index: 0, id: "call_a", function: .init(name: "a", arguments: "1")),
-        ToolCallDelta(index: 1, id: "call_b", function: .init(name: "b", arguments: "2")),
+        ToolCallDelta(index: 1, id: "call_b", function: .init(name: "b", arguments: "2"))
     ])
     let result = accumulator.finalize()
     #expect(result.count == 2)

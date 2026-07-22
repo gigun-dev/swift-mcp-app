@@ -47,15 +47,19 @@ final class ReparentSpikeHost {
     func probe(_ context: String) {
         guard let webView else { return }
         let superName = webView.superview.map { String(describing: type(of: $0)) } ?? "nil(どこにも載っていない)"
-        let js = "JSON.stringify({tick: window.__tick, manual: window.__manual, input: document.getElementById('field').value})"
-        webView.evaluateJavaScript(js) { [weak self] result, error in
+        let script = "JSON.stringify({tick: window.__tick, manual: window.__manual, "
+            + "input: document.getElementById('field').value})"
+        webView.evaluateJavaScript(script) { [weak self] result, error in
             Task { @MainActor in
-                if let s = result as? String {
-                    self?.lastProbe = "[\(context)] \(s)"
-                    self?.logger.notice("PROBE \(context, privacy: .public): \(s, privacy: .public) superview=\(superName, privacy: .public)")
+                if let probeResult = result as? String {
+                    self?.lastProbe = "[\(context)] \(probeResult)"
+                    let probeLog = "PROBE \(context): \(probeResult) superview=\(superName)"
+                    self?.logger
+                        .notice("\(probeLog, privacy: .public)")
                 } else if let error {
                     self?.lastProbe = "[\(context)] error: \(error.localizedDescription)"
-                    self?.logger.error("PROBE \(context, privacy: .public) 失敗: \(String(reflecting: error), privacy: .public)")
+                    self?.logger
+                        .error("PROBE \(context, privacy: .public) 失敗: \(String(reflecting: error), privacy: .public)")
                 }
             }
         }
@@ -64,8 +68,9 @@ final class ReparentSpikeHost {
     /// JS 側の状態を書き換える(手動カウンタ=5・入力欄="hello")。自動シナリオの「編集途中状態」を作る。
     func seedState() {
         guard let webView else { return }
-        let js = "window.__manual=5;document.getElementById('manual').textContent=5;document.getElementById('field').value='hello';"
-        webView.evaluateJavaScript(js)
+        let script = "window.__manual=5;document.getElementById('manual').textContent=5;"
+            + "document.getElementById('field').value='hello';"
+        webView.evaluateJavaScript(script)
     }
 
     // tick: 100ms ごとに自動 +1(interval が生きている=プロセス継続の証拠)。
@@ -129,7 +134,7 @@ private struct SpikeCardView: UIViewRepresentable {
             webView.topAnchor.constraint(equalTo: container.topAnchor),
             webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         ])
     }
 }
@@ -192,13 +197,15 @@ struct ReparentSpikeView: View {
                 host.probe("D_dismiss完了後")
             }
         }
-        .sheet(isPresented: $showingSheet, onDismiss: {
-            rehomeToken += 1   // 手動で閉じたときも inline に再アダプトを促す
-            // dismiss 直後に inline 側の状態を確認(webView が inline に戻っているか含む)。
-            host.probe("dismiss後")
-        }) {
-            SheetContent(host: host)
-        }
+        .sheet(
+            isPresented: $showingSheet,
+            onDismiss: {
+                rehomeToken += 1   // 手動で閉じたときも inline に再アダプトを促す
+                // dismiss 直後に inline 側の状態を確認(webView が inline に戻っているか含む)。
+                host.probe("dismiss後")
+            },
+            content: { SheetContent(host: host) }
+        )
     }
 }
 

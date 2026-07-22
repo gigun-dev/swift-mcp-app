@@ -37,8 +37,7 @@ import UIKit
 /// サーバーが起動する)、そのあと `MCPConnection.connect` に self を渡す。
 /// swift-sdk はトークン取得が必要になったタイミングで `presentAuthorizationURL(_:)` を呼ぶ。
 public final class LoopbackOAuthAuthorizationDelegate: NSObject, OAuthAuthorizationDelegate,
-    @unchecked Sendable
-{
+    @unchecked Sendable {
     enum DelegateError: LocalizedError {
         case redirectURINotPrepared
         case presentationFailed
@@ -88,8 +87,7 @@ public final class LoopbackOAuthAuthorizationDelegate: NSObject, OAuthAuthorizat
         // 正規完了とは別経路(ユーザーの手動キャンセル)なので、server.cancel に流して
         // waitForCallback 側の continuation に一本化する(二重 resume は server 側が防ぐ)。
         await MainActor.run {
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: nil) {
-                _, error in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: nil) { _, error in
                 if error != nil {
                     server.cancel(with: DelegateError.userCancelled)
                 }
@@ -114,8 +112,7 @@ public final class LoopbackOAuthAuthorizationDelegate: NSObject, OAuthAuthorizat
 }
 
 extension LoopbackOAuthAuthorizationDelegate: ASWebAuthenticationPresentationContextProviding {
-    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor
-    {
+    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         // このアプリはシングルシーン構成(project.yml に UIScene 構成は無く SwiftUI 既定の
         // 単一 WindowGroup)なので、最初に見つかった key window を使えば十分。
         // 複数シーン対応が必要な規模になったら呼び出し元から明示的にウィンドウを渡す形に直す。

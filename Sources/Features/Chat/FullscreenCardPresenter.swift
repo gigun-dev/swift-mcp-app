@@ -90,7 +90,8 @@ struct FullscreenCardView: View {
                     // 寸法通知が先に届く」順序バグの直接の修正点。
                     AppCardView(
                         webView: webView, role: .fullscreen, activeDisplayMode: host.displayMode,
-                        onAdopted: { host.notifyReparented() })
+                        onAdopted: { host.notifyReparented() }
+                    )
                 } else {
                     // 通常来ない(昇格は webView 構築後にしか起きない)が、防御的にプレースホルダ。
                     ProgressView()

@@ -60,20 +60,20 @@ public struct MCPServerEntry: Codable, Identifiable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey { case id, name, url, enabled }
 
     public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decode(UUID.self, forKey: .id)
-        self.name = try c.decode(String.self, forKey: .name)
-        self.url = try c.decode(URL.self, forKey: .url)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.url = try container.decode(URL.self, forKey: .url)
         // 旧データ(enabled 無し)は「有効」に倒す(上のコメント参照)。
-        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
     }
 
     public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(id, forKey: .id)
-        try c.encode(name, forKey: .name)
-        try c.encode(url, forKey: .url)
-        try c.encode(enabled, forKey: .enabled)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(url, forKey: .url)
+        try container.encode(enabled, forKey: .enabled)
     }
 }
 

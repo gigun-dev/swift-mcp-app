@@ -35,4 +35,5 @@
 
 - iOS 17+ / Swift / SwiftUI
 - XcodeGen + ローカル SwiftPM パッケージ(Kernel / Services)
-- `make check` = swift build + swift test + lint
+- `make check` = swift build + swift test + lint（変更完了の統合ゲート）
+- `make lint` = SwiftFormat lint + SwiftLint strict（静的解析だけの再実行用。既存違反もbaselineで隠さない）

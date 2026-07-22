@@ -37,8 +37,7 @@ final class ConnectionViewModel: ObservableObject {
     /// 気になるなら P3 の頃に #if DEBUG で囲む。
     func autoConnectIfRequested() {
         if ProcessInfo.processInfo.environment["MCPHOST_AUTOCONNECT"] == "1",
-            case .idle = state
-        {
+            case .idle = state {
             logger.info("MCPHOST_AUTOCONNECT=1: 自動接続を開始")
             startConnecting()
         }
@@ -72,7 +71,10 @@ final class ConnectionViewModel: ObservableObject {
                 // のコメント参照)。
                 let delegate = LoopbackOAuthAuthorizationDelegate()
                 let redirectURI = try delegate.prepareRedirectURI()
-                logger.info("接続開始: \(url.absoluteString, privacy: .public) redirect=\(redirectURI.absoluteString, privacy: .public)")
+                logger
+                    .info(
+                        "接続開始: \(url.absoluteString, privacy: .public) redirect=\(redirectURI.absoluteString, privacy: .public)"
+                    )
                 let result = try await MCPConnection.connect(
                     serverURL: url,
                     redirectURI: redirectURI,
