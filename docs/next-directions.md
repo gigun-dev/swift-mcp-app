@@ -41,6 +41,22 @@ WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 comp
 > 変更ファイル: Sources/Services/Chat/ChatViewModel.swift・Sources/Features/Chat/ChatBodyView.swift・
 > Sources/Features/Chat/ChatHomeViewModel.swift・Tests/ServicesTests/ChatViewModelTests.swift。
 
+> **2026-07-22 更新(汎用 MCP クライアント化 M1+M2 完了 ✅ / caldav 側①完了・②③計画中):**
+> **host 側**: ①⊕追加は常時 fullscreen 昇格へ統一(caldav fa84ceb)+ WKContentView スウィズルで
+> プログラム的 focus のキーボード許可(af98e59・RN WebView と同一手法・裏取り済み)。
+> ②**M1**(ac485d0): ServerRegistry(UserDefaults 永続化・caldav シード)+設定のサーバー管理 UI。
+> ③**M2**(57cd2e0): **複数サーバー同時接続**(単一選択廃止・enabled トグル)+**無言自動接続**
+> (SilentOAuthAuthorizationDelegate — トークンが生きていれば起動時に自動 ready・要対話は
+> needsAuth バッジ→タップ時のみブラウザ)+ツール名前空間化(Kernel/ToolNamespacing・
+> `slug__tool`・MultiServerToolExecutor で逆ルーティング・カードは cardProxyResolver で由来
+> サーバーの proxy)+ServerDetailView にツール一覧ビューア。ChatSession.serverURLs additive。
+> **caldav 側**: ⊕を「他 n件」action-row へ統合(e924c04・浮遊 FAB は fullscreen のみ)、
+> recurrence:null で EXDATE/RDATE+孤児 override 掃除(3ccf2f5・本番実データ調査起点)、
+> **コレクション選択+色**(dd56d30: todos=見出しドロップダウン単一選択 / agenda=色ドット
+> クラスタ→ポップオーバー ON/OFF+カレンダー追加 / server calendarIds[])。
+> モック: collection-picker v2〜v5(採用は v5)・agenda-views-v6(月グリッド・**次スライス**)。
+> **残タスク・未検証は本ファイル末尾「2026-07-22 タスク棚卸し」節を参照。**
+
 転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
 caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI
 (ext-apps 製・計約7,500行)がサーバー側に存在する今、ネイティブ再描画は二重実装になる。
@@ -348,3 +364,38 @@ Claude iOS は対応済みだがクローズド)→ 本アプリが初のオー�
 - 月/週ビュー(アジェンダの粒度追加)— 画面が広い Swift ではカードより自由度が高い
 - Push/ローカル通知(サーバー VALARM との関係整理が先)
 - P4a(ネイティブ二方式描画)/ P4b(他 MCP サーバーデモ)— どちらを取るかは P3 後に判断
+
+## 2026-07-22 タスク棚卸し(Claude Desktop / iOS Simulator 移行用の引き継ぎ)
+
+### 実機/シミュレータ 未検証(最優先 — コードは全部入っている)
+- [ ] **host M1+M2**: 起動即チャット・caldav 無言自動接続・設定のサーバー追加
+      (2台目: `https://tdr-concierge.gigun-dev.workers.dev/mcp`)→ 要認証タップ→OAuth →
+      1チャットに両サーバーのツール混在(`caldav__…`/`tdr…__…`)・カードが由来サーバーに紐付く。
+      トグル OFF で次の newChat から消える。※最後のビルドは実機未インストール(unavailable)
+- [ ] **⊕追加フロー**: 常時 fullscreen 昇格 → ズーム完了後にドラフト行が中央へ scrollIntoView →
+      キーボード自動表示(スウィズル)。ドリフト(右上バネ)が消えたか
+- [ ] **caldav ①**: todos 見出しドロップダウンでリスト切替 / agenda 右上色ドット→ON/OFF
+      ポップオーバー・カレンダー追加・行の色ドット / inline でメニューがクリップされないか
+- [ ] 以前からの未検証: 会議「参加」リンク外部起動・C3/C4 作成フォーム・終日イベント保存・
+      action-row(FAB クリップ解消)・カード内部スクロール消滅
+
+### caldav 次スライス(合意済み順序)
+- [ ] **② fullscreen ビュー切替+月グリッド**(モック agenda-views-v6 合意済み:
+      セグメント リスト|月|日(日は disabled)・月グリッド+選択日リスト連動・予定ドット=コレクション色)
+- [ ] **③ 日タイムライン**(現在時刻の赤線・予定ブロック重なり解決・終日チップ帯)
+- [ ] **agenda echo pin 問題**: 初回全横断なのに focus refetch で `calendarId:"calendar"` 単一に
+      collapse する既存挙動(応答 echo が原因・implementer 報告)。全横断維持へ直すか要判断
+- [ ] セバスチャン式**確認カード**(書き込み前 human-in-the-loop を MCP Apps で)— 起票のみ
+- [ ] C6+C7 geocode+地図 / 監査 LOW 残(選択編集中の外部完了退場・fold キャッシュ×外部更新)
+
+### host 残論点(M2 実装エージェント報告より)
+- [ ] slug 上限 32 字の仮定(ツール名 30 字超のサーバーで前置名 64 字制約に当たる可能性)
+- [ ] ToolStepRow のサーバー表示が slug のみ(実名逆引き resolver 未実装・日本語名サーバーで劣化)
+- [ ] TodosCardSpikeView にハードコード URL 残存(スパイク画面・低優先)
+- [ ] サーバー追加フォームは https 必須(ローカル http 検証が要るなら緩める)
+- [ ] #5 reasoning 表示(将来)/ #11 H-a/H-b(宣言型ネットワーク権限・geolocation)
+
+### 進め方メモ
+- iOS Simulator でも MCPHOST_AUTOCONNECT=1(simctl launch --setenv)で人手なし接続が可能
+  (ChatHomeViewModel.autoConnectIfRequested — M2 後は無言自動接続が既定なので不要かも・要確認)
+- caldav は push で Workers Builds 自動デプロイ。バンドルは非コミット(wrangler build hook)
