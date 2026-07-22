@@ -772,3 +772,13 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   キーを持たない旧JSONは従来どおりslug/代表URL、wire parseへfallbackする。
 - 長さ境界、決定性、route逆引き、衝突拒否、日本語名、長名表示、旧JSON互換をtestで固定。
   `make check`は189 tests / 19 suites、SwiftFormat 0/115、SwiftLint 0/114、`make app`もgreen。
+
+## 2026-07-23: todos collection実切替とproject E2E skill更新
+
+- 専用Simulator Dの実todosカードで`Tasks`から`reading list`へ切替し、緑のcollection色、先頭4件、
+  「他2件の未完了」を画面確認した。切替は`refresh-todos`経路で更新され、試験後は`Tasks`へ復元した。
+- `.agents/skills/ios-e2e-verify`が正典`.claude/skills/ios-e2e-verify`へのsymlinkであることを確認し、
+  専用端末は`make run SIMULATOR_UDID`で固定すること、runだけ署名してKeychain `-34018`を防ぐこと、
+  semantic snapshotが閉じたdrawerの検索欄も返すためcomposer固有patternを使うこと、fullscreen作成focusは
+  display-mode request/context logと安定した入力focusを突き合わせることを追記した。
+- 構成A/B/Dの採否は正式blind比較が未完了なのでskillへ固定せず、確定済みのproject固有知識だけ反映した。

@@ -15,7 +15,7 @@
 - **検証基盤:** `make check`はSwift build/test/lintの高速gate、`make app`はSwiftUIを含むiOS全体build、
   `make verify`は両方を束ねたpush前の最終gate。`make hooks`でtrackedなpre-push hookを有効化すると、
   通常のmain pushだけ`make verify`が走る（意図的な`--no-verify`は非常口として維持）。
-  baselineなしSwiftLint strict 0件、177 tests、generic iOS Simulator app buildまでgreen。
+  baselineなしSwiftLint strict 0件、189 tests、generic iOS Simulator app buildまでgreen。
   iPhone 12 miniへのbuild/install/launchとプロセス生存も確認済み。Simulator操作は汎用
   `ios-simulator`、MCPHost固有検証はproject `ios-e2e-verify`を併用する。
 - **lint整理:** 既存baselineを撤去し、UI・chat orchestration・AppsBridge・test suitesを
@@ -88,6 +88,8 @@
   > **2026-07-23 更新:** O-01とW-01のmain独立再実行は合格。構成間のraw trace採点は未完了。
 - [ ] Claude Codeのrate limit解消後、同じ採用候補でH-01/O-01を再実行する。
 - [ ] 採用判断後にgeneric知識をuser plugin、MCPHost固有知識を`ios-e2e-verify`へ反映する。
+  > **2026-07-23 更新:** 採用判断を待たない確定済みのMCPHost固有知識（専用UDID、署名run/Keychain、
+  > 非表示semantic target、fullscreen focus log）はproject skillへ先行反映。構成A/B/Dの採用知識は未反映。
 
 ## 3. MCPHost残E2E(優先順)
 
@@ -102,9 +104,10 @@
   > 載せ替えでkeyboardがhideしていた。応答を実reparentまで待たせ、timeout/cancelはinlineへrollback。
   > 修正版は作成行がkeyboard accessory上へ可視化され、focusを安定維持。右上縮小ボタンのドリフトも無い。
 - [ ] todosのcollection切替、agendaの色filter/追加/行色、inline menuのclipなしを確認する。
-  > **2026-07-23 部分確認:** todos collection menuとagenda色filter menuはinlineでclipなし。
+  > **2026-07-23 部分確認:** todosは`Tasks`→`reading list`へ実切替し、collection色（緑）と
+  > 先頭4件＋「他2件の未完了」を確認後に復元。todos/agenda menuともinlineでclipなし。
   > agendaの⊕はfullscreenの予定/リマインダーformを開き、終日既定ONを確認して未保存cancelした。
-  > collection実切替、予定行色、保存往復は未確認。
+  > agenda予定行色と保存往復は未確認。
 - [ ] 会議「参加」open-link、C3/C4作成、終日保存、action-row、カード内部scroll消滅を確認する。
 - [ ] Simulator標準カレンダー/リマインダーへCalDAV accountを追加し、URL/CONFERENCE等を裏取りする。
 

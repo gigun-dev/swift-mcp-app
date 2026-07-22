@@ -64,7 +64,11 @@ credentialを一律に人手へ戻さない。次の境界で判断する。
 
 - **`make run` が最短**(推奨)。`.env`(gitignore 済み)に `MCPHOST_LLM_KEY=sk-...` を
   1度書いておけば、ビルド → install → **鍵入りで launch** まで一発。人手も貼り付けも要らない。
-  `MCPHOST_SPIKE=todos` のようにスパイク指定も `.env` に書ける。機種は `make run SIMULATOR='iPhone 17 Pro'`。
+  `MCPHOST_SPIKE=todos` のようにスパイク指定も `.env` に書ける。専用端末でのE2Eは名前でなく
+  **`make run SIMULATOR_UDID=<udid>`** を使い、build/install/launchの配送先を同じUDIDへ固定する。
+  同名Simulatorが複数ある状態で名前指定すると`make run`は候補を表示して停止する。
+  `make app`はgeneric無署名buildだが、`make run`はKeychain entitlementを使えるよう署名する。
+  runを無署名化するとtoken保存が`-34018`となり、再起動後の無言接続を誤って失敗させる。
   値が空の変数は渡さない実装になっている点が重要 — `LLMSettingsStore` は
   `env[...] ?? Keychain ?? ""` の順で**空文字も「値あり」と見なす**ため、空を渡すと
   Keychain 保存済みの鍵が無視される。手で `simctl launch` するときも同じ罠を踏まないこと。
@@ -97,6 +101,10 @@ credentialを一律に人手へ戻さない。次の境界で判断する。
 2. semantic treeが隠れたNavigationStackを混ぜる、またはWKWebView内を十分に露出しない場合は
    `idb ui describe-all`の表示中labelとframeへfallbackする。
 3. 最後にscreenshotとpoint座標を使う。固定座標だけを成功根拠にしない。
+
+XcodeBuildMCPのsnapshotは、閉じたdrawerの検索欄など**画面上は非表示の要素もtargetへ混ぜる**。
+`text-field`のような曖昧patternは使わず、composerならplaceholderの`メッセージを入力…`まで含める。
+操作後は必ず画面または値を再取得し、背後の要素へ誤入力していないことを確認する。
 
 旧Simulator `control` backendだけを使う場合、actionは attach / launch / screenshot / tap / swipe /
 touch_path / touch2_path / text / button / open_url / detach に限られる。
@@ -160,6 +168,11 @@ xcrun simctl spawn <udid> log show --predicate 'subsystem == "dev.gigun.mcphost"
 ```
 
 カテゴリ例: `reparent-spike`(PROBE 行に JS 状態が出る)、`llm-settings`、`open-link`。
+
+fullscreen作成flowは`appssession`の`request-display-mode`と`host-context-changed mode=fullscreen`を
+時系列で確認する。成功応答後のfocusだけでなく、実WKWebView reparent後もkeyboard accessoryまたは
+入力focusが安定して残ることを確認する。show直後にhideする場合はカードDOMを疑う前に、ホストが
+display modeの成功を実presentationより先に返していないかを調べる。
 
 ## 7. 報告の作法
 

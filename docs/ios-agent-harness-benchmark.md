@@ -205,6 +205,8 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 
 - [ ] 結果表を本docへ追記し、A/B/C/Dの採否と根拠を確定する。
 - [ ] generic knowledgeをuser plugin、MCPHost固有知識を`ios-e2e-verify`へ反映する。
+  > **2026-07-23 更新:** 専用UDID、署名run/Keychain、非表示semantic target、fullscreen focus logという
+  > 構成非依存のproject知識は先行反映。A/B/D採用workflowとgeneric user pluginは正式比較後に残す。
 - [x] ~~real secret禁止とdisposable test credential許可をskillに明記する。~~ ✅ 2026-07-23
 - [ ] 採用するMCP workflowを最小化し、Xcode IDE gatewayはtimeout解消後にoptionalで有効化する。
 - [ ] dotfilesはまずBun/NodeとMCP登録を管理し、XcodeBuildMCPは固定版`bunx`で運用する。
