@@ -57,6 +57,31 @@ WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 comp
 > モック: collection-picker v2〜v5(採用は v5)・agenda-views-v6(月グリッド・**次スライス**)。
 > **残タスク・未検証は本ファイル末尾「2026-07-22 タスク棚卸し」節を参照。**
 
+> **2026-07-22 追更新(シミュレータ検証: 右上ズレ ✅ / 残り2件はブロック中):**
+> iPhone 17・iOS 26.4 シミュレータで `MCPHOST_SPIKE=reparent` ハーネスを実行し、
+> **~~右上ズレ解消~~ ✅ を検証完了**(実機未検証3件のうち1件がクローズ)。
+> 判定は「同一 WebView が reparent されたか」= JS 状態の連続性で見る:
+> inline `{"tick":665,"manual":3,"input":""}` → 未コミット入力を足して昇格 →
+> **sheet 直前/直後がともに `tick:1980` で一致(= リロードが挟まっていない決定的証拠)** →
+> sheet 内で +1 → dismiss 後 `{"tick":2800,"manual":4,"input":"Dirty-state-42"}`。
+> 昇格直後のカードは画面幅に正しく整列し、**右上へのズレ・空白・はみ出しは目視でも皆無**。
+> sheet 内の操作(manual 4)が inline 復帰後もそのまま引き継がれ、往復で状態を失わない。
+> 保留箱+`onAdopted → notifyReparented()` の順序修正が意図どおり効いている。
+> ただし**このスパイクは MCP 接続を経由しない**ため、検証したのは reparent の器の側。
+> 実カード(caldav todos/agenda)での昇格は別途要確認。
+> **未検証のまま残るもの**: open-link・C3/C4 フォーム一式。いずれも caldav 本番への
+> OAuth 認証(同意画面のパスワード入力)が要るため、シミュレータ自動操作だけでは進められない。
+> なお C3/C4 は **caldav 本番が該当 HTML を配信していること**が前提で、
+> 本リポジトリからはデプロイ状態を断定できない(検証時はカードに 📍/🎥/🔗 が出るか先に一目確認)。
+> **副次観測**: 既定 LLM が `gpt-5.4-mini`(OpenAI 互換)で、CLAUDE.md の
+> (※初稿で「末尾の棚卸し節が未執筆」と書いたのは**誤り**。393 行に実在する。撤回)
+> 「LLM: Anthropic API」記述と食い違う。どちらが正かを決めて CLAUDE.md 側を直すこと。
+> Swift 6 言語モードでエラー化する警告が残存(`ChatViewModel.swift:547,549` の
+> main actor 分離 `diagLogger` 外部アクセス・`InlineCardView.swift:208,243,264,269` の
+> `captured var 'self'`)。
+> 検証手順メモ: `simctl launch` の `--setenv` は当環境で不可 —
+> `SIMCTL_CHILD_MCPHOST_SPIKE=reparent xcrun simctl launch --terminate-running-process <udid> dev.gigun.mcphost`。
+
 転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
 caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI
 (ext-apps 製・計約7,500行)がサーバー側に存在する今、ネイティブ再描画は二重実装になる。
@@ -263,7 +288,12 @@ Swift 側の最大の付加価値は「モバイルで MCP Apps を動かすホ�
    > proximityAlarm・conference + 実データフィクスチャ)/ C2(9e9b751 カード描画: 🎥参加・📍場所・
    > 🔗参照 URL・📍到着時バッジ、location-view.ts 純関数)。host: prefersBorder + ダークモード
    > (129b725・theme/styles を host-context 通知・最小6キー・spec バイト一致テスト)。
-   > **未デプロイ: caldav bc5ebd1〜9e9b751。次: デプロイ → 実機一括検証 → C3-C5(作成フォーム)。**
+   > ~~**未デプロイ: caldav bc5ebd1〜9e9b751。次: デプロイ → 実機一括検証 → C3-C5(作成フォーム)。**~~
+   > **2026-07-22 更新: デプロイ済み ✅**(Cloudflare Workers Builds API で確認)。caldav 本番の
+   > 最新ビルドは **dd56d30(2026-07-22T07:10Z・success)= ローカル HEAD と一致**し、直近8ビルドは
+   > 全て success。bc5ebd1〜9e9b751 はもちろん、ab5b153(openLink 正規経路化)・fa84ceb(⊕ 常時
+   > fullscreen 昇格)・dd56d30(コレクション選択+色)まで本番配信済み。
+   > → **C2/C3/C4 と open-link の検証は「サーバー側が配信していない」リスク無しで着手してよい。**
    > 残課題: caldav カード側の styles トークン参照(ダーク完全対応)・agenda 詳細ページの
    > conference/住所表示(C3/C4 で SheetDraft 拡張とセット)・StaticCardView の prefersBorder。
 6. **P4(余力)**: (a) todos 一覧をネイティブ SwiftUI でも実装し「同じ契約の二方式描画」を
@@ -395,7 +425,40 @@ Claude iOS は対応済みだがクローズド)→ 本アプリが初のオー�
 - [ ] サーバー追加フォームは https 必須(ローカル http 検証が要るなら緩める)
 - [ ] #5 reasoning 表示(将来)/ #11 H-a/H-b(宣言型ネットワーク権限・geolocation)
 
+> **2026-07-22 追記(コード読解で裏取り・上記4件はいずれも「実在・未解消」を確認):**
+> - **slug 32 字**: 破綻条件は `len(slug)+len(tool) > 62`。slug が上限に張り付いた場合は
+>   **ツール名 31 字以上**で 64 字超過。合成後を丸める処理はどこにも無く(`ToolNamespacing.prefixed`
+>   は素の連結)、ホスト側に長さ検証も無いので**超過名がそのまま LLM API へ送られ 400 になる**
+>   (静かな切り捨てや衝突ではない)。逆ルーティングは最初の `__` 分割で slug に `_` が来ないため
+>   原理的に安全。caldav の実データは最長 20 字級(slug 6 + 20 = 28)で余裕は大きい。
+> - **ToolStepRow**: `ChatBodyView.swift:558-562` が `parsed?.slug` をそのまま表示。逆引き関数は
+>   存在しないが、`ReadyConnection` が `slug` と `name` を両方持つので ConnectionsManager 側に
+>   足すのが自然。日本語名の劣化実例: `slug(for: "予定表")` は全字が非 ASCII → 空 → フォールバックで
+>   `"server"`。2つ登録すると `server` / `server-2` になり UI 上まったく区別が付かない。
+> - **`https` 必須**: 検証は `SettingsSheet.swift:431-435` の1箇所で追加/編集フォーム共通。
+>   緩めるなら scheme 条件のみ。ただし http 実接続には ATS も壁(loopback は対象外・LAN IP は
+>   `NSAllowsLocalNetworking` が要る見込み。`project.yml` は ATS キーを一切定義していない)。
+
+**新規起票(2026-07-22 のコード読解で発見・doc 未記載だったもの)**
+- [ ] **slug 衝突で tools/call が別サーバーへ流れうる(取り違え・優先度高め)**: `reassignSlugs` は
+      接続時にしか走らず `ready` の接続はスキップされる(`ConnectionsManager.swift:104-109,123,170`)。
+      一方サーバー名編集(`SettingsSheet.swift:487-497`)は再接続も再採番もしない。よって
+      「A を `caldav` で接続済み → A をリネーム → 新サーバー B を `caldav` 名で追加・接続」の順で
+      **2つの ReadyConnection が同じ slug を持ちうる**。`buildContext` の
+      `executors[rc.slug] = rc.proxy` は `states.values`(非決定順)で上書きするため、
+      どちらの proxy が勝つか不定 = **ツール呼びが意図しないサーバーへ流れる**。
+      同名 `ToolDefinition` が LLM へ重複送出もされる。名前編集時に再採番するか、
+      slug をエントリ ID 由来にするのが筋。
+- [ ] **履歴詳細のツール表示がライブと不一致**: `HistoryDetailView.swift:51` は step を無加工で
+      渡すため、前置を剥がさず `caldav__list-todos` が生表示される(サーバー名も URL 由来の短縮名)。
+      ライブの ToolStepRow と見え方が割れる。上の実名 resolver とセットで直すのが自然。
+- [x] ~~**サーバー追加フォームが二重スキーム `https://http://…` を保存できる**~~ → 2026-07-22 修正
+      (実機検証で発見。詳細は本ファイル冒頭の「シミュレータ検証」更新ブロック)。
+
 ### 進め方メモ
 - iOS Simulator でも MCPHOST_AUTOCONNECT=1(simctl launch --setenv)で人手なし接続が可能
   (ChatHomeViewModel.autoConnectIfRequested — M2 後は無言自動接続が既定なので不要かも・要確認)
 - caldav は push で Workers Builds 自動デプロイ。バンドルは非コミット(wrangler build hook)
+- iOS Simulator の設定 → カレンダー/リマインダーに CalDAV アカウントを追加すれば、標準アプリでの
+  サーバー検証(URL/CONFERENCE 表示・通知・移動時間など)も Simulator で自走できる(実機必須ではない。
+  2026-07-22 ユーザー確認。接続情報は caldav 側 ios-device-verification スキル参照)
