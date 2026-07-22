@@ -12,5 +12,8 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "xcode-mcp@gigun": true
   }
 }

@@ -14,3 +14,4 @@ xcuserdata/
 # BYOK/検証用の API キー(OpenAI 等)。絶対にコミットしない。
 # 中身は Services/LLM のライブ検証時にだけ読む(コード/ログには残さない)。
 .env
+.claude/settings.local.json
