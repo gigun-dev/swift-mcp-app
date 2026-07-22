@@ -1,10 +1,12 @@
 ---
+# このリポジトリは Swift。caldav(TypeScript)から移植したときの
+# src/** test/** proxy/** … のままだと**一度もマッチせず自動ロードされない**
+# (2026-07-22 に発覚・CLAUDE.md は「コード編集時に自動ロード」と書いていたのに実際は無効だった)。
 paths:
-  - "src/**"
-  - "test/**"
-  - "proxy/**"
-  - "scripts/**"
-  - "migrations/**"
+  - "Sources/**"
+  - "Tests/**"
+  - "Package.swift"
+  - "project.yml"
 ---
 
 # コメント方針(このリポジトリの基本ルール)

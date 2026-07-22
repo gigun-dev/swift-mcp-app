@@ -143,7 +143,7 @@ public final class LoopbackCallbackServer: @unchecked Sendable {
                 return
             }
 
-            let requestLine = String(decoding: buffer[0..<n], as: UTF8.self)
+            let requestLine = String(decoding: buffer[0 ..< n], as: UTF8.self)
                 .split(separator: "\r\n").first.map(String.init)
             let redirectURL = requestLine.flatMap { line -> URL? in
                 let parts = line.split(separator: " ")

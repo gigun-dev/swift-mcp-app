@@ -97,7 +97,7 @@ public struct OpenAICompatClient: LLMClient {
 
         let (bytes, response) = try await urlSession.bytes(for: makeURLRequest(body))
 
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+        if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
             // 非 2xx。ボディを読んでエラーに含める(検証・デバッグのため・T2 指示 B)。
             let errorBody = try await Self.collectBody(bytes)
 
@@ -109,7 +109,7 @@ public struct OpenAICompatClient: LLMClient {
                 retryBody.streamOptions = nil
                 let (retryBytes, retryResponse) = try await urlSession.bytes(for: makeURLRequest(retryBody))
                 if let retryHTTP = retryResponse as? HTTPURLResponse,
-                   !(200..<300).contains(retryHTTP.statusCode) {
+                   !(200 ..< 300).contains(retryHTTP.statusCode) {
                     let retryErrorBody = try await Self.collectBody(retryBytes)
                     throw LLMClientError.httpError(statusCode: retryHTTP.statusCode, body: retryErrorBody)
                 }

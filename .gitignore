@@ -13,5 +13,9 @@ xcuserdata/
 
 # BYOK/検証用の API キー(OpenAI 等)。絶対にコミットしない。
 # 中身は Services/LLM のライブ検証時にだけ読む(コード/ログには残さない)。
+# `make run` と .envrc(direnv)がここから MCPHOST_LLM_KEY 等を読む。
+# 【.envrc は除外しない】あれは .env を取り込むだけで秘密を持たないため、
+# 共有した方が「どう鍵を渡すか」が伝わる。秘密が入るのは .env だけ。
 .env
+.direnv/
 .claude/settings.local.json

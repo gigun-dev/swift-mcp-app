@@ -1,0 +1,6 @@
+# このリポジトリは、意図・経緯・ボツ案を残す濃いコメントを設計資料として扱う。
+# SwiftFormat の既定ルールを全面適用すると、コメント位置や import 周辺の説明まで
+# 機械的に動かして意味を損ねるため、意味に触れない字句的な整形だけを有効にする。
+--swiftversion 5.9
+--disable all
+--enable blankLinesAtEndOfScope,blankLinesAtStartOfScope,consecutiveBlankLines,duplicateImports,emptyBraces,linebreakAtEndOfFile,spaceAroundOperators,spaceInsideBraces,trailingSpace

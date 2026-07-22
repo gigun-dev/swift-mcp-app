@@ -579,7 +579,7 @@ struct ChatBodyView: View {
 
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("メッセージを入力…", text: $draft, axis: .vertical)
-                    .lineLimit(1...4)
+                    .lineLimit(1 ... 4)
                     .focused($inputFocused)  // キーボード dismiss を制御するため focus を束ねる。
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)

@@ -1,0 +1,10 @@
+# 2026-07-23 時点の既存違反は baseline に固定し、以後の新規違反だけを失敗させる。
+# baseline を一括削除するための規約緩和はせず、触るコードから段階的に解消する。
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+
+baseline: .swiftlint-baseline.json

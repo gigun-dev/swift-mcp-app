@@ -367,7 +367,7 @@ public final class ChatViewModel {
         // 2) 反復。各周で assistant ターンを1つ起こし、そこへ text/toolSteps を書き込む。
         var settled = false
         var iterations = 0
-        for _ in 0..<maxIterations {
+        for _ in 0 ..< maxIterations {
             // 周の頭でキャンセルを確認する(監査 2026-07-18 MEDIUM)。cancelActiveSend() が
             // 前周の tool 実行中〜次周開始までの間に呼ばれた場合、ここで static に打ち切る
             // ——新しい assistant ターンを起こさない・新しいストリームを開かない・エラーも出さない

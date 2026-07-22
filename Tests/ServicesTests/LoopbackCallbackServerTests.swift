@@ -106,7 +106,7 @@ import Testing
         let server = LoopbackCallbackServer()
         let redirectURI = try server.start()
 
-        for round in 1...2 {
+        for round in 1 ... 2 {
             async let callback = server.waitForCallback()
             var callbackURL = URLComponents(url: redirectURI, resolvingAgainstBaseURL: false)!
             callbackURL.queryItems = [URLQueryItem(name: "code", value: "round-\(round)")]

@@ -24,7 +24,6 @@ import Security
 /// `OAuthAuthorizer(tokenStorage:)` に渡すことで、取得したアクセストークン/リフレッシュトークンを
 /// Keychain に永続化する(SDK デフォルトの `InMemoryTokenStorage` はメモリのみ・プロセス終了で消える)。
 public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
-
     // Keychain のサービス名(kSecAttrService)。バンドル ID を接頭辞にして
     // 同一デバイス上の他アプリの Keychain 項目と衝突しないようにする。
     private let service: String
