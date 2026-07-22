@@ -5,6 +5,26 @@
 > `> **YYYY-MM-DD 更新:** ...` の引用ブロックを積層する。大きな節目で全体を棚卸しする。
 > 時系列の生記録は docs/log.md に追記(追記専用アーカイブ)。運用は caldav 側と同一。
 
+## セッション開始時の現在地(2026-07-22)
+
+- **完成済み**: P0〜P4-DM、M1(サーバー管理)、M2(複数サーバー同時接続・無言自動接続・
+  `slug__tool` 逆ルーティング)。caldav と tdr-concierge の同時接続、tdr の実 tool-use と
+  MCP App カード描画まで Simulator で確認済み。
+- **この dirty の内容**: MCP URL の二重スキーム拒否(`MCPEndpointPolicy` + 11 tests)、接続状態を
+  平時は非表示・異常時だけ警告アイコンにする header UX、Makefile/direnv の開発環境整理、
+  Claude Code / Codex 共有ハーネス。既存変更を破棄せず引き継ぐ。
+- **検証済み**: Swift build/test は通る。既存SwiftLint違反はbaselineに固定し、SwiftFormatは
+  意図コメントを壊さない字句ルールへ限定したため、`make check`は今後の新規違反だけを検出する。
+  **2026-07-23 実機**: iPhone 12 miniへ自動署名build・install・launch成功。起動後も
+  `devicectl device info processes` でMCPHostプロセスの生存を確認した。
+- **次の優先タスク**: slug衝突によるtools/call誤配送は接続identity再同期で解消済み。
+  次は通常チャットでの ⊕ fullscreen、agenda/open-link/C3/C4、両server混在とtoggle OFFの
+  E2E を消化する。詳細チェックリストは後段「2026-07-22 タスク棚卸し」を必要時に読む。
+- **検証手順の分担**: `ios-simulator` は汎用の Simulator CLI 操作 skill、
+  `ios-e2e-verify` は MCPHost 固有のビルド・認証回避・ログ裏取りを含む E2E skill。両方使う。
+
+<!-- session-head-end: ここまでが SessionStart フックで自動注入される最新サマリ。以下は履歴・詳細カタログ。 -->
+
 **現在地(2026-07-16)**: コア価値は「**iOS 汎用 MCP Apps ホスト(路線B)**」。
 **P0〜P2 完了 ✅ — 路線B は技術的に確立した。** caldav 本番の todos カードを
 WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 complete → tools/call →
@@ -69,18 +89,49 @@ WKWebView で素の HTML のまま描画し、OAuth 接続 → カード内 comp
 > 保留箱+`onAdopted → notifyReparented()` の順序修正が意図どおり効いている。
 > ただし**このスパイクは MCP 接続を経由しない**ため、検証したのは reparent の器の側。
 > 実カード(caldav todos/agenda)での昇格は別途要確認。
-> **未検証のまま残るもの**: open-link・C3/C4 フォーム一式。いずれも caldav 本番への
-> OAuth 認証(同意画面のパスワード入力)が要るため、シミュレータ自動操作だけでは進められない。
-> なお C3/C4 は **caldav 本番が該当 HTML を配信していること**が前提で、
-> 本リポジトリからはデプロイ状態を断定できない(検証時はカードに 📍/🎥/🔗 が出るか先に一目確認)。
-> **副次観測**: 既定 LLM が `gpt-5.4-mini`(OpenAI 互換)で、CLAUDE.md の
+> **副次観測**: 既定 LLM が `gpt-5.4-mini`(OpenAI 互換)で CLAUDE.md の
+> 「LLM: Anthropic API」記述と食い違う → **CLAUDE.md を実装(OpenAI 互換・プリセット)側に
+> 合わせて修正済み ✅**。Swift 6 言語モードでエラー化する警告が残存
+> (`ChatViewModel.swift:547,549` の main actor 分離 `diagLogger` 外部アクセス・
+> `InlineCardView.swift:208,243,264,269` の `captured var 'self'`)。
 > (※初稿で「末尾の棚卸し節が未執筆」と書いたのは**誤り**。393 行に実在する。撤回)
-> 「LLM: Anthropic API」記述と食い違う。どちらが正かを決めて CLAUDE.md 側を直すこと。
-> Swift 6 言語モードでエラー化する警告が残存(`ChatViewModel.swift:547,549` の
-> main actor 分離 `diagLogger` 外部アクセス・`InlineCardView.swift:208,243,264,269` の
-> `captured var 'self'`)。
 > 検証手順メモ: `simctl launch` の `--setenv` は当環境で不可 —
 > `SIMCTL_CHILD_MCPHOST_SPIKE=reparent xcrun simctl launch --terminate-running-process <udid> dev.gigun.mcphost`。
+> スクリーンショットは 918px 幅で返るが tap/swipe は 402pt 空間(約 2.284 で割る)。
+
+> **2026-07-22 追更新2(棚卸し節「実機/シミュレータ 未検証」の消化・LLM キー待ちで一部保留):**
+> **前提が2つ解けた**: ①caldav 本番は **dd56d30 まで全てデプロイ済み**(Workers Builds API で
+> 確認・上記「未デプロイ」節を訂正済み)ので C2/C3/C4・open-link の前提は揃っている。
+> ②Keychain のトークンが生きており **無言自動接続が成立**(起動時ブラウザ無しで ready)。
+> **合格 ✅(`MCPHOST_SPIKE=todos` で caldav 本番の実データを描画して確認)**
+> - **コレクション選択(caldav ①・dd56d30)**: 見出し `tasks ∨` タップ → ドロップダウンが
+>   **クリップされず**描画 → `reading list` へ切替成功。コレクション色(緑の左ボーダー)も反映。
+> - **action-row(FAB クリップ解消・e924c04)**: 「他 1件の未完了」と ⊕ が同一行に統合され、
+>   浮遊 FAB は無い。**カード内部スクロールも消滅**(カード全体が素直に伸びている)。
+> - **プログラム的 focus のキーボード表示(スウィズル af98e59)**: ⊕ タップで
+>   ドラフト行が action-row の**上**に出現 → 自動 focus → **キーボードのアクセサリバーが出た**。
+>   scrollIntoView も効きドラフト行が見える位置に来る。
+> - **⊕ の inline フォールバック**: スパイク画面は FullscreenCoordinator を持たない
+>   =「昇格不可ホスト」なので inline 追加になった。設計どおりで**不具合ではない**。
+> - **M1/M2 の UI**: 2サーバー(caldav + tdr-concierge)が同時に「接続済み」。
+>   ServerDetailView のツール一覧ビューアが機能(tdr は park_waits/park_hours/attraction_wait の3件)。
+>   **tdr-concierge は OAuth 不要**で繋がるため、認証を挟まない2台目検証に使える。
+> **保留(LLM API キーが要る — キー入力はエージェント側では行わない)**
+> - ⊕ の**常時 fullscreen 昇格**(fa84ceb): 昇格先を持つ通常チャットでないと確かめられない。
+> - **1チャットに両サーバーのツール混在**(`caldav__…`/`tdr…__…`)・トグル OFF で次 newChat から消える。
+> - **open-link**(会議「参加」/🔗参照)と **C3/C4 フォーム一式**: agenda カードが要る。
+>   todos スパイクには会議リンクも vevent 作成導線も無いため、ここからは進めない。
+> **実バグを1件発見して修正 ✅**: サーバー追加フォームが `https://http://…` を保存できた
+> (プリフィル "https://" にフル URL を貼ると連結される。`URL(string:)` が host="http" と
+> 解釈するため旧 3 条件を全部通過)。壊れたエントリが永続化され接続時に -1003 になる。
+> → 判定を **Kernel の純関数 `MCPEndpointPolicy`** に切り出し(OpenLinkPolicy と同じ流儀)、
+> 二重スキーム/非 https/不正ホストを理由付きで拒否。文言は Features 側で出し分け。
+> swift-testing 11 ケース追加・`make check` 172 tests green・**シミュレータで再現手順を踏んで
+> 修正を実地確認**(保存ボタンが無効化され、原因を名指しする赤字が出る)。
+> 未処理の論点: ①既に永続化された不正エントリの救済(起動時マイグレーション)は未実施
+> — 今回は実機側で正しい URL に直っていたため実害なし。②事故の根本原因である
+> プリフィル `"https://"` を placeholder に変えるかは**挙動変更なので保留**(要判断)。
+> ③`make app` は subagent 環境の PATH に xcodegen が無く失敗する(Makefile に fallback 検討)。
 
 転換の経緯(2026-07-15): 初版の「契約のネイティブ SwiftUI 描画(路線A)」から転換。
 caldav 側 E-2 が本番検証込みでクローズし、todos v3 / agenda の検証済みインタラクティブ UI
@@ -397,11 +448,11 @@ Claude iOS は対応済みだがクローズド)→ 本アプリが初のオー�
 
 ## 2026-07-22 タスク棚卸し(Claude Desktop / iOS Simulator 移行用の引き継ぎ)
 
-### 実機/シミュレータ 未検証(最優先 — コードは全部入っている)
-- [ ] **host M1+M2**: 起動即チャット・caldav 無言自動接続・設定のサーバー追加
-      (2台目: `https://tdr-concierge.gigun-dev.workers.dev/mcp`)→ 要認証タップ→OAuth →
-      1チャットに両サーバーのツール混在(`caldav__…`/`tdr…__…`)・カードが由来サーバーに紐付く。
-      トグル OFF で次の newChat から消える。※最後のビルドは実機未インストール(unavailable)
+### 実機/シミュレータ 残検証(優先順 — コードは全部入っている)
+- [ ] **host M1+M2 の残り**: 起動即チャット・caldav 無言自動接続・設定からtdr-concierge追加、
+      OAuth、両serverの同時接続、tdrの実tool-useとカード由来serverへの紐付けまではSimulatorで完了 ✅。
+      未検証は、1チャット内で両serverのtoolを混在させることと、トグルOFFが次のnewChatへ反映されること。
+      2026-07-23にはdirty全体をiPhone 12 miniへinstall/launchし、プロセス生存まで確認済み。
 - [ ] **⊕追加フロー**: 常時 fullscreen 昇格 → ズーム完了後にドラフト行が中央へ scrollIntoView →
       キーボード自動表示(スウィズル)。ドリフト(右上バネ)が消えたか
 - [ ] **caldav ①**: todos 見出しドロップダウンでリスト切替 / agenda 右上色ドット→ON/OFF
@@ -440,7 +491,7 @@ Claude iOS は対応済みだがクローズド)→ 本アプリが初のオー�
 >   `NSAllowsLocalNetworking` が要る見込み。`project.yml` は ATS キーを一切定義していない)。
 
 **新規起票(2026-07-22 のコード読解で発見・doc 未記載だったもの)**
-- [ ] **slug 衝突で tools/call が別サーバーへ流れうる(取り違え・優先度高め)**: `reassignSlugs` は
+- [x] ~~**slug 衝突で tools/call が別サーバーへ流れうる(取り違え・優先度高め)**~~ ✅: `reassignSlugs` は
       接続時にしか走らず `ready` の接続はスキップされる(`ConnectionsManager.swift:104-109,123,170`)。
       一方サーバー名編集(`SettingsSheet.swift:487-497`)は再接続も再採番もしない。よって
       「A を `caldav` で接続済み → A をリネーム → 新サーバー B を `caldav` 名で追加・接続」の順で
@@ -449,14 +500,97 @@ Claude iOS は対応済みだがクローズド)→ 本アプリが初のオー�
       どちらの proxy が勝つか不定 = **ツール呼びが意図しないサーバーへ流れる**。
       同名 `ToolDefinition` が LLM へ重複送出もされる。名前編集時に再採番するか、
       slug をエントリ ID 由来にするのが筋。
+      > **2026-07-23 解消:** name / URL / expected slugを`MCPConnectionIdentity`として比較し、
+      > ready中・connecting中のどちらでも登録内容が変われば旧Taskをcancelして再接続する。
+      > rename→旧名と同名のserver追加を含む5 regression testsを追加。旧proxy/tool definitionsは
+      > ready無効化時点で通知して空チャットから外す。
 - [ ] **履歴詳細のツール表示がライブと不一致**: `HistoryDetailView.swift:51` は step を無加工で
       渡すため、前置を剥がさず `caldav__list-todos` が生表示される(サーバー名も URL 由来の短縮名)。
       ライブの ToolStepRow と見え方が割れる。上の実名 resolver とセットで直すのが自然。
 - [x] ~~**サーバー追加フォームが二重スキーム `https://http://…` を保存できる**~~ → 2026-07-22 修正
       (実機検証で発見。詳細は本ファイル冒頭の「シミュレータ検証」更新ブロック)。
 
+### 接続状態をどこに出すか(2026-07-22 調査 → 方針確定)
+
+ユーザー指摘「ナビバー中央の『2/2 接続』は意味不明」を起点に他製品を調査。**4製品すべてで構造が一致**した:
+
+| 製品 | 常設の接続状態 | 会話中に使えるツール | ヘッダー |
+| --- | --- | --- | --- |
+| claude.ai | 設定 > Connectors | 入力欄の「+」→ Connectors | 出さない |
+| ChatGPT | Settings > Apps & Connectors | 入力欄の Tools メニュー | 出さない |
+| Claude Desktop | 「+」/ 開発者設定・ログ | 「+」→ Connectors | 出さない(常設ステータス無し) |
+| VS Code (Copilot) | Extensions の MCP SERVERS | 入力欄の Configure Tools / `#` | 異常時のみチャットビューに出す |
+
+→ **(a) 常設一覧は設定画面 (b) 使えるツールは入力欄のピッカー (c) ヘッダーには置かない
+(d) 異常は作業の文脈(チャット/該当要素の近く)に出す**、が業界の定石。
+
+- **Apple HIG**: ナビバーのタイトルは「現在地の説明」。冗長なら空でよい・バーに詰め込むな。
+  動的な状態をタイトルに置けとは書かれていない。
+- **WCAG 1.4.1 (Use of Color, Level A)**: **色だけで状態を伝えるのは違反**。緑/赤ドットのみの
+  status indicator は典型的な NG 例。視覚上は警告アイコンの形状、VoiceOverには
+  accessibility labelを使い、色に依存せず状態を伝える。
+  Claude Code 自身の `✔ Connected` / `! Needs authentication` / `✘ Failed to connect` が模範。
+- **NN/g**: 日常操作の成功を主張するのは "bothersome and intrusive"。インジケータは該当要素の近くに。
+  ただし**サイレント故障は最悪**なので「黙る」のは異常が確実に届く経路がある場合に限る
+  (本アプリはタップで開くメニューに全サーバーの状態が既にある = 条件を満たす)。
+- Cursor はサーバーごとに色ドット(緑=成功/黄=起動中or期限切れ/赤=失敗)を出すが、
+  **黄のとき `Needs Authentication` というテキストリンクを併記**しており色単独ではない。
+  ただしドットの色定義は公式ドキュメントに無くフォーラム由来(半分未確認)。
+
+**確定した方針**: 正常時はヘッダーから接続状態を消し、中央はモデル名のみ。
+`needsAuth`/`failed` または有効server 0件のときだけ**警告アイコン**を出す。可視テキストは置かず、
+アイコン形状 + accessibility labelで色単独を避ける。詳細と操作はタップ先のserver menuに集約する。
+`connecting` は騒がない。
+
+- [ ] **入力欄側のツールピッカー**(将来): 調査で定石と判明した「会話中に何が使えるかは入力欄で示す」を
+      本アプリはまだ持っていない(現状ヘッダーの Menu が兼ねている)。⊕/ツールボタンを composer に置き、
+      サーバー単位・ツール単位の ON/OFF とサーバーごとの状態表示をそこへ集約するのが筋。
+      M2 の「トグル OFF で次の newChat から消える」も本来はここに出るべき操作。
+
+### 開発環境をどう宣言的に用意するか(2026-07-22 調査 → 方針確定)
+
+**結論: ツールはユーザー環境(dotfiles の nix)に入れる。project-scope の flake は採らない。**
+Makefile は素の PATH を見るだけにし、秘密(API キー)だけ .envrc(direnv)が .env から読む。
+
+一度 project flake + `direnv exec` を実装したが**実測で有害と判明して撤回**した:
+
+```
+direnv exec . の中:
+  DEVELOPER_DIR=/nix/store/...-apple-sdk-14.4
+  SDKROOT=.../MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  xcrun → /nix/store/...-xcbuild-0.1.1-unstable-2019-11-20-xcrun/bin/xcrun
+  xcodebuild → /usr/bin/xcodebuild   ← Apple のまま
+```
+
+`pkgs.mkShell` が stdenv 経由で nix の macOS SDK を注入し xcrun まで差し替えるため、
+**Apple の xcodebuild が nix の macOS SDK を見る**壊れた組み合わせになる
+([NixOS/nixpkgs#355486](https://github.com/NixOS/nixpkgs/issues/355486))。
+coder-desktop-macos と ghostty は `mkShellNoCC` + `unset SDKROOT; unset DEVELOPER_DIR` +
+PATH から nix xcrun を除去、という同一の escape hatch で回避しているが、それは
+「devShell に入った上で nix のツールチェインを全部無効化する」構成で、得られるのはツール3つ。
+撤回後は Apple の `iPhoneSimulator26.4.sdk` が正しく使われることを `make run` で確認済み ✅。
+
+**調査で確定した事実(iOS × nix の前提)**
+- **`nix build` / `nix flake check` でアプリをビルドする道は無い**。nixpkgs 公式が
+  「Xcode はライセンス上パッケージ化できない」と明言し、derivation 内はネットワーク無効なので
+  SwiftPM の依存解決ができない([Discourse](https://discourse.nixos.org/t/is-it-actually-possible-to-run-xcodebuild-in-a-nix-build-environment/68666)・
+  [ios.section.md](https://github.com/NixOS/nixpkgs/blob/master/doc/languages-frameworks/ios.section.md))。
+  → **nix で make を置き換える選択肢は消える**。「nix はツールの供給、make はタスクランナー」が定説。
+- flake.nix を `git add` していないと nix から見えないのは
+  [nix#7107](https://github.com/NixOS/nix/issues/7107) の open issue(「混乱する人が絶えない」)。
+- CI を入れる段の定番(すべて coder-desktop-macos の実測ベース):
+  `nixbuild/nix-quick-install-action`(macOS 約5秒。DeterminateSystems 約49秒・cachix 約42秒)、
+  **nix store のキャッシュは入れない**(coder が「なぜか遅い」とコメントアウトしている)、
+  Xcode は `maxim-lobanov/setup-xcode` でランナー側を固定、devShell に入って `make check`。
+  → CI を導入するときは devShell + escape hatch を再検討する(それまでは不要)。
+
+- [x] ~~**dotfiles の nix に `xcodegen` / `swiftformat` / `swiftlint` を追加する**~~ ✅
+      2026-07-23現在、xcodegen 2.44.1 / swiftformat 0.61.1 / swiftlint 0.65.0を確認済み。
+      既存SwiftLint違反はbaseline化し、SwiftFormatはコメント方針と両立する安全な字句ルールに限定。
+      `make check`はツール不在をskipせず、今後の新規違反を検出する。
+
 ### 進め方メモ
-- iOS Simulator でも MCPHOST_AUTOCONNECT=1(simctl launch --setenv)で人手なし接続が可能
+- iOS Simulator でも `SIMCTL_CHILD_MCPHOST_AUTOCONNECT=1 xcrun simctl launch …` で人手なし接続が可能
   (ChatHomeViewModel.autoConnectIfRequested — M2 後は無言自動接続が既定なので不要かも・要確認)
 - caldav は push で Workers Builds 自動デプロイ。バンドルは非コミット(wrangler build hook)
 - iOS Simulator の設定 → カレンダー/リマインダーに CalDAV アカウントを追加すれば、標準アプリでの

@@ -1,0 +1,17 @@
+{
+  "description": "Claude Code と共有するセッション引き継ぎ情報を読み込む。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CLAUDE_PROJECT_DIR=\"$(git rev-parse --show-toplevel)\" bash \"$(git rev-parse --show-toplevel)/.codex/hooks/session-start.sh\"",
+            "statusMessage": "Loading project direction"
+          }
+        ]
+      }
+    ]
+  }
+}

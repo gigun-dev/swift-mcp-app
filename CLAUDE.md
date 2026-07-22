@@ -35,7 +35,13 @@ ext-apps のホスト SDK も TypeScript のみ — 「ホスト側を Swift で
   MCP Apps は swift-sdk に専用サポートが無いが、基本プリミティブ(tools・embedded resource・
   resources/read)は 2025-11-25 プロトコルで対応済み。ホスト側ブリッジ(WKWebView +
   `WKScriptMessageHandler` で ext-apps の App と JSON-RPC 会話)は本アプリの自前実装。
-- LLM: Anthropic API(tool-use ループを自前実装)。キーは Keychain 保存・BYOK。
+- LLM: **OpenAI 互換 API**(`/chat/completions` + tools)。tool-use ループは自前実装。
+  キーは Keychain 保存・BYOK。設定にプリセット(OpenAI / OpenRouter / Groq / Together …)を
+  持つが、これは base URL の既定値を埋めるだけ — **互換エンドポイントならベンダーを問わない**
+  (ビジョン1「LLM 呼び出しはエンドポイント1箇所に抽象」の実装形)。既定モデルは
+  `gpt-5.4-mini`(軽量・低コスト。tool-use は毎ターン全ツール定義を送るためトークン費が乗る)。
+  ※初期案は Anthropic API 直叩きだったが、汎用ホストとしての中立性(ビジョン2)を
+  LLM 側にも及ぼすため互換 API へ寄せた。Anthropic を使う場合も互換ゲートウェイ経由になる。
 - 雛形: **XcodeGen**(project.yml → `xcodegen generate`、.xcodeproj は git 管理外)+
   Kernel/Services は**ローカル SwiftPM パッケージ**(`swift test` が Xcode なしで回る)。
 - ビルド/検証: `make check`(swift build + swift test + lint)を Makefile に整備
@@ -53,6 +59,12 @@ ext-apps のホスト SDK も TypeScript のみ — 「ホスト側を Swift で
   ユーザーと合意 → 実装(caldav の todos v3 / agenda で確立した進め方)。
 - **実装は subagent に委譲、main は設計・レビュー**(ユーザーのグローバル方針)。
 - 検証は実機/シミュレータ + caldav 本番の D1 生 ICS 裏取り(caldav 側の検証メモ参照)。
+  **シミュレータでの E2E 検証手順とハマりどころは skill `ios-e2e-verify`**
+  (`.claude/skills/ios-e2e-verify/SKILL.md`)に切り出した — 環境変数の渡し方
+  (`--setenv` は使えず `SIMCTL_CHILD_` を使う)、スパイクハーネス(`MCPHOST_SPIKE`)で
+  LLM も認証も無しに検証できる範囲、タップ座標系のズレ(918px と 402pt)、
+  **資格情報を入力せずに通す方法**(`MCPHOST_LLM_KEY` の env 経路)など。
+  常時ロードは無駄なので skill にしてある(検証の話題になったときだけ読まれる)。
 
 ## アーキテクチャ方針
 

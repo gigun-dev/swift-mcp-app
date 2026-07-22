@@ -1,0 +1,8 @@
+personality = "friendly"
+
+[features]
+hooks = true
+
+[mcp_servers.xcode]
+command = "xcrun"
+args = ["mcpbridge"]

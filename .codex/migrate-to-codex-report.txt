@@ -1,0 +1,27 @@
+Migration inventory:
+  active: instruction files - 1 found
+    - CLAUDE.md
+  active: skills - 1 found
+    - ios-e2e-verify
+  inactive: command sources - none found
+  inactive: subagents - none found
+Migration surfaces:
+  active: AGENTS.md - CLAUDE.md is shared through a symlink.
+  active: skills - ios-e2e-verify is shared through a symlink.
+  active: hooks - SessionStart is adapted to Codex hooks.json and shares its script.
+  active: MCP config - xcode is configured in config.toml.
+  active: path-specific instructions - Sources and Tests share comments.md through symlinks.
+  inactive: subagents - No subagents found.
+Migration report:
+  linked: AGENTS.md -> CLAUDE.md.
+  linked: .agents/skills/ios-e2e-verify -> .claude/skills/ios-e2e-verify.
+  linked: Sources/AGENTS.md and Tests/AGENTS.md -> .claude/rules/comments.md.
+  rewritten: .codex/hooks.json - SessionStart supports startup, resume, clear, and compact.
+  linked: .codex/hooks/session-start.sh -> .claude/hooks/session-start.sh.
+  rewritten: .codex/config.toml - Uses canonical `[features].hooks` and adds xcode MCP.
+  not_migrated: .claude/settings.local.json - Codex permissions remain environment-managed.
+  not_migrated: xcode-mcp@gigun plugin wrapper - Only its xcrun mcpbridge server is portable.
+Validation notes (2026-07-23):
+  resolved: automatic writer was intentionally not applied because it would replace the shared skill symlink with a copy and remove the hand-mapped xcode MCP entry.
+  resolved: AGENTS.md manual-review warning is accepted; Claude-specific paths name the shared source of truth, while the instructions themselves apply to both agents.
+  verified: Codex CLI 0.145.0 reports `hooks` as the stable feature key; `codex_hooks` is only a deprecated alias.

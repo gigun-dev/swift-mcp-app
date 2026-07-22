@@ -382,3 +382,231 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   最小6キー・notifyThemeChanged 部分通知・overrideUserInterfaceStyle)。
 - C0 実装途中に API 証明書エラーで artisan が落ちた → SendMessage 再開で無傷続行(作業
   ツリーはクリーンのまま)。C0 コミット時は C1 走行中ファイルを除外して選択ステージ。
+
+## 2026-07-22(シミュレータ E2E: reparent「右上ズレ」検証)
+
+- Claude Code の iOS Simulator MCP ツールで初のシミュレータ自動検証ラウンド。
+  iPhone 17 / iOS 26.4。`make app` ではなく MCP の build → launch を使用(BUILD SUCCEEDED 47s)。
+- 通常起動では caldav が needsAuth(「タップで認証」)で、同意画面にパスワード欄が出る。
+  資格情報入力はエージェント側で行わない方針のため、対話 OAuth を要する項目は保留。
+  → 代わりに **MCP 接続を要さない `MCPHOST_SPIKE=reparent` ハーネス**へ切り替えて先行検証。
+- 検証結果(右上ズレ解消 ✅): inline `{tick:665,manual:3,input:""}` → 入力を dirty 化 →
+  昇格時 **sheet 直前/直後がともに tick:1980**(リロード無し=同一 WebView の reparent 成立)→
+  sheet 内 +1 → dismiss 後 `{tick:2800,manual:4,input:"Dirty-state-42"}`。
+  レイアウトのズレ・はみ出しは目視でも無し。unified log(subsystem dev.gigun.mcphost・
+  category reparent-spike)の PROBE 行で同値を裏取り。
+- 手順ハマり2点(次回のため): ①スクリーンショットは 918px 幅で返るが tap/swipe は 402pt 空間 —
+  約 2.284 で割って渡す。②`simctl launch --setenv` は当環境で「Invalid device」になる。
+  環境変数は `SIMCTL_CHILD_<NAME>=value xcrun simctl launch --terminate-running-process <udid> <bundleid>`。
+- 副次観測: 既定 LLM が gpt-5.4-mini(OpenAI 互換)で CLAUDE.md の「Anthropic API」と不一致。
+  (当初「next-directions.md:58 の参照先『2026-07-22 タスク棚卸し』節が未執筆」と記録したが
+  **誤り** — 393 行に実在した。grep の絞り込み不足による誤認。撤回する)
+  Swift 6 でエラー化する警告が ChatViewModel(diagLogger)・InlineCardView(captured var self)に残存。
+
+## 2026-07-22(続き・棚卸し「未検証」消化 + URL バリデーション実バグ修正)
+
+- デプロイ状態の確定: Cloudflare Workers Builds API(MCP プラグイン経由)で caldav worker を照会。
+  最新ビルド dd56d30(07:10Z・success)= ローカル HEAD 一致、直近8件すべて success。
+  → next-directions.md の「未デプロイ: bc5ebd1〜9e9b751」は解消済みとして訂正。
+  ab5b153(openLink 正規経路化)・fa84ceb(⊕ 常時昇格)・dd56d30(コレクション選択)も配信済み。
+- `MCPHOST_SPIKE=todos` で caldav 本番の実データ描画に成功(Keychain トークン生存・無言接続)。
+  合格: コレクション選択ドロップダウン(クリップ無し)/reading list 切替+コレクション色/
+  action-row 統合(浮遊 FAB 無し・内部スクロール消滅)/⊕ ドラフト行 + プログラム的 focus で
+  キーボード表示(スウィズル af98e59 の実証)/ scrollIntoView。
+  スパイク画面は昇格先を持たないため ⊕ は inline フォールバック = 設計どおり。
+- M1/M2: caldav + tdr-concierge の2サーバー同時「接続済み」。ServerDetailView のツール一覧が機能。
+  tdr-concierge は OAuth 不要で繋がるので、認証を挟まない2台目検証の相方に使える。
+- **実バグ発見→修正**: サーバー追加フォームの URL 欄はプリフィル "https://" があり、
+  フル URL を貼ると "https://http://…" になる。`URL(string:)` はこれを scheme=https/host=http と
+  解釈するため旧検証(scheme=="https" && host != nil)を通過し、壊れたエントリが保存できた
+  (接続時 NSURLErrorDomain -1003)。Kernel/MCPEndpoint/MCPEndpointPolicy.swift に純関数として
+  切り出し、二重スキームは URL パース前に文字列段階で弾く(パース後だと理由が的外れになる)。
+  host はドット必須 + localhost 例外。文言は Features 側(ServerFormSheet.message(for:))。
+  swift-testing 11 ケース・make check 172 green・シミュレータで再現手順を踏んで実地確認済み。
+- 保留(LLM API キー未設定のため): ⊕ の常時 fullscreen 昇格 / 両サーバーのツール混在 /
+  open-link / C3・C4 フォーム(agenda カードが要る)。キー入力はエージェント側では行わない。
+
+## 2026-07-22(続き2・検証ノウハウの skill 化 + rules の不整合修正)
+
+- **`.claude/rules/comments.md` が一度もロードされていなかった**: frontmatter の paths が
+  caldav(TypeScript)から移植したままの `src/** test/** proxy/** scripts/** migrations/**` で、
+  本リポジトリの Swift 構成に一致しない。CLAUDE.md は「コード編集時に自動ロード」と
+  書いていたのに実際は無効だった。`Sources/** Tests/** Package.swift project.yml` へ修正。
+  → コメント規律が効いていなかった理由が判明(これまで守られていたのは都度指示していたため)。
+- 検証ノウハウを **skill `.claude/skills/ios-e2e-verify/SKILL.md`** に切り出し。
+  常時ロードの CLAUDE.md ではなく skill にしたのは、検証の話題のときだけ読めば十分でトークンが
+  もったいないため(claude-code-guide の判断基準: 常時必要=CLAUDE.md / ファイル種別限定=
+  .claude/rules の paths / 作業限定の手順書=skill / 起動時に計算して注入=SessionStart フック)。
+  CLAUDE.md からは1箇所だけ参照を張って発見性を確保。
+- skill に載せた事実(いずれも今日実地で踏んだもの):
+  - `simctl launch --setenv` は当環境で不可 → `SIMCTL_CHILD_<NAME>=value` を使う。
+  - **`MCPHOST_LLM_KEY` の env 経路で API キーを貼り付けずに渡せる**(env > Keychain > 空)。
+    ダミーキーで起動して設定画面に値が入ることを実証。env は init でしか読まないので毎起動必要。
+    どうしてもペーストしたい場合は `echo -n <値> | xcrun simctl pbcopy <udid>`(履歴に残る点に注意)。
+  - スクショは 918px 幅・タップは 402pt 空間(約 2.284 で割る)。
+  - iOS control には key/double_click/triple_click が無く、**テキスト削除ができない**。
+    既存値を消す編集は「削除して作り直す」が現実解。
+  - ソフトキーボードが画面に出なくても focus は当たっており `text` は通る
+    (これを誤認して遠回りした。ユーザーからの指摘で判明)。
+  - スパイクの使い分け: reparent=MCP 接続不要 / todos=要トークン / transport=不要。
+    スパイク画面は FullscreenCoordinator を持たないので ⊕ の inline フォールバックは正常。
+
+## 2026-07-22(続き3・検証ループの自動化 + ヘッダー接続表示の再設計)
+
+- **`make run` を追加**: `.env`(元から .gitignore 済み)に MCPHOST_LLM_KEY を1度書けば、
+  ビルド → install → **鍵入りで launch** まで一発。BYOK キーを毎回シミュレータの設定画面へ
+  手で貼る苦痛(かつエージェントは資格情報をフィールドに入力しない運用)を仕組みで解消した。
+  実装の肝: **値が空の変数は渡さない**。LLMSettingsStore は `env[...] ?? Keychain ?? ""` で
+  **空文字も「値あり」と見なす**ため、空を渡すと Keychain 保存済みの鍵が無視される。
+  鍵はコマンドライン引数でなく export で渡す(ps で覗けるため)。
+  `.envrc`(direnv・`dotenv_if_exists .env`)も追加したが、Makefile 側は direnv に依存しない
+  — 非対話シェル(エージェントの Bash・CI)では direnv フックが走らないことがあるため。
+  `.envrc` は秘密を持たないのでコミット対象、`.direnv/` は除外。
+- xcode-mcp プラグイン(`xcrun mcpbridge`)は settings.json で有効だが、当セッションでは
+  `mcp__xcode__*` が現れず未使用。実際に使ったのは Claude Code 組み込みの iOS Simulator MCP
+  (build / control)+ 素の xcodebuild・simctl(MCP の launch には env を渡す口が無いため)。
+- **ヘッダー「2/2 接続」を再設計**(ユーザー指摘「意味不明」)。モックで4案を提示 → ユーザー判断は
+  「基本は消していい・名前を並べるのはスペース的に無理」。他製品調査(claude.ai/ChatGPT/
+  Claude Desktop/VS Code)で**4製品とも接続状態をヘッダーに出さない**ことを確認し、
+  Apple HIG(タイトルは現在地の説明・冗長なら空でよい)と WCAG 1.4.1(色だけの状態表示は違反)
+  で裏取り。→ 正常時は消してモデル名のみ、異常時だけアイコン+テキストで「n 件 未認証」。
+  詳細と出典は next-directions.md「接続状態をどこに出すか」節。
+  将来課題として「入力欄側のツールピッカー」を起票(業界の定石だが本アプリは未実装)。
+
+## 2026-07-22(続き4・ヘッダー実装 + LLM tool-use を実地で通した)
+
+- ヘッダー再設計を実装(implementer 着手 → ユーザー停止 → main が仕上げ)。ユーザー FB
+  「スペース的にアイコンとテキストは厳しい」を受け、**警告を独立行にせずモデル名と同じ行の
+  アイコン1つに畳んだ**(横幅増分 ~14pt)。視覚テキスト(「n 件 未認証」)は撤去し、
+  件数・種別は accessibilityLabel に集約(WCAG 1.4.1 が禁じるのは「色**だけ**」で、
+  警告三角は色を落としても形状で平時と区別できるため、テキストを省いても適合する)。
+  AttentionBanner.text はボツ案としてコメントに経緯を残して削除。
+  実機確認: 平時 `gpt-5.4-mini ⌄` / caldav 要認証時 `⚠ gpt-5.4-mini ⌄`。
+  メニューを開くと `! caldav(要認証・タップ)` `✓ tdr-concierge` で内訳が読める。
+- **`make gen` を xcodegen 非依存に**: この Mac の PATH に xcodegen が無く(nix/mise/brew の
+  どこにも無い)、gen に依存する app/device/run が全て落ちていた。既存の .xcodeproj があれば
+  警告して続行、両方無いときだけ導入方法を添えて落とす形に。
+- **`.env` の実キーは `OPENAI_API_KEY` だった**(MCPHOST_LLM_KEY ではない)。Makefile に
+  `: "$${MCPHOST_LLM_KEY:=$$OPENAI_API_KEY}"` のフォールバックを追加 → `make run` だけで
+  鍵入り起動が成立(設定画面のキー欄に値が入ることを確認)。
+- **LLM tool-use ループを実地で通した ✅**(P3 以来ひさびさの実 E2E):
+  発話 → `✓ [T] tdr-concierge · park_waits` の ToolStepRow → **park_waits のカードが描画** →
+  「全アトラクションが休止中(2026/07/22 21:40 時点)」と要約 → コスト表示
+  (このターン ≈4,280 tok ≈$0.0036 / 累計 5,107 tok)。
+  **ツール名前空間化の逆ルーティングが実動作で確認できた**(park_waits が tdr-concierge へ)。
+  tdr-concierge も MCP Apps 対応(カードを返す)と判明 — caldav 以外での初のカード描画。
+- 新たな検証制約(skill に追記): **`text` は printable ASCII のみ**で日本語は送れず、
+  さらにキーボードが日本語入力モードだと ASCII すらローマ字変換される(「うぁたれてぇ…」)。
+  変換候補タップで確定できるがスペースが落ちる。検証発話は最初から英語で組むのが速い。
+
+## 2026-07-22(続き5・開発環境の宣言的用意を調査 → project flake は撤回)
+
+- ユーザー要望「xcodegen を宣言的に用意したい。nix なら CI の選択肢も変わるのか、ベスプラ調査を」。
+  一度 flake.nix(devShell に xcodegen/swiftformat/swiftlint)+ .envrc の `use flake` +
+  Makefile を `direnv exec` 委譲、という構成を作ったが、**調査と実測で撤回**。
+- 撤回の決め手(実測): `direnv exec .` の中で DEVELOPER_DIR/SDKROOT が nix の apple-sdk-14.4 を
+  指し、xcrun が 2019 年の xcbuild 製に差し替わっていた。xcodebuild は /usr/bin のままなので
+  「Apple の xcodebuild が nix の macOS SDK を見る」壊れた組み合わせ(nixpkgs#355486)。
+  coder-desktop-macos / ghostty は mkShellNoCC + unset + PATH 掃除で回避しているが、
+  それは devShell に入った上で nix のツールチェインを無効化する構成で、得られるのはツール3つ。
+  → ユーザー環境(dotfiles の nix)に入れる方が単純で事故らない、と判断(ユーザー選択も A)。
+- 撤回後 `make run` で Apple の iPhoneSimulator26.4.sdk が使われることを確認 ✅。
+- 調査で確定: **iOS では `nix build`/`nix flake check` でアプリをビルドできない**
+  (Xcode はライセンス上パッケージ化不能・derivation 内はネットワーク無効で SwiftPM が解決不可)。
+  よって nix で make を置き換える道は無く、「nix はツール供給・make はタスクランナー」が定説。
+  CI 定番は nix-quick-install-action(macOS 約5秒)+ **store キャッシュ無し** + setup-xcode。
+- flake.nix を git add していないと nix から見えない件は nix#7107 の open issue。まさに踏んだ。
+- Makefile の変更: direnv 依存を撤去し素の PATH へ。**`make check` の「未インストールなので
+  skipping」を廃止して落とすように**した — これまで lint が一度も走っていないのに緑だった。
+  `make gen` は xcodegen 不在時、**project.yml と .xcodeproj のタイムスタンプを比較**し、
+  project.yml が新しければ中断する(古い定義で気づかずビルドするのを防ぐ)。
+  `make doctor` を新設(3ツールと鍵の有無を一覧)。秘密だけは direnv 経由で読む。
+- 残: dotfiles の nix に xcodegen/swiftformat/swiftlint を追加(ユーザー作業)。
+  いずれも nixpkgs にあり aarch64-darwin 対応を確認済み。
+  > **2026-07-22 追記:** dotfiles(`nix/modules/home/packages.nix` の darwin ブロック)に
+  > xcodegen/swiftformat/swiftlint は追加済みを確認。同ブロックに **`idb-companion` も追記**した(下記)。
+
+## 2026-07-22(続き6・Desktop の iOS Simulator MCP をリバース → 汎用 skill 化)
+
+- 発端: 2026-07-21 に Claude Code **Desktop** が「iOS Simulator ペイン」を追加(公式 docs
+  `code.claude.com/docs/en/desktop-ios-simulator`)。ツール名前空間が `mcp__Claude_Code_iOS_Simulator__*`
+  と判明していたので「CLI でも同じことができるのか/サードパーティ要るのか」を調査。
+- **Desktop 実装をリバース**(`/Applications/Claude.app` の `app.asar` を @electron/asar で展開・
+  `.vite/build/index.chunk-*.js` を解析)。判明した実体:
+  - `simulatorServerDefinition`(サーバー名 `"Claude Code iOS Simulator"`)= **アプリ内蔵 MCP**。
+    ツールは `control`(alwaysLoad)+ `build`(dynamic)。
+  - `isEnabled: e => e.sessionType === "ccd" && !e.isSSH && …` で **ccd(=Desktop)専用ゲート**。
+    stdio/http で外から刺せる独立サーバーではなく **main プロセス内実装** → CLI から再利用は不可。
+  - 裏の駆動は **`xcrun simctl`(boot/launch/openurl/screenshot)+ native "sidecar"(live streaming
+    ペイン用の binary stdin/stdout プロトコル)+ `idb`(tap/swipe/text/button ← `isIdbAvailable()`
+    ガード)**。再現不能な私的フレームワークは無い。
+- **結論**: リバースはコードとしては行き止まり(ccd ゲート・in-process)。だが**抽出したツール
+  description/inputSchema/エラー文言はコンテキストエンジニアリングの写経元として有用**。特に:
+  - **座標は device points(左上原点)で統一・`launch` が point 寸法を返す**。実行時も毎回
+    `Coordinate space for screenshot/tap/swipe: {W}x{H} pixels` をスクショと一緒に明示 → 「見ている
+    座標空間」と「打つ座標空間」の食い違いを消す設計。過去に苦しんだ **918px/402pt ズレの答え**。
+  - attach-first / screenshot・入力は headless / build・unit-test だけなら panel 開かない。
+  - エッジ 4pt 以内始点の swipe は OS ジェスチャ(左=戻る・上=通知・下=ホーム・右=CC)。
+  - tap `duration>0.5` で長押し・swipe 既定 0.3s・ボタンは HOME/LOCK/SIRI/SIDE_BUTTON/APPLE_PAY。
+  - エラーは「次の一手を添える」(`No booted simulator named 'X'. Boot it with: xcrun simctl boot X`)。
+- **成果物**: 個人マーケットプレイス `gigun-dev/claude-code` の **`ios-skills` プラグインに新スキル
+  `ios-simulator` を追加**(汎用・全プロジェクトから再利用可)。scope は操作系のみ(build は
+  `ios-device-build`/各プロジェクトのビルドツールに委譲)。
+  - `SKILL.md`: 上記知見の写経 + Desktop control → CLI(simctl+idb)対応表 + 座標規律。
+  - `scripts/sim-shot.sh`: スクショ + pixel/point/scale を毎回明示。**実 simulator(Booted iPhone 17)で
+    検証済み ✅** — `1206x2622 pixels`(= 402pt × scale 3)で座標理論が実測一致。
+  - `scripts/sim-tap.py`: `idb ui describe-all` のラベル一致要素の**中心(points)をタップ** →
+    スケール変換不要で座標ズレを根絶。uv の PEP 723 inline(事前 pip 不要・stdlib のみ)。
+- **座標系の確定事実**: スクショ=pixels / `idb ui tap`=points / `describe-all`=points。
+  差は端末スケール(Retina 2〜3倍)。ラベル指定タップ(centerX/centerY)が最短の解。
+- idb の 2 コンポーネント: `idb-companion`(nixpkgs 1.1.8・aarch64-darwin)を **dotfiles の nix に追記済み**。
+  `fb-idb`(Python CLI `idb`)は nixpkgs に無く **`uv tool install fb-idb`**(ユーザー作業)。
+- 残(ユーザー作業 → 後で私が E2E): ① dotfiles を darwin-rebuild で反映 ② `uv tool install fb-idb`
+  → `idb connect` ③ その後 `sim-tap.py`・`sim-shot.sh` の scale 算出まで idb 経路を実機検証。
+  ※ idb-companion 1.1.8 は Xcode の Simulator ランタイムと相性問題が出たら Homebrew 版に逃がす。
+
+## 2026-07-22(深夜): Claude Code / Codex共有ハーネスとcontext注入の棚卸し
+
+- `AGENTS.md→CLAUDE.md`、`ios-e2e-verify`、comments rule、SessionStart scriptをsymlinkで共有し、
+  Codex固有adapterにはhook lifecycleと`xcrun mcpbridge`だけを置いた。validatorは全項目green。
+- `ios-simulator`は全project共通のSimulator CLI操作、`ios-e2e-verify`はMCPHost固有E2Eなので両方維持。
+- Claude project memory/session JSONLは同期せず、恒久情報はrepo instructions/docs/skillsへ昇格する方針にした。
+- `session-head-end`が340行目まで後退し、hook出力が約36KBになっていた。履歴を消さず、先頭28行・
+  2.7KBの最新サマリでmarkerを閉じ、詳細は後段をオンデマンド参照する構成へ修正。
+- `make check`: buildと全testはgreen。新たに厳格化されたSwiftFormatが既存67/81 filesの未整形を
+  検出して失敗したため、機能退行とは分離してformat debtとして扱う。dirty本体の
+  `MCPEndpointPolicyTests`は11/11 greenを再確認した。
+
+## 2026-07-23: dirty全体をiPhone 12 miniへ実機build/install/launch
+
+- `ios-device-build` skillをCodex plugin実体から実行。skill設定の端末名
+  `iPhone 12 mini morita` は現在のCoreDevice表示名`iPhone`と一致しなかったため、接続中の
+  iPhoneを明示指定した。
+- Apple Development署名 + Team provisioningで`BUILD SUCCEEDED`。生成された
+  `Debug-iphoneos/MCPHost.app`をinstallし、bundle ID `dev.gigun.mcphost`でlaunch成功。
+  起動後も`devicectl device info processes`でMCPHost executableとPIDを確認し、即時crashしていない。
+- CoreDeviceは各command冒頭で`No provider was found`警告を出すが、tunnel取得・Developer Disk Image・
+  install・launch・process照会はすべて成功しており、この実行の阻害要因ではなかった。
+- commit前監査でsecret候補・broken symlinkは無し。一方lintはbaseline未整備:
+  SwiftFormat 67/81 files、SwiftLintはSources/Testsだけでも290 findings/42 files。さらに現Makefileの
+  `swiftlint`は`.build`配下の依存まで走査する。機能変更とlint基盤整備を同じcommitに混ぜるかは要判断。
+
+## 2026-07-23: dirty完了監査 — lint基盤とSimulator対象を確定
+
+- 上記の「baseline未整備」をこのdirtyの未完了タスクとして巻き取り、`.swiftlint.yml`と
+  `.swiftlint-baseline.json`を追加。既存290件は隠して忘れるのではなく既知負債として固定し、
+  今後増えた違反だけを`--strict`で失敗させる。baseline解消は触るコードから段階的に行う。
+- SwiftFormat既定値の全面適用は、import横の経緯説明など本repoのコメント規律と衝突するため不採用。
+  空白・重複import・末尾改行など意味を変えない字句ルールだけを`.swiftformat`へ明記し、既存違反
+  6ファイル7箇所を機械整形した。
+- 過去ログの「Makefile側はdirenvに依存しない」は、正確には**ビルドtoolchain/PATHをdirenvに
+  委譲しない**という意味。`make run`は秘密を`.env`から安全に渡す用途に限って`direnv exec`を使う。
+- `make run`がinstall/launch先に曖昧な`booted`を使っていたため、指定したSimulator名からUDIDを
+  一度解決し、boot/install/launchの全工程を同じUDIDへ固定した。複数Simulator起動時の誤配送を防ぐ。
+- server設定編集後もready接続が旧name/URL/slugを保持する問題を同じdirtyの未完了として修正。
+  `MCPConnectionIdentity`で登録内容との差を判定し、ready中だけでなくconnecting中の編集もcancelして
+  再接続する。rename→旧名と同名serverを追加したときのslug衝突・tool誤配送を含む5 testsを追加。
+  URL変更時の旧Keychain tokenは、同URLを共有する別登録を壊さないため意図的に保持する。
+- 最終`make check`はgreen: Swift build、177 tests / 18 suites、SwiftFormat 0/83、
+  SwiftLint 0 violations / 82 files。Codex migration validatorもconfig、xcode MCP command、project skill、
+  root/Sources/Tests instructionsの全項目green。SessionStart注入は2,856 bytesに収まる。
