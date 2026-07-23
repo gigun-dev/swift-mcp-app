@@ -174,7 +174,10 @@
    > identity・RFC 8707/9728)フォールバック→旧履歴の順に(strict surface検査は全経路維持)。
    > 鮮度ギャップは(a)再push採択(ext-apps/OpenAI Apps SDKとも「tool完了時のみデータ流入」・
    > (b)visibility配送は仕様に足場なし): live island再訪時にtool-resultを1回再push。252 tests。
-   > E2E裏取り(再訪でtool-result 1回・再追加後もライブ描画)を実施中。
+   > E2E裏取り実施済み ✅(2026-07-24・c27dd10・実操作): 検証1=履歴再訪でプレースホルダ0回・
+   > tool-input+tool-result が1回flush(多重送出なし・outbox 2件を1回で)。検証2=caldav削除→再追加で
+   > serverID変更後も履歴カードはライブ再描画(層4 serverURLフォールバックがID跨ぎで奏功)。
+   > todo状態は不変更。証拠: scratchpad/shots/(21/27/53-*.png)。
 10. ~~**接続ライフサイクルの堅牢化(再追加を不要にする・4層防御の層2/層3)**~~ ✅ `514b01b`
    - 動機: 再追加せざるを得なかった過去(トークン切り分け)が履歴孤児化の真因。層4(履歴URL束縛・
      上記9)は対症で、上流を断つべき。ベスプラは canonical URI = identity(RFC 8707/9728)。
