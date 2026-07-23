@@ -16,7 +16,12 @@ import Services // AppsServerProxy
 
 struct HistoryDetailView: View {
     let session: ChatSession
-    let cardConnectionResolver: (CardEmbed) -> HistoricalCardConnection?
+    /// 履歴カードを live 再接続用の connection + 失敗理由で解決する(queue 11)。理由は card.resolve 観測へ載せる。
+    let cardResolver: (CardEmbed) -> HistoricalCardResolution
+    /// クライアント観測ポート(合成ルートで OSLogTelemetry / テスト・プレビューは NullTelemetry)。
+    let telemetry: TelemetryPort
+    /// per-launch のセッション相関 ID(ChatHomeViewModel が採番・card.resolve の session フィールドに stamp)。
+    let sessionTraceID: String
 
     // 静的カードのセッション台帳(StaticCardView.swift)。@State で1個所有し、スクロール再生成でも
     // 同じ host を引いて WKWebView を作り直さない(StaticCardRegistry のコメント参照)。
@@ -132,7 +137,39 @@ struct HistoryDetailView: View {
 
     @ViewBuilder
     private func cardView(_ card: CardEmbed, key: String) -> some View {
-        if let connection = cardConnectionResolver(card), columnWidth > 0, visibleHeight > 0 {
+        let resolution = cardResolver(card)
+        // outcome は「解決の結果」を表す(columnWidth 等のレイアウトゲートは含めない)。connection があれば
+        // resolvedLive、無ければ snapshot 有無で snapshotFallback / placeholder。レイアウト待ちで一瞬 0 になる
+        // columnWidth を outcome に混ぜると、実際は live 解決できるカードを snapshot と誤記録してしまうため
+        // (onAppear が transient を拾う)、あえて分離する。
+        let hasSnapshot = !(card.snapshotHTML?.isEmpty ?? true)
+        let outcome: CardResolutionOutcome = resolution.connection != nil
+            ? .resolvedLive
+            : (hasSnapshot ? .snapshotFallback : .placeholder)
+        cardBody(card, key: key, connection: resolution.connection)
+            // 1カード(view identity = key)につき1回だけ観測を吐く。body 再評価では発火しない onAppear を使う
+            // (@ViewBuilder body 直書きだと再描画のたびに多重発火してログを汚す)。
+            .onAppear {
+                telemetry.event(
+                    CardResolutionTelemetry.eventName,
+                    fields: CardResolutionTelemetry.resolveFields(
+                        outcome: outcome,
+                        reason: resolution.reason,
+                        card: card,
+                        session: sessionTraceID
+                    ),
+                    // notice: card.resolve は「常に残したい運用イベント」。debug/info は既定で永続化されず
+                    // 実機吸い出しで取りこぼす(OSLog の仕様)。
+                    level: .notice
+                )
+            }
+    }
+
+    /// カード本体の3分岐描画(観測とは分離)。connection があれば live island、無ければ snapshot 静的表示、
+    /// それも無ければプレースホルダ。columnWidth/visibleHeight のレイアウトゲートはここで効かせる。
+    @ViewBuilder
+    private func cardBody(_ card: CardEmbed, key: String, connection: HistoricalCardConnection?) -> some View {
+        if let connection, columnWidth > 0, visibleHeight > 0 {
             let host = liveCardRegistry.host(
                 for: "\(key)-\(connection.registryIdentity)",
                 coordinator: fullscreenCoordinator

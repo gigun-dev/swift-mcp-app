@@ -262,7 +262,10 @@ struct ChatHomeView: View {
         case .viewingHistory(let session):
             HistoryDetailView(
                 session: session,
-                cardConnectionResolver: { home.historicalCardConnection(for: $0) }
+                // connection + 失敗理由の両方を返す(queue 11)。View は理由を card.resolve 観測へ載せる。
+                cardResolver: { home.historicalCardResolution(for: $0) },
+                telemetry: home.telemetry,
+                sessionTraceID: home.sessionTraceID
             )
             // 履歴を切り替えたら live/static 両方の WKWebView 台帳を作り直す。
             .id(session.id)
