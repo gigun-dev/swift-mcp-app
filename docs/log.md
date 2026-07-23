@@ -1098,3 +1098,13 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 要再認可UX: ReauthorizationGateDelegate(接続確立後のpresentAuthorizationURLを遮断し
   needsAuthへ載せ替え)を実装。会話中に突然ブラウザが開くSDK既定挙動を封じた。
 - skill知見追記: xcrun simctl uiにtapは無い(idbを最初から使う)、OAuth同意フローの実測手順。
+
+## 2026-07-23 実操作3項目E2E(sonnet subagent初委譲)
+
+- gesture隔離✅・履歴カード即操作✅。60秒超の自動背景revalidateは**不発**: caldav SWRの
+  発火条件はpush受信時のgeneratedAt判定だが、live islandのhost再利用経路では再pushが
+  走らない(bridgeトラフィックゼロをログ確認)。mutation後にのみ手動再同期バナーが出る。
+  host再push/visibility配送/カード側タイマーの3案をnext-directionsに記録、caldavと要調整。
+- 別件: delete-todo完了後にUIスピナー固着1回(再現未特定)。
+- subagent委譲は機能した(90 tool uses・mainのコンテキスト消費はスクショゼロ)。
+  テストデータは復元済み。

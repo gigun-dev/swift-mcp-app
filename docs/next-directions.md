@@ -99,11 +99,22 @@
    > `main`は`origin/main`と同期済み。残るのは実操作4項目だけ。
    - [x] ~~drawerをゆっくりdragして、軸ロック後も指へ連続追従することを確認する。~~ ✅
      実機で2根因(軸ロック81ace79・座標空間616e4e2)修正後にユーザー確認済み。
-   - [ ] MCP App内の横gestureがdrawerを露出させないことを確認する。
-   - [ ] 復元した履歴カードが待機なしで即操作できることを確認する。
+   - [x] ~~MCP App内の横gestureがdrawerを露出させないことを確認する。~~ ✅
+     カード帯内スワイプ=drawer非露出・カード外=開く、の分岐をスクショ一致で確認(sonnet subagent実施)。
+     注意点: 画面端x≈18ptからはカード内でもiOSシステムのedge-swipeと衝突してdrawerが開き得る(仕様)。
+   - [x] ~~復元した履歴カードが待機なしで即操作できることを確認する。~~ ✅
+     オーバーレイなし即描画・チェックボックス操作が実tools/call(update-todo ms=672)で通ることを確認。
    - [ ] `generatedAt`から60秒超のカードが、表示を維持したまま背景revalidateすることを確認する。
-   > **2026-07-23 深夜更新:** 残り3項目はsimulator-operator subagent(下記)で消化できる。
-   > R4ゲート・OAuth同意フローのE2Eは完了済み(f13a3c7・「残る実操作確認」の更新参照)。
+   > **2026-07-23 深夜更新(E2E実施・部分不合格の発見):** 60秒超カードの**自動**背景revalidateは
+   > 発火しない。原因はSWR発火条件のギャップ: caldav SWRは「push(ontoolresult)受信時」に
+   > generatedAtを判定するが、live island(LiveCardRegistry)が同一hostを再利用する履歴再訪では
+   > `sendInitialPayload`の再pushが走らず、bridgeトラフィックゼロ(ログ裏取り済み)。古さが
+   > 露見したのはユーザーがmutationを行った後のみ(caldav側が手動再同期バナーを表示)。
+   > 設計判断が必要: (a)host側=再表示時に既存hostへも保存toolResultを再push
+   > (b)host側=visibilityイベント配送を実装しcaldav側がfocus refetch (c)caldav側=マウント後
+   > タイマーで自律判定。caldavセッションと要調整。
+   > 別件観察: delete-todo応答完了後もUIがスピナーのまま固まる事象が1回(tools/callは23:15:32完了
+   > 済み・accessibility treeも空・再起動で復旧・再現条件未特定)。要ウォッチ。
 2. ~~**caldavで履歴revalidationを完成させる** → **履歴revalidation gateを撤去する**(2026-07-23差し替え)~~ ✅
    > **2026-07-23 更新: 撤去完了。** 専用2ファイル削除+8ファイルの配線撤去(net -227行)。
    > 再push経路は`sendInitialPayload`に残し、`historyRestorePushesSavedToolResult`テストで
