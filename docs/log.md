@@ -1166,3 +1166,16 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 補足: 本E2Eはqueue 10前ビルド。検証2は「delete→re-addで新serverIDでも層4が救う」を確認。
   queue 10層3は「deleteせずaddを繰り返してもserverID不変」= さらに上流を断つ補完レイヤ。
 - 証拠: scratchpad/shots/ 21-live.png / 27-reopen-wait.png / 53-reopen2wait.png ほか。
+
+## 2026-07-24 next-directions.md 棚卸(第6版)
+
+- 完了 queue(2/7/8/9/10/11)を打ち消し線+✅ で畳み、詳細経緯は archive/next-directions-v5-2026-07-24.md
+  へ退避(全文コピー保存)。頭(marker まで)を「現在地(2026-07-24)」へ更新: 接続ライフサイクル
+  4層防御そろった/履歴カード正しさ/クライアント観測、を1行ずつ。
+- Codex固有調査(全✅)は詳細更新ブロック群を archive へ移し、頭は監査doc3本へのリンク1段落に集約。
+- マーカー以下は未完了だけ: 実操作チェックリスト(層2 E2E・スピナー固着ウォッチが残)、Fable実装queue
+  1〜4(native UI回帰層/harness中立化/composer picker/caldav残E2E)、後続設計・観測拡張(TraceSink一本化・
+  session ID寿命・traceparent _meta・Sentry・fullscreen UX)、外部起票待ち(Anthropic issue・claude.ai iOS
+  caldavカード切り分け)。採用済みharness/ユーザー待ち/完了条件は保持。
+- 計測: 総138行・head 45行・カタログ約93行・更新ブロック1個(閾値150行/8個の下)。session-start.sh の
+  基準コメントを第6版現況(カタログ約93行/更新ブロック1個)へ更新。肥大警告は発火しなくなった。
