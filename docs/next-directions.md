@@ -167,7 +167,30 @@
    > 「要再認可」状態化(SDKフック要)、SSE再接続refresh検証。
    > Anthropicへのバグ報告は[external-issues/claude-ai-ios-card-token-refresh.md]
    > (external-issues/claude-ai-ios-card-token-refresh.md)に台帳化(英文ドラフト同梱・未起票)。
-9. **後続設計**
+9. ~~**履歴カードの正しさ(プレースホルダ堅牢化 + 鮮度再push)**~~ ✅
+   > **2026-07-24 完了(c27dd10)。** 実機のみのプレースホルダ・バグ根因は、OAuth再追加で
+   > serverID(ローカルDB行ID)が変わり旧履歴カードがserverID完全一致で解決不能になること。
+   > 同定をKernel純関数HistoricalCardResolverへ切り出し、serverID厳密→serverURL(canonical
+   > identity・RFC 8707/9728)フォールバック→旧履歴の順に(strict surface検査は全経路維持)。
+   > 鮮度ギャップは(a)再push採択(ext-apps/OpenAI Apps SDKとも「tool完了時のみデータ流入」・
+   > (b)visibility配送は仕様に足場なし): live island再訪時にtool-resultを1回再push。252 tests。
+   > E2E裏取り(再訪でtool-result 1回・再追加後もライブ描画)を実施中。
+10. **接続ライフサイクルの堅牢化(再追加を不要にする・4層防御の層2/層3)**
+   - 動機: 再追加せざるを得なかった過去(トークン切り分け)が履歴孤児化の真因。層4(履歴URL束縛・
+     上記9)は対症で、上流を断つべき。ベスプラは canonical URI = identity(RFC 8707/9728)。
+   - **層3(本丸): `ServerRegistry.add`を冪等化**。同一canonical URLの追加は新規serverID採番でなく
+     既存entryを再利用/更新(caldav側create-calendar冪等化と同原理)。再追加してもserverID不変に。
+   - **層2の検証**: needsAuth→「認証して接続」のin-place再認可が、腐ったKeychain tokenを確実に
+     上書き/クリアするか(できないと結局delete+re-addに手が伸びる)。ReauthorizationGate済み。
+   - `ServerRegistry`/`ConnectionsManager`を触るのでqueue 9と別ファイル。順番に実施(並列編集しない)。
+11. **クライアント観測(TelemetryPort)**
+   - 調査結論(ベスプラ): OSLog(`Logger`+`os_signpost`)+`_meta`のtraceparent互換ID+Sentry(crashのみ)。
+     OTel Swiftフルは過剰(gRPC依存・metrics未成熟・iOS RUM統合がAndroid先行)。将来OTLP差し替え可に。
+   - KernelにTelemetryPort抽象(caldav TelemetryPortと同型)、Servicesで`OSLogTelemetry`注入。
+   - 最小の一手: カード解決分岐で`event("card.resolve",{outcome,reason,expected,actual,session},.public)`。
+     `OSLogStore`で実機吸出し→caldav Analytics Engineと同IDでJOIN(今回のJSON発掘が不要に)。
+   - 相関: session IDを`_meta["gigun.dev/session"]`(既存方針)、キーはtraceparent互換にしておく。
+12. **後続設計**
    - claude.ai iOSでcaldavカードのみ描画失敗する問題の切り分け(下記「caldavセッションからの申し送り」後注)。
    - fullscreen UX再確認: キーボード閉じはカード側根因修正済み(caldav ce7d5aa)なので再現確認から。
      カード成長起点の自動スクロール追従(`ChatBodyView`のscrollTo群)はmodeling/15 §B採用に伴い
