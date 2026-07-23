@@ -1122,3 +1122,15 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   仕様に足場なしのため不採用。252 tests。
 - 観測調査結論: OSLog(Logger+os_signpost)+_metaのtraceparent互換ID+Sentry(crashのみ)、
   KernelにTelemetryPort抽象。OTel Swiftフルは過剰。card.resolveイベントで今回のJSON発掘が不要に。
+
+## 2026-07-24 queue 11 クライアント観測(TelemetryPort・card.resolve)
+
+- KernelにTelemetryPort抽象(caldav TelemetryPortと同型)+NullTelemetry既定。CardResolutionOutcome
+  (resolvedLive/snapshotFallback/placeholder)+CardResolutionReason(成功3・失敗6理由)を純データ化し、
+  resolveFields整形をswift-testingで固定。HistoricalCardResolverをresolveDetailed(理由付き)へ拡張。
+- ServicesにOSLogTelemetry(Logger・全field .public・KV1行整形)。ChatHomeViewModelでper-launch
+  sessionTraceID採番+OSLogTelemetry注入。HistoryDetailViewのcardViewをonAppearで1回card.resolve発火。
+- 実機吸出し: log show/stream --predicate 'subsystem=="dev.gigun.mcphost" && category=="card.resolve"'。
+  「なぜplaceholderか」(server-url-mismatch/app-only-tool-filtered等)が1行で見える=JSON発掘不要。
+- スコープ外(明記): traceparent _meta伝播・caldav相関・Sentry・os_signpost区間・card.resolve以外。
+- 論点(次slice判断): TraceSinkとTelemetryPortの二重化(一本化するか別seam維持か)、session ID寿命。

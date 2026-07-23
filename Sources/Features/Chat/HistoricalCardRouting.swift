@@ -36,6 +36,14 @@ struct HistoricalCardConnection {
     let registryIdentity: String
 }
 
+/// 履歴カード解決の結果を、live 再接続用の connection と **理由**の両方で HistoryDetailView へ返す組
+/// (queue 11・2026-07-24)。connection が nil のとき、なぜ live 解決できなかったかを reason が説明し、
+/// View 側が card.resolve 観測イベントへ載せる(実機バグ調査の主目的「なぜ placeholder か」)。
+struct HistoricalCardResolution {
+    let connection: HistoricalCardConnection?
+    let reason: CardResolutionReason
+}
+
 extension ChatHomeViewModel {
     /// 保存済みカードを、現在 ready な**同一 MCP サーバー**へ安全に再接続する。
     ///
@@ -49,23 +57,32 @@ extension ChatHomeViewModel {
     /// route の wireName が一意かつ厳密一致するときだけ best-effort で許可する。文字列から slug を推測する
     /// fallback は、hash 短縮・衝突・app-only tool の表面化を招くため行わない。同定判定そのものは Kernel の
     /// 純関数 HistoricalCardResolver に切り出し(テスト可能化)、ここは projection と引き戻しだけを担う。
-    func historicalCardConnection(for savedCard: CardEmbed) -> HistoricalCardConnection? {
+    /// 履歴カードの解決を connection + reason で返す(queue 11)。connection は従来どおり live 再接続に使い、
+    /// 失敗時の reason も同時に返して View 側が card.resolve 観測へ載せられるようにする(旧 historicalCardConnection は
+    /// これへ統合。呼び出し側は connection だけ要れば `.connection` を取ればよい)。
+    func historicalCardResolution(for savedCard: CardEmbed) -> HistoricalCardResolution {
         let resolved = resolveHistoricalSource(savedCard)
-        guard let resolved else { return nil }
+        guard let source = resolved.surface else {
+            return HistoricalCardResolution(connection: nil, reason: resolved.reason)
+        }
         var liveCard = savedCard
-        liveCard.toolName = resolved.wireName
-        liveCard.resourceUri = resolved.resourceURI
-        return HistoricalCardConnection(
-            proxy: resolved.connection.proxy,
+        liveCard.toolName = source.wireName
+        liveCard.resourceUri = source.resourceURI
+        let connection = HistoricalCardConnection(
+            proxy: source.connection.proxy,
             card: liveCard,
             // 同じ serverID/URI でも再接続で proxy actor が交換されたら別 host を作り、古い bridge を
             // registry から再利用しない。古い host は画面終了時 teardownAll でまとめて破棄される。
-            registryIdentity: "\(resolved.connection.serverID.uuidString)-"
-                + "\(ObjectIdentifier(resolved.connection.proxy))-\(resolved.resourceURI)"
+            registryIdentity: "\(source.connection.serverID.uuidString)-"
+                + "\(ObjectIdentifier(source.connection.proxy))-\(source.resourceURI)"
         )
+        return HistoricalCardResolution(connection: connection, reason: resolved.reason)
     }
 
-    private func resolveHistoricalSource(_ card: CardEmbed) -> HistoricalSource? {
+    /// 解決結果を「実 ReadyConnection を引き戻した surface(あれば)+ reason」で返す。
+    private func resolveHistoricalSource(
+        _ card: CardEmbed
+    ) -> (surface: HistoricalSource?, reason: CardResolutionReason) {
         // ReadyConnection(proxy 等を抱える Services 依存の重い型)を、同定に必要な面だけ射影した
         // HistoricalCardSurface へ落とす。判定は Kernel の純関数へ委ね、ここは projection と
         // 「返った surfaceIndex → 実 ReadyConnection の引き戻し」だけを担う(順序は一致させる)。
@@ -80,11 +97,18 @@ extension ChatHomeViewModel {
                 uiResourceURIs: connection.uiResourceURIs
             )
         }
-        guard let resolved = HistoricalCardResolver.resolve(card: card, surfaces: surfaces) else { return nil }
-        return HistoricalSource(
-            connection: ready[resolved.surfaceIndex],
-            wireName: resolved.wireName,
-            resourceURI: resolved.resourceURI
+        // resolve から resolveDetailed へ切り替え、失敗理由も引き取る(観測の主目的)。
+        let resolution = HistoricalCardResolver.resolveDetailed(card: card, surfaces: surfaces)
+        guard let resolved = resolution.surface else {
+            return (nil, resolution.reason)
+        }
+        return (
+            HistoricalSource(
+                connection: ready[resolved.surfaceIndex],
+                wireName: resolved.wireName,
+                resourceURI: resolved.resourceURI
+            ),
+            resolution.reason
         )
     }
 }

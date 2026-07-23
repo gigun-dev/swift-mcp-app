@@ -48,6 +48,17 @@ public final class ChatHomeViewModel {
 
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-home")
 
+    /// クライアント観測ポート(queue 11・2026-07-24)。合成ルートで OSLog 実装を注入し、履歴カード解決の
+    /// outcome/reason を card.resolve イベントで吐く(実機のみ再現するプレースホルダ落ちバグの根因掴み)。
+    /// テスト/プレビューは NullTelemetry(注入省略時の既定・無害)。将来 OTLP 実装へ差し替え可能。
+    let telemetry: TelemetryPort = OSLogTelemetry()
+
+    /// per-launch のセッション相関 ID(queue 11)。アプリ起動〜このホスト生存の単位で1つ採番し、card.resolve の
+    /// session フィールドに stamp する。**生成箇所をここ1つに集約**しておくのが肝: 将来 caldav と
+    /// `_meta["gigun.dev/session"]` で相関する / W3C traceparent 互換文字列(00-<trace>-<span>-01)へ
+    /// 差し替える際、ここだけを直せばよい。今回は _meta 伝播・Sentry 連携はスコープ外(UUID 文字列で足りる)。
+    let sessionTraceID = UUID().uuidString
+
     /// チャット履歴の永続化(サイドバーが loadIndex/delete で読むため公開)。
     public let chatStore = ChatStore(baseDirectory: ChatHomeViewModel.defaultChatsDirectory())
     private let pricingStore = PricingStore(baseDirectory: ChatHomeViewModel.defaultPricingDirectory())
