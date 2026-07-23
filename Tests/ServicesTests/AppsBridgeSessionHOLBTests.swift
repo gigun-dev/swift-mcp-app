@@ -52,11 +52,6 @@ extension AppsBridgeSessionTests {
         var count: Int { heights.count }
     }
 
-    private actor CompletionRecorder {
-        private(set) var values: [Bool] = []
-        func record(_ value: Bool) { values.append(value) }
-    }
-
     @Test("HOLB①: ゲート停止中の tools/call を追い越して size-changed が応答より先に処理される")
     func sizeChangedNotBlockedByInflightToolsCall() async throws {
         let transport = MockTransport()
@@ -144,48 +139,46 @@ extension AppsBridgeSessionTests {
         #expect(transport.sentRawJSON.count == afterClose)
     }
 
-    @Test("tools/call完了callbackはCallToolResult.isError=trueを成功扱いしない")
-    func toolCallCompletionRejectsMCPErrorResult() async {
+    // 【2026-07-23・queue 2】ここにあった「tools/call 完了 callback の isError 判定」「観測 arm 前の遅着
+    // 完了は流さない」の2テストは撤去した。履歴 revalidation gate が消え、完了観測フック
+    // (shouldObserveCardToolCall / onCardToolCallCompleted)自体が無くなったため。撤去理由は caldav 側
+    // 裁定(caldavリポジトリ docs/modeling/15・SWR)。鮮度は caldav 側 SWR が担い、その発火条件である
+    // 「履歴復元時の toolResult 再 push」は下の historyRestorePushesSavedToolResult で固定する。
+
+    @Test("履歴復元: 保存済みtoolResult(structuredContent)がtool-input→tool-resultの順でカードへ再pushされる")
+    func historyRestorePushesSavedToolResult() async throws {
+        // caldav 側 SWR(generatedAt 60 秒判定)の唯一の発火条件は「host が履歴復元時に保存済み
+        // toolResult をカードへ再 push すること」。gate 撤去後もこの再 push だけは必ず残す
+        // (InlineCardHost.sendInitialPayload が担う)。ここでは Session 層の配送順序として固定し、
+        // 履歴経路が tool-input → tool-result(保存 structuredContent)を欠かさず送ることを保証する。
         let transport = MockTransport()
-        let proxy = GatedMockProxy()
-        let recorder = CompletionRecorder()
-        let session = await makeReadySession(
-            transport: transport,
-            proxy: proxy,
-            onCardToolCallCompleted: { await recorder.record($0) }
-        )
+        let session = await makeReadySession(transport: transport)
 
-        transport.push(
-            #"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"refresh","arguments":{"k":"error"}}}"#
-        )
-        await waitUntil { await proxy.isWaiting("error") }
-        await proxy.open("error", result: .object(["isError": .bool(true)]))
-        await waitUntil { await recorder.values.count == 1 }
+        let beforeCount = transport.sentRawJSON.count
+        // 履歴復元で保存済み arguments と structuredContent を再送する(sendInitialPayload と同順)。
+        let savedArguments: JSONValue = .object(["listId": .string("today")])
+        let savedResult: JSONValue = .object([
+            "structuredContent": .object([
+                "tasks": .array([.string("a")]),
+                // caldav SWR はこの generatedAt を見て 60 秒判定する(host は値を解釈しない・中立)。
+                "generatedAt": .string("2026-07-23T00:00:00Z")
+            ])
+        ])
+        await session.sendToolInput(arguments: savedArguments)
+        await session.sendToolResult(savedResult)
 
-        #expect(await recorder.values == [false])
-        await session.close()
-    }
+        // ready 済みなので即送信される。tool-input が先、tool-result が後の順序を固定する。
+        await waitUntil { transport.sentRawJSON.count >= beforeCount + 2 }
+        let sent = Array(transport.sentRawJSON.suffix(2))
+        let inputNote = try JSONDecoder().decode(JSONRPCNotification.self, from: Data(sent[0].utf8))
+        let resultNote = try JSONDecoder().decode(JSONRPCNotification.self, from: Data(sent[1].utf8))
 
-    @Test("観測arm前に開始したtools/callの遅着完了はcallbackへ流さない")
-    func toolCallStartedBeforeObservationIsIgnored() async {
-        let transport = MockTransport()
-        let proxy = GatedMockProxy()
-        let recorder = CompletionRecorder()
-        let session = await makeReadySession(
-            transport: transport,
-            proxy: proxy,
-            shouldObserveCardToolCall: { false },
-            onCardToolCallCompleted: { await recorder.record($0) }
-        )
+        #expect(inputNote.method == "ui/notifications/tool-input")
+        #expect(inputNote.params?["arguments"] == savedArguments)
+        #expect(resultNote.method == "ui/notifications/tool-result")
+        // 保存 structuredContent が改変されず(hint marking も無く)そのまま再 push される。
+        #expect(resultNote.params == savedResult)
 
-        transport.push(
-            #"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"early","arguments":{"k":"early"}}}"#
-        )
-        await waitUntil { await proxy.isWaiting("early") }
-        await proxy.open("early", result: .object(["isError": .bool(false)]))
-        try? await Task.sleep(for: .milliseconds(30))
-
-        #expect(await recorder.values.isEmpty)
         await session.close()
     }
 }

@@ -95,8 +95,6 @@ final class InlineCardHost: Identifiable {
     /// Session の onCardToolCall フック経由で任意の MCP アプリに中立に効く(ビジョン2)。nil = 無効。
     var onCardToolCall: (() -> Void)?
 
-    let historicalRevalidation = HistoricalCardRevalidationGate()
-
     /// `.sheet(item:)` 用の Identifiable 準拠。インスタンス同一性で識別する(host は registry で
     /// cardID キーに1つ、生存中は同一インスタンス)。
     nonisolated var id: ObjectIdentifier { ObjectIdentifier(self) }
@@ -159,17 +157,13 @@ final class InlineCardHost: Identifiable {
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
-        colorScheme: ColorScheme,
-        requiresHistoricalRevalidation: Bool = false
+        colorScheme: ColorScheme
     ) {
         guard buildTask == nil else { return }  // 既に構築開始済み(= host は生存中)なら何もしない。
         // 寸法を保持(onSizeChanged クランプ・inline 復帰通知で使う)。build は非同期なのでここで確定させる。
         self.containerWidth = containerWidth
         self.inlineMaxHeight = maxHeight
         self.currentColorScheme = colorScheme  // #5: initialize の theme/styles に載せる初期外観。
-        if requiresHistoricalRevalidation {
-            historicalRevalidation.begin(with: card.structuredContent ?? .null)
-        }
         buildTask = Task { await self.build(
             proxy: proxy,
             card: card,
@@ -233,10 +227,6 @@ final class InlineCardHost: Identifiable {
                 onCardToolCall: { [weak self] in
                     await MainActor.run { [weak self] in self?.onCardToolCall?() }
                 },
-                shouldObserveCardToolCall: historicalRevalidation.observationPredicate(),
-                onCardToolCallCompleted: { [weak self] succeeded in
-                    await MainActor.run { [weak self] in self?.historicalRevalidation.complete(succeeded: succeeded) }
-                },
                 // Self.openLink 直渡しは「非 Sendable 関数値→@Sendable クロージャ変換」で data race 警告が
                 // 出る。何もキャプチャしないクロージャで包むと @Sendable 推論が効く(static 呼び出しは安全)。
                 onOpenLink: { await Self.openLink($0) }
@@ -264,8 +254,22 @@ final class InlineCardHost: Identifiable {
                     "インラインカード構築失敗 uri=\(card.resourceUri, privacy: .public): \(String(reflecting: error), privacy: .public)"
                 )
             self.buildFailed = true
-            historicalRevalidation.failBuildIfWaiting()
         }
+    }
+
+    /// tool-input(引数)→ tool-result(structuredContent)の順で初期ペイロードを配送する。
+    ///
+    /// 【履歴 revalidation gate 撤去後の姿(2026-07-23・queue 2)】
+    /// 以前はここに「履歴由来なら _meta へ hint を載せて gate を arm し、成功完了までカードを触らせない」
+    /// 経路があった。その gate/hint 機構は caldav 側裁定で撤去した(caldavリポジトリ docs/modeling/15・SWR):
+    /// ホスト固有の `_meta` hint はサードパーティカードを全滅させ・RFC 5861(stale-while-revalidate)に
+    /// 逆行し・ext-apps に足場が無い。鮮度は caldav 側 SWR(structuredContent 内 generatedAt の 60 秒判定)が
+    /// 担い、その発火条件は「host が履歴復元時に保存済み toolResult をカードへ再 push すること」だけ。
+    /// よってライブ・履歴を問わず、保存済み structuredContent を素直に tool-result として送る
+    /// (この再 push こそが SWR の発火条件なので必ず残す・下の履歴経路テストで固定)。
+    func sendInitialPayload(card: CardEmbed, session: AppsBridgeSession) async {
+        await session.sendToolInput(arguments: card.arguments ?? .object([:]))
+        await session.sendToolResult(card.structuredContent ?? .null)
     }
 
     /// inline は実 maxHeight でクランプし、fullscreen 中は高さ追従を止める。
@@ -297,12 +301,7 @@ final class InlineCardHost: Identifiable {
         let session = self.session
         // fullscreen 提示中に画面自体が破棄された場合も、待機中の JSON-RPC callback を残さない。
         fullscreenPresentationGate.cancel()
-        historicalRevalidation.cancel()
         Task { await session?.teardown() }
-    }
-
-    func retryHistoricalRevalidation() {
-        historicalRevalidation.retry(using: session)
     }
 
     // MARK: - fullscreen(sheet)器の連携(P4-DM・設計 04 §5 H4)

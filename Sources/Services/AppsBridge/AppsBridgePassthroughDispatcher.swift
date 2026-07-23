@@ -7,8 +7,6 @@ actor AppsBridgePassthroughDispatcher {
     private let transport: any AppsBridgeTransport
     private let proxy: any AppsServerProxying
     private let onCardToolCall: (@Sendable () async -> Void)?
-    private let shouldObserveCardToolCall: (@Sendable () async -> Bool)?
-    private let onCardToolCallCompleted: (@Sendable (_ succeeded: Bool) async -> Void)?
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "appspassthrough")
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var isClosed = false
@@ -16,15 +14,11 @@ actor AppsBridgePassthroughDispatcher {
     init(
         transport: any AppsBridgeTransport,
         proxy: any AppsServerProxying,
-        onCardToolCall: (@Sendable () async -> Void)?,
-        shouldObserveCardToolCall: (@Sendable () async -> Bool)?,
-        onCardToolCallCompleted: (@Sendable (_ succeeded: Bool) async -> Void)?
+        onCardToolCall: (@Sendable () async -> Void)?
     ) {
         self.transport = transport
         self.proxy = proxy
         self.onCardToolCall = onCardToolCall
-        self.shouldObserveCardToolCall = shouldObserveCardToolCall
-        self.onCardToolCallCompleted = onCardToolCallCompleted
     }
 
     func dispatch(method: String, id: RequestID?, params: JSONValue?) {
@@ -48,14 +42,12 @@ actor AppsBridgePassthroughDispatcher {
     private func handle(method: String, id: RequestID?, params: JSONValue?) async {
         switch method {
         case AppsMethod.toolsCall:
-            // result配送前に開始済みの自動callが遅れて完了しても、履歴gateのrevalidation成功には
-            // 数えない。requestごとの開始時点で観測対象かを固定し、並行call同士を取り違えない。
-            let shouldReportCompletion = await shouldObserveCardToolCall?() ?? true
-            let succeeded = await proxyRequest(id: id, label: "tools/call") {
+            // 【2026-07-23・queue 2】以前はここで tools/call の成功完了を観測し、履歴 revalidation gate へ
+            // 「現在状態を取得できたか」を報告していた。その gate は caldav 側裁定で撤去した
+            // (caldavリポジトリ docs/modeling/15・SWR)。今は素の passthrough に戻し、成否は proxyRequest 内の
+            // JSON-RPC 応答配送だけで完結する(観測フックは持たない)。
+            _ = await proxyRequest(id: id, label: "tools/call") {
                 try await self.proxy.passthroughToolsCall(params: params)
-            }
-            if shouldReportCompletion, !isClosed, let onCardToolCallCompleted {
-                await onCardToolCallCompleted(succeeded)
             }
         case AppsMethod.resourcesRead:
             _ = await proxyRequest(id: id, label: "resources/read") {
@@ -81,7 +73,8 @@ actor AppsBridgePassthroughDispatcher {
                 logger.notice("\(label, privacy: .public) 素通し応答済み")
             }
             // MCP tools/call はtransport上の成功応答でも CallToolResult.isError=true を返し得る。
-            // 履歴revalidationのunlockは「現在状態を取得できた」場合だけなので、これも失敗扱いにする。
+            // 呼び出し側は現状この戻り値を使わない(履歴 gate 撤去で観測フックが消えた・queue 2)が、
+            // 「成功応答=成功とは限らない」という契約はヘルパの真実として残す(将来の観測再導入に備える)。
             return result["isError"]?.boolValue != true
         } catch {
             logger.error("\(label, privacy: .public) 素通し失敗: \(String(reflecting: error), privacy: .public)")

@@ -145,14 +145,14 @@ struct HistoryDetailView: View {
                 card: connection.card,
                 containerWidth: columnWidth,
                 maxHeight: inlineMaxHeight,
-                requiresHistoricalRevalidation: true,
                 // 履歴レコードは不変。復元後の DOM を snapshotHTML へ上書きせず、再訪時は常に
                 // 保存時の tool-input/result を起点にする。
                 onSnapshot: nil
             )
-            .overlay {
-                historicalRevalidationOverlay(for: host)
-            }
+            // 【2026-07-23・queue 2】以前はここに revalidation 待ち/失敗オーバーレイ(操作ゲート)を
+            // 重ねていたが撤去した。gate/hint は caldav 側裁定で撤去(caldavリポジトリ docs/modeling/15・SWR)。
+            // 履歴カードは即操作可能にし、鮮度は caldav 側 SWR(generatedAt 60 秒判定)が担う。その
+            // 発火条件である「保存済み toolResult の再 push」は InlineCardHost.sendInitialPayload が担保する。
             .zoomSource(id: host.id, in: cardZoom)
             .reportsMCPAppGestureFrame()
         } else if let html = card.snapshotHTML, !html.isEmpty {
@@ -161,43 +161,6 @@ struct HistoryDetailView: View {
                 .reportsMCPAppGestureFrame()
         } else {
             cardPlaceholder(card)
-        }
-    }
-
-    /// 保存 result は「当時の表示」に過ぎない。App が hint を受け、自身の read-only refresh tool を
-    /// 成功完了するまで hit testing をこの host overlay で奪う。timeout/失敗でも stale DOM の mutation
-    /// ボタンは解放しない(fail closed)。
-    @ViewBuilder
-    private func historicalRevalidationOverlay(for host: InlineCardHost) -> some View {
-        if host.buildFailed {
-            EmptyView()
-        } else if host.historicalRevalidation.state == .waiting {
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                VStack(spacing: 8) {
-                    ProgressView()
-                    Text("現在の状態を確認中…")
-                        .font(.footnote)
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("現在の状態を確認中")
-        } else if host.historicalRevalidation.state == .failed {
-            ZStack {
-                Rectangle().fill(.regularMaterial)
-                VStack(spacing: 8) {
-                    Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
-                        .foregroundStyle(.secondary)
-                    Text("現在の状態を確認できないため操作できません")
-                        .font(.footnote)
-                        .multilineTextAlignment(.center)
-                    Button("再試行") { host.retryHistoricalRevalidation() }
-                        .buttonStyle(.bordered)
-                }
-                .padding(12)
-            }
-        } else {
-            EmptyView()
         }
     }
 

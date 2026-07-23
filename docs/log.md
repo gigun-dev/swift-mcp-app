@@ -1015,3 +1015,12 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - InlineCardViewのSwift 6警告4件(captured-`self`×3+Sendable×1)を構造修正。
   AppsBridgeSessionの不要awaitは+ToolDelivery分割で解消済み(docs記述がstaleだった)。
 - `make verify`完走。implementer(opus)委譲・mainレビュー。
+
+## 2026-07-23 queue 2完了: 履歴revalidation gate撤去
+
+- HistoricalCardRevalidationGate.swift / Kernel/AppsProtocol/HistoricalRevalidation.swift を削除し、
+  Session/Dispatcher/InlineCardView/HistoryDetailView/Presentation の配線を撤去(net -227行)。
+  HistoricalCardRouting(接続再解決)は別責務として残置。
+- 履歴カードは即操作可能に。鮮度はcaldav SWR(generatedAt 60秒判定)が担い、発火条件の
+  「保存済みtoolResult再push」をhistoryRestorePushesSavedToolResultで固定。
+- artisan(opus)委譲・mainレビュー(経緯コメントの参照先をcaldavリポジトリ表記へ修正)。

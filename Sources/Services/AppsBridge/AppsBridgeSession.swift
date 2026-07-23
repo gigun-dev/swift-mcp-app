@@ -108,10 +108,6 @@ public actor AppsBridgeSession {
         onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil,
         // カード発tools/callのハプティクスフック。
         onCardToolCall: (@Sendable () async -> Void)? = nil,
-        // tools/call のサーバー往復と View への応答配送が終わった後のフック。履歴カードの
-        // revalidation gate は「開始」ではなく成功完了を待つため、ハプティクスとは分ける。
-        shouldObserveCardToolCall: (@Sendable () async -> Bool)? = nil,
-        onCardToolCallCompleted: (@Sendable (_ succeeded: Bool) async -> Void)? = nil,
         // ui/open-link の実行フック(既定 nil = 常に拒否)。本番は Features が UIApplication.open へ配線する。
         onOpenLink: (@Sendable (URL) async -> Bool)? = nil
     ) {
@@ -120,9 +116,7 @@ public actor AppsBridgeSession {
         self.passthroughDispatcher = AppsBridgePassthroughDispatcher(
             transport: transport,
             proxy: proxy,
-            onCardToolCall: onCardToolCall,
-            shouldObserveCardToolCall: shouldObserveCardToolCall,
-            onCardToolCallCompleted: onCardToolCallCompleted
+            onCardToolCall: onCardToolCall
         )
         self.hostInfo = hostInfo
         self.containerWidth = containerWidth

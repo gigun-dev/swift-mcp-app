@@ -42,8 +42,6 @@ struct InlineCardView: View {
     /// を閉じ込めて渡し、最終的に ChatViewModel.setCardSnapshot を叩く。既定 nil で T5 の既存呼び出し
     /// (スナップショット不要のプレビュー等)を壊さない。
     var onSnapshot: (@MainActor (String) -> Void)?
-    /// 履歴詳細だけが true を渡す。通常チャットの既定 false は既存挙動を完全に維持する。
-    var requiresHistoricalRevalidation: Bool
 
     // 高さ(desiredHeight)は AppCardState(ObservableObject)で観測する。@Observable の host とは
     // 別機構だが、既存の高さ状態型を作り替えない方針(ファイル冒頭 InlineCardHost.cardState 参照)。
@@ -58,7 +56,6 @@ struct InlineCardView: View {
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
-        requiresHistoricalRevalidation: Bool = false,
         onSnapshot: (@MainActor (String) -> Void)? = nil
     ) {
         self.host = host
@@ -66,7 +63,6 @@ struct InlineCardView: View {
         self.card = card
         self.containerWidth = containerWidth
         self.maxHeight = maxHeight
-        self.requiresHistoricalRevalidation = requiresHistoricalRevalidation
         self.onSnapshot = onSnapshot
         // @ObservedObject を host の cardState に束ねる(init で _cardState を組む標準パターン)。
         self._cardState = ObservedObject(wrappedValue: host.cardState)
@@ -87,8 +83,7 @@ struct InlineCardView: View {
                     card: card,
                     containerWidth: containerWidth,
                     maxHeight: maxHeight,
-                    colorScheme: colorScheme,
-                    requiresHistoricalRevalidation: requiresHistoricalRevalidation
+                    colorScheme: colorScheme
                 )
             }
             // #5: ホスト外観の変化をカードへ追送する(ライト⇄ダーク切替・システム設定変更)。build 後の

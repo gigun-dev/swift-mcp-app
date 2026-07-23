@@ -81,8 +81,6 @@ final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
         onDisplayModeRequested: (@Sendable (UIDisplayMode) async -> DisplayModeResolution)? = nil,
         // UX #1: カード capability(fullscreen 対応)を Features へ流す注入点(既定は無視)。
         onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil,
-        shouldObserveCardToolCall: (@Sendable () async -> Bool)? = nil,
-        onCardToolCallCompleted: (@Sendable (_ succeeded: Bool) async -> Void)? = nil,
         // UX #1: initialize で push する appCapabilities の生 JSON(fullscreen 宣言の有無をテストで切替える)。
         appCapabilitiesJSON: String = "{}",
         // #5: 初期テーマ/スタイル(初期 hostContext に載る値を検証するため注入できるようにする)。
@@ -98,9 +96,7 @@ final class MockTransport: AppsBridgeTransport, @unchecked Sendable {
             styles: styles,
             onSizeChanged: onSizeChanged,
             onDisplayModeRequested: onDisplayModeRequested,
-            onCardCapabilities: onCardCapabilities,
-            shouldObserveCardToolCall: shouldObserveCardToolCall,
-            onCardToolCallCompleted: onCardToolCallCompleted)
+            onCardCapabilities: onCardCapabilities)
         await session.start()
 
         transport.push(#"""

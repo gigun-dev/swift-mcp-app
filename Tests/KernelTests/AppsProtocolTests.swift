@@ -13,39 +13,10 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     try JSONDecoder().decode(type, from: Data(json.utf8))
 }
 
-@Suite struct HistoricalRevalidationTests {
-    @Test("履歴hintは既存_metaとresult本体を保ったままnamespaced keyだけを追加する")
-    func markingPreservesResult() {
-        let original: JSONValue = .object([
-            "structuredContent": .object(["tasks": .array([.string("a")])]),
-            "_meta": .object(["confirm": .object(["cardToken": .string("secret")])])
-        ])
-
-        let marked = HistoricalRevalidation.marking(original)
-
-        #expect(marked["structuredContent"] == original["structuredContent"])
-        #expect(marked["_meta"]?["confirm"] == original["_meta"]?["confirm"])
-        #expect(marked["_meta"]?[HistoricalRevalidation.metadataKey]?["required"] == .bool(true))
-        #expect(marked["_meta"]?[HistoricalRevalidation.metadataKey]?["reason"] == .string("history"))
-    }
-
-    @Test("契約外の非object resultは形を推測せず不変")
-    func markingDoesNotInventResultShape() {
-        let original: JSONValue = .array([.string("legacy")])
-        #expect(HistoricalRevalidation.marking(original) == original)
-    }
-
-    @Test("操作gateは成功完了だけをreadyにし、失敗timeoutはfail closed")
-    func gateTransitions() {
-        let waiting = HistoricalRevalidationState.notRequired.applying(.begin)
-        #expect(waiting == .waiting)
-        #expect(waiting.applying(.toolCallCompleted(succeeded: true)) == .ready)
-        #expect(waiting.applying(.toolCallCompleted(succeeded: false)) == .failed)
-        #expect(waiting.applying(.timedOut) == .failed)
-        #expect(HistoricalRevalidationState.ready.applying(.timedOut) == .ready)
-        #expect(HistoricalRevalidationState.failed.applying(.begin) == .waiting)
-    }
-}
+// 【2026-07-23・queue 2】ここにあった HistoricalRevalidationTests(hint marking・gate 状態機械)は
+// 撤去した。gate/hint 機構ごと消えた(caldav 側裁定・caldavリポジトリ docs/modeling/15・SWR)ため、テスト対象の
+// 型(HistoricalRevalidation / HistoricalRevalidationState)自体が存在しない。鮮度の担保は caldav 側 SWR
+// へ移り、その発火条件(履歴復元時の toolResult 再 push)は ServicesTests 側の履歴経路テストで固定する。
 
 // 値 → JSON Data → 再デコードの round-trip。encode 経路の健全性込みで検証する。
 private func roundTrip<T: Codable & Equatable>(_ value: T) throws -> T {

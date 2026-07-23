@@ -98,7 +98,11 @@
    - Xcode warning 3件を構造的に解消する。
    - `make verify`、専用Simulatorのgesture/revalidation確認、実機build/install/launchを再実施する。
    - docsとの整合を確認し、現在の意図的sliceをcommit / pushする。
-2. ~~**caldavで履歴revalidationを完成させる**~~ → **履歴revalidation gateを撤去する**(2026-07-23差し替え)
+2. ~~**caldavで履歴revalidationを完成させる** → **履歴revalidation gateを撤去する**(2026-07-23差し替え)~~ ✅
+   > **2026-07-23 更新: 撤去完了。** 専用2ファイル削除+8ファイルの配線撤去(net -227行)。
+   > 再push経路は`sendInitialPayload`に残し、`historyRestorePushesSavedToolResult`テストで
+   > 「tool-input→tool-result順・structuredContent無改変配送」を固定(caldav SWRの発火条件)。
+   > 211 tests / 22 suites・lint 0。残: 履歴カード即操作+60秒超の背景revalidateのE2E実機確認。
    - 前提が崩れた: caldav側はhint対応不要と裁定し、SWR(generatedAt 60秒判定)を本番実装済み(56551ac)。
    - `HistoricalCardRevalidationGate.swift`と`Kernel/AppsProtocol/HistoricalRevalidation.swift`を全撤去し、
      `sendInitialPayload`は素のstructuredContent送信へ簡素化する。
