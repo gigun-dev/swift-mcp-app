@@ -138,7 +138,13 @@
    - 挿入点は`ToolCallRunner.executeValid`の`callTool`直前。カード発は`AppsServerProxy.callTool`側。
    - UXはclaude.aiカスタムコネクタと同じ境界(常に許可/毎回確認(既定)/拒否)。queue 5のpickerと
      surface設計を揃える。annotationsはuntrusted hintなので既定は確認側に倒す。
-8. **後続設計**
+8. **OAuthトークンライフサイクル実装(2026-07-23調査で新設・優先度高)**
+   - 正典は[design/08](design/08-oauth-token-lifecycle.md)。現状Swiftホストはrefresh実装ゼロ
+     (`refresh_token` grep 0件)で、TTL 1時間ごとにフル再認可している(claude.ai iOSと同じ穴)。
+   - ハイブリッドrefresh(expiry5分前先回り+401反応1回)、actorによるsingle-flight、
+     Keychain原子更新(server単位1レコード)、`invalid_grant`→再認可導線、SSE再接続を実装する。
+   - Anthropicへのバグ報告(iOSカード描画パスの未refresh・claude-ai-mcp#228同根)は別途。
+9. **後続設計**
    - claude.ai iOSでcaldavカードのみ描画失敗する問題の切り分け(下記「caldavセッションからの申し送り」後注)。
    - fullscreen UX再確認: キーボード閉じはカード側根因修正済み(caldav ce7d5aa)なので再現確認から。
      カード成長起点の自動スクロール追従(`ChatBodyView`のscrollTo群)はmodeling/15 §B採用に伴い
@@ -212,6 +218,16 @@ caldav リポジトリ docs/next-directions.md の 2026-07-23 更新ブロック
 > **2026-07-23 後注(本セッション裁定):** 上記1〜4を根拠レビュー(modeling/15・実測ログ・
 > 実装コミット56551ac/ce7d5aa・Swift側影響面調査)の上ですべて採択した。1はqueue 2へ差し替え、
 > 2はqueue 7、3・4はqueue 8へ反映済み。
+>
+> **2026-07-23 追記: 切り分け完了 — 認証説で確定。** diag-card(1243B・SDK無し)が
+> コネクタ再作成後のiOSで描画成功し、その後todos/agendaもiOSで描画された(サイズ説棄却)。
+> 失敗の実体はaccess token失効(workers-oauth-provider既定TTL 1時間)後、claude.ai iOSの
+> カード描画パスだけがリフレッシュせず401 invalid_token(ログ裏取り済み・
+> req_011CdK4EGbphwRXcNpmLbsPy)を「サーバーに接続できません」と表示するもの。
+> webのカード描画パスとtools/callパスはリフレッシュされる。副産物: webはui/initialize
+> ハンドシェイク完了までカードを非表示、iOSは素のHTMLも表示する(ホスト実装差)。
+> 残: Anthropicへのバグ報告、OAuthライフサイクルのベスプラ調査(進行中)→caldav TTL方針と
+> Swiftホストのrefresh設計へ反映。
 >
 > **別件・claude.ai iOSのcaldavカード描画失敗(要切り分け):** claude.ai iOSアプリで
 > caldavカードだけ「MCPアプリの読み込みに失敗しました サーバーに接続できません」となる。
