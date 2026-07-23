@@ -57,3 +57,22 @@ claude.ai iOS の caldav カード描画失敗の切り分けで、正体が「a
 401 ループ(サーバー準拠の対照実験)+ caldav ログで refresh_token grant が0件 +
 request_id(req_011CdK4EGbphwRXcNpmLbsPy)。既知 issue claude-ai-mcp#228(proxy パスの
 refresh 未実装)・claude-code#65036 と同根、iOS カード描画パス固有としては新規報告が妥当。
+
+## 2026-07-23 実装時の前提修正(実装レビューで確定)
+
+当初の調査「Swift ホストに refresh 実装ゼロ」は誤りだった。実体は swift-sdk 0.12.1 の
+`OAuthAuthorizer` + `HTTPClientTransport`(actor)が本設計の大半を既に実装している:
+proactive refresh(既定60s窓)・401 反応 refresh(最大3回・再試行付き)・refresh_token grant +
+rotation 対応・invalid_grant → フル再認可フォールスルー・トークン全フィールドの保存。
+single-flight は「1接続 = 1 transport(actor)= 1 authorizer」の構造で成立する。
+
+よってホスト側の実装は「SDK に寄せて真の欠落だけ埋める」形にした(第2のトークンパスを
+新設すると rotation 下の二重 refresh 自爆をむしろ作り込むため):
+1. 窓を 60s → 300s(5分)へ明示指定(`OAuthProactiveRefreshPolicy.defaultWindowSeconds`)。
+2. `KeychainTokenStorage.save` をエンコード先行に並べ替え(保存成功まで旧 refresh token を捨てない)。
+3. 窓計算の純関数 `OAuthProactiveRefreshPolicy` を Kernel に置きテストで固定。
+
+残課題: TTL 動的窓(TTL×10%)は SDK の窓が接続時固定スカラのため適用不可(SDK PR か
+カスタム authorizer ラッパが必要・caldav TTL 3600s では固定300sと一致し実害なし)。
+対話セッション中の refresh token 失効時、SDK はその場でブラウザ再認可を開く UX になる
+(「要再認可」状態への載せ替えは SDK フックが必要・未着手)。SSE 再接続の refresh も未検証。

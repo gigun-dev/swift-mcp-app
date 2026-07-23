@@ -66,12 +66,33 @@ public enum MCPConnection {
         // 初回接続時に自動で DCR(RFC 7591)が走り、caldav 側の契約通り
         // `token_endpoint_auth_method: "none"` で登録される
         // (caldav docs/next-directions.md 方向性 E の暗黙契約: 出典コメントを写経)。
+        // 先回り refresh の窓を design/08 原則1(ハイブリッド refresh)に合わせて明示指定する。
+        //
+        // 【なぜ既定(60s)を上書きするか】swift-sdk の OAuthConfiguration は
+        // proactiveRefreshWindowSeconds の既定を 60 秒にしている(接続時に固定するスカラ)。
+        // design/08 §規範は Claude 公式コネクタの参照ベスプラ「失効の5分前から先回り refresh」に
+        // 従うと定めているので、Kernel の OAuthProactiveRefreshPolicy.defaultWindowSeconds(300s=5分)を
+        // 渡して 60→300 へ引き上げる。これにより tools/call・resources/read の送信直前
+        // (HTTPClientTransport actor が prepareAuthorization を呼ぶ)に、失効5分前で無言 refresh が
+        // 走り、access token 失効(caldav TTL 3600s)による 401 → 再認可ループ(claude.ai iOS の失敗形・
+        // design/08 §経緯)を先回りで避ける。
+        //
+        // 【TTL 動的版(TTL*10%)を使わない理由・報告対象】design/08 は「5分 or TTL の10%」を併記するが、
+        // swift-sdk の窓は接続時固定のスカラで、トークンごとの expires_in を見て動的に変える口が無い
+        // (OAuthProactiveRefreshPolicy の defaultWindowSeconds コメントに詳細)。よってここでは固定 300 を渡す。
+        //
+        // 【single-flight は SDK 側で構造的に担保】refresh の直列化(design/08 原則2)は、この接続の
+        // 全リクエストが単一の HTTPClientTransport(actor)→単一 OAuthAuthorizer を通ることで自動的に成立する
+        // (HTTPClientTransport が actor なので prepareAuthorization/handleChallenge は直列化される)。
+        // rotation 下の並行 refresh 自爆は、この「1接続=1 authorizer」構造がそのまま防いでいるため、
+        // ホスト側に別 actor(TokenLifecycleManager 等)を新設していない(調査結果は最終報告参照)。
         let oauthConfiguration = OAuthConfiguration(
             grantType: .authorizationCode,
             authentication: .none(clientID: ""),
             authorizationRedirectURI: redirectURI,
             clientName: clientName,
-            authorizationDelegate: authorizationDelegate
+            authorizationDelegate: authorizationDelegate,
+            proactiveRefreshWindowSeconds: OAuthProactiveRefreshPolicy.defaultWindowSeconds
         )
 
         let authorizer = OAuthAuthorizer(

@@ -57,11 +57,25 @@ public final class KeychainTokenStorage: TokenStorage, @unchecked Sendable {
     }
 
     public func save(_ token: OAuthAccessToken) {
+        // 【原子的保存 / 旧 refresh token 温存(design/08 原則3)】
+        // 「新 access/refresh/expiry を1レコードとして保存し、保存成功まで旧 refresh token を捨てない」。
+        // そのため **エンコードを先に行い、成功したときだけ** メモリキャッシュ(= このプロセスでの
+        // 一次トークン層)と Keychain を更新する。初版は cachedToken = token を先に代入してから
+        // encode を guard していたため、万一エンコードに失敗すると「旧トークンは消えたのに新トークンは
+        // 永続化も反映もされない」= その接続の refresh token を丸ごと失う穴があった
+        // (OAuthAccessToken は単純な Codable なので実際にエンコード失敗はまず起きないが、
+        // rotation 中の 1 レコード更新で「片側だけ壊れる」状態を型として作らないための順序付け)。
+        // token response の refresh_token / expires_at / scopes / clientID は OAuthAccessToken 自体の
+        // フィールドで、丸ごと JSON 化して1 value に詰めるので、この1回の書き込みが原子単位になる。
+        guard let data = try? JSONEncoder().encode(token) else {
+            // エンコード失敗: 旧トークンをそのまま温存し、何も壊さずに返る(原則3「保存成功まで捨てない」)。
+            logger.notice("トークンのエンコードに失敗: 旧トークンを温存して保存をスキップ")
+            return
+        }
+
         cacheLock.lock()
         cachedToken = token
         cacheLock.unlock()
-
-        guard let data = try? JSONEncoder().encode(token) else { return }
 
         // Keychain には「upsert」API が無いため、SecItemUpdate を先に試し、
         // 項目が無ければ(errSecItemNotFound)SecItemAdd にフォールバックする定型パターン。
