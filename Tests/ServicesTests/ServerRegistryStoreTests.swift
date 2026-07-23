@@ -65,6 +65,79 @@ import Testing
         #expect(restored.servers.contains(added))
     }
 
+    @Test("同一 URL を2回 add しても件数は増えず、返る id が同一(冪等 add)")
+    func addIsIdempotentForSameURL() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ServerRegistryStore(defaults: defaults)
+        let url = URL(string: "https://example.com/mcp")!
+        let first = store.add(name: "local", url: url)
+        let second = store.add(name: "local", url: url)
+        // シード(caldav)1件 + local 1件 = 2件のまま(2回目は再利用)。
+        #expect(store.servers.count == 2)
+        #expect(first.id == second.id)
+    }
+
+    @Test("末尾スラッシュ/host 大文字違いの同一 canonical URL は既存を再利用し、url 文字列は最初のものを温存する")
+    func addReusesOnCanonicalMatchAndPreservesURLString() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ServerRegistryStore(defaults: defaults)
+        // 最初に登録する url 文字列(この文字列が温存される ——Keychain キー/provenance 厳密等価のため)。
+        let first = store.add(name: "local", url: URL(string: "https://example.com/mcp")!)
+        // 末尾スラッシュ + host 大文字違い = canonical 一致。
+        let reused = store.add(name: "local", url: URL(string: "https://Example.com/mcp/")!)
+
+        #expect(store.servers.count == 2)  // シード + local(増えない)。
+        #expect(reused.id == first.id)
+        // url 文字列は最初のものが温存され、2回目の(スラッシュ付き・大文字)では上書きされない。
+        #expect(reused.url.absoluteString == "https://example.com/mcp")
+    }
+
+    @Test("別 URL を add すると新規追加される")
+    func addAppendsForDifferentURL() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ServerRegistryStore(defaults: defaults)
+        store.add(name: "a", url: URL(string: "https://a.example.com/mcp")!)
+        store.add(name: "b", url: URL(string: "https://b.example.com/mcp")!)
+        // シード + a + b = 3件。
+        #expect(store.servers.count == 3)
+    }
+
+    @Test("無効化したサーバーを同一 URL で再 add すると enabled が true に戻る")
+    func reAddReenablesDisabledServer() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ServerRegistryStore(defaults: defaults)
+        let url = URL(string: "https://example.com/mcp")!
+        let added = store.add(name: "local", url: url)
+        store.setEnabled(id: added.id, enabled: false)
+        #expect(store.servers.first { $0.id == added.id }?.enabled == false)
+
+        let reused = store.add(name: "local", url: url)
+        #expect(reused.id == added.id)
+        #expect(reused.enabled)  // 再追加 = 使う意図なので有効に戻る。
+    }
+
+    @Test("name を変えて同一 URL を再 add すると既存エントリの name が更新される")
+    func reAddUpdatesName() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ServerRegistryStore(defaults: defaults)
+        let url = URL(string: "https://example.com/mcp")!
+        let added = store.add(name: "old-label", url: url)
+        let reused = store.add(name: "new-label", url: url)
+        #expect(reused.id == added.id)
+        #expect(reused.name == "new-label")
+        #expect(store.servers.first { $0.id == added.id }?.name == "new-label")
+    }
+
     @Test("setEnabled で有効/無効を切り替え、enabledServers に反映・永続化される")
     func setEnabledTogglesAndPersists() {
         let (defaults, suite) = makeDefaults()

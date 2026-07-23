@@ -23,6 +23,7 @@
 // @Published を購読しない)。整合と観測伝播のため @Observable を選ぶ。SwiftUI 側は
 // @State/@Bindable でそのまま束縛できる(LLMSettingsStore と同じ扱い)。
 import Foundation
+import Kernel
 import Observation
 import OSLog
 
@@ -175,14 +176,49 @@ public final class ServerRegistryStore {
 
     // MARK: - 追加 / 改名 / 削除
 
-    /// サーバーを追加して、その id を返す。追加は enabled=true(すぐ接続を試みる)で入る。
+    /// サーバーを追加して、そのエントリを返す。追加は enabled=true(すぐ接続を試みる)で入る。
+    ///
+    /// 【なぜ冪等か = 再追加での serverID 孤児化バグの根修正】
+    /// 以前はここで無条件に新 UUID のエントリを append していたため、OAuth コネクタを再追加
+    /// (同じ MCP サーバー URL をもう一度 add)するたびに serverID が変わり、過去チャットの履歴カード
+    /// provenance(serverID を記録)が孤児化して placeholder に落ちる実機バグの根因になっていた。
+    /// canonical URL(ServerURLIdentity)で既存エントリを引き当て、あれば **その id を温存して再利用**する。
     @discardableResult
     public func add(name: String, url: URL) -> MCPServerEntry {
+        // 表層の揺れ(末尾スラッシュ・host 大小・既定ポート・fragment)を吸収した canonical キーで
+        // 「同じエンドポイントの既存エントリ」を探す。あれば再利用(冪等 add)。
+        if let idx = existingIndex(matching: url) {
+            // name: ユーザーが別ラベルで再追加した意図を反映して更新する(同じ URL に別名を付け直す操作)。
+            servers[idx].name = name
+            // enabled: 無効化済みサーバーを add フォームから再追加 = 「使う」意図なので有効に戻す。
+            servers[idx].enabled = true
+            // 【url 文字列は温存する = 上書きしない・設計上の要】
+            // Keychain トークンのキー(kSecAttrAccount = 既存 url.absoluteString)と、既存カードの
+            // provenance serverURL の「厳密等価」照合を壊さないため、保存されている url 文字列は
+            // 差し替えない。canonical 一致は「どのエントリを再利用するか」の判断だけに閉じ、
+            // 既存の厳密等価な世界(トークン・provenance)には漏らさない。
+            // Keychain トークンにも触らない ——再利用の目的は既存の認証を活かすこと。
+            persist()
+            let reused = servers[idx]
+            logger.notice(
+                "既存を再利用(冪等 add) name=\(name, privacy: .public) url=\(reused.url.absoluteString, privacy: .public)"
+            )
+            return reused
+        }
+
+        // canonical 一致なし = 本当に新しいエンドポイント。従来どおり新規 append。
         let entry = MCPServerEntry(name: name, url: url)
         servers.append(entry)
         persist()
         logger.notice("サーバー追加 name=\(name, privacy: .public) url=\(url.absoluteString, privacy: .public)")
         return entry
+    }
+
+    /// 与えられた URL と canonical(正規化)キーが一致する既存エントリの index を返す(冪等 add 用)。
+    /// add が肥大しないよう照合検索を private ヘルパに切り出す(SwiftLint type_body_length 対策も兼ねる)。
+    private func existingIndex(matching url: URL) -> Int? {
+        let key = ServerURLIdentity.canonicalKey(url)
+        return servers.firstIndex { ServerURLIdentity.canonicalKey($0.url) == key }
     }
 
     /// 改名 / URL 変更(SettingsSheet の編集)。id は不変なので過去参照は保たれる。
