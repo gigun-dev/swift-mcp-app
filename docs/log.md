@@ -1134,3 +1134,22 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   「なぜplaceholderか」(server-url-mismatch/app-only-tool-filtered等)が1行で見える=JSON発掘不要。
 - スコープ外(明記): traceparent _meta伝播・caldav相関・Sentry・os_signpost区間・card.resolve以外。
 - 論点(次slice判断): TraceSinkとTelemetryPortの二重化(一本化するか別seam維持か)、session ID寿命。
+
+## 2026-07-24 queue 10 接続ライフサイクル堅牢化(冪等 add・層3根修正)
+
+- 動機: OAuth コネクタ再追加のたびに add が新 UUID を append→serverID が変わり履歴カード
+  provenance が孤児化して placeholder に落ちる実機バグの根因。層4(履歴 URL 束縛)は対症で、
+  上流(add の非冪等性)を断つのがこの slice。ベスプラ: canonical URI = identity(RFC 8707/9728)。
+- 層3実装: Kernel `ServerURLIdentity.canonicalKey`(URLComponents で scheme/host 小文字化・
+  既定ポート除去・末尾スラッシュ1個除去・fragment 除去・query/user 温存、分解不能は absoluteString
+  小文字化フォールバック)。`add` を canonical 一致で既存 id 温存の再利用へ(name 更新・enabled=true・
+  url 文字列と Keychain token は温存)。照合は private existingIndex(matching:) に切り出し。
+- 設計要: canonical 化は「どの entry を再利用するか」の判断だけに閉じ、保存 url 文字列は差し替えない。
+  よって Keychain キー(kSecAttrAccount=absoluteString)と resolver の serverURL 厳密等価は壊れない。
+- 層2(再認可の bad token 上書き)はコード変更なし: performInteractiveConnect が成功時に新 token を
+  Keychain へ上書きする既存挙動で達成済み。実機 E2E 裏取りは残。
+- テスト: KernelTests ServerURLIdentityTests 8件(末尾スラッシュ/ルート/host大小/既定・非既定ポート/
+  fragment/query/別host)、ServicesTests に冪等 add 5件(同一URL2回/canonical一致でurl温存/別URLは追加/
+  無効化後再addで再有効化/再addでname更新)。make verify 完走(275 tests / 29 suites・lint 0・make app OK)。
+- 効果: queue 11 の観測 card.resolve reason=server-url-mismatch が今後の再追加で発火しなくなるはず
+  (観測で回帰監視できる)。commit 514b01b。
