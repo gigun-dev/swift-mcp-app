@@ -204,12 +204,20 @@ enum FinishReason { case stop, toolCalls, length, contentFilter, other(String) }
 - **ChatModel(Kernel・純粋 Codable)**:
   - `ChatSession`(id・title・serverURL・createdAt・updatedAt・[ChatTurn])
   - `ChatTurn`(role・text・[ToolCallStep]・[CardEmbed]・usage)
-  - `CardEmbed`(toolName・resourceUri・**snapshotHTML**・structuredContent:JSONValue)
+  - `CardEmbed`(toolName・resourceUri・**snapshotHTML**・structuredContent:JSONValue・arguments・
+    optional serverID/serverURL/originalToolName provenance)
 - **カードの履歴再訪問題(重要な判断)**: WKWebView 由来のライブカードはそのまま保存できない。
-  → **最後のスナップショット HTML を保存**し、履歴再訪時はそれを**静的表示(操作不可・
-  ContentRuleList 全遮断のまま・ブリッジ無し)**する。理由: (1) 再実行(tools/call やり直し)は
-  副作用・コスト・サーバー状態変化を伴い履歴の意味が壊れる、(2) スナップショットなら安全に
-  「そのときの見た目」を復元できる。ライブに戻したければ再訪画面から明示的に再実行させる(将来)。
+  → **会話本文は保存時の記録として固定し、カードだけを live island として再接続**する。
+  現在 ready な生成元を確実に同定できる場合、現在 tools/list が広告する UI resource HTML を読み、
+  保存済み arguments / structuredContent を bootstrap として配送する。元 tool を Swift host が推測・
+  自動再実行してはいけない。表示後の authoritative data は MCP server 側にあり、fresh data の取得は
+  MCP App 自身が app-only refresh tool 等を tools/call する責務とする。生成元を同定できない場合だけ、
+  最後の snapshot HTML を**静的表示(操作不可・ContentRuleList 全遮断・ブリッジ無し)**してfail closedにする。
+  例えばcaldavでは `list-todos` / `complete-todo` / `delete-todo` 由来の同じtodos Appが
+  `refresh-todos`、event系Appが`refresh-events`を副作用なしで呼び現在状態へ更新する。mutation由来でも
+  元mutationを再実行しない。汎用hostはこのtool名やread/write性を知らず、refresh名を推測しない。
+  新履歴は serverID + serverURL + originalToolName と現在のtool/UI広告を照合し、旧履歴は現在のwireNameが
+  一意に厳密一致する場合だけbest-effortでlive化する。slug推測や別endpointへのfallbackは行わない。
   スナップショットは `webView.evaluateJavaScript("document.documentElement.outerHTML")` で取得。
   **技術的な限界と対処(レビューで追記)**: outerHTML は DOM のシリアライズであり
   (1) `<input>` の入力途中値・canvas 描画は落ちる(todos カードはリスト表示なので実害なし)、
@@ -225,7 +233,8 @@ enum FinishReason { case stop, toolCalls, length, contentFilter, other(String) }
 
 ボツ案: SQLite/CoreData/SwiftData — 個人規模には過剰。JSON ファイルは可搬でデバッグも楽。
 将来スケール時に移行は可逆(Kernel の Codable 型はそのまま)。
-ボツ案: カードをライブのまま履歴保持 — WKWebView の大量保持はメモリ的に不可能。スナップショットが正。
+ボツ案: WKWebViewをライブのまま全履歴で保持 — 大量保持はメモリ的に不可能。再訪時だけlive再構築し、
+解決不能時のfallbackにsnapshotを使う。
 
 ---
 
@@ -280,7 +289,27 @@ enum FinishReason { case stop, toolCalls, length, contentFilter, other(String) }
 
 ---
 
-## 8. 実装ステップ分割(P2 の S1〜S6 に倣う)
+## 8. 履歴カードのrevalidation契約
+
+保存済み`tool-result`はbootstrap表示であり、現在状態の証明ではない。履歴カードではresultの既存`_meta`を
+保持したまま、`_meta["dev.gigun.mcphost/historical-revalidation"] = {required:true,
+reason:"history", version:1}`を追加する。このnamespaced hintはMCP Apps標準の独自拡張で、未知fieldを無視する
+generic Appの挙動を変えない。hostはtool input、structuredContent、元toolを変更・再実行せず、refresh tool名や
+read/mutation分類も推測しない。
+
+対応Appはhintを受けた初回`ontoolresult`をbootstrapとして描画後、自身が知る副作用なしrefresh toolを即座に
+`callServerTool`する。この1回はfocus/pageshow用staleTimeの対象外にする。Swift hostは保存result配送前から
+interaction overlayを置き、最初のApp-originated `tools/call`がサーバー往復・Viewへの応答配送まで完了し、かつ
+CallToolResultの`isError`がtrueでない場合だけ操作を解放する。overlay中はユーザー操作を受けないため、この
+最初のcallはApp自身のrevalidationでなければならない。
+
+10秒以内に自動callが無い、transport失敗、`isError:true`、HTML/session構築失敗はいずれもfail closedとし、
+保存表示を操作可能にはしない。再試行もhint付き保存resultの再配送だけで、hostから任意toolは呼ばない。
+caldav側ではtodosが`refresh-todos`、agendaが`refresh-events`を選ぶ実装が必要である。
+
+---
+
+## 9. 実装ステップ分割(P2 の S1〜S6 に倣う)
 
 P3 は技術リスクが P2 より低い(postMessage ブリッジ実証済み)。新規判断が要るのは
 LLM ストリーミング・履歴永続化・複数カードのセッション管理。
@@ -299,19 +328,22 @@ LLM ストリーミング・履歴永続化・複数カードのセッション�
    size-changed 追従の本実装)。caldav の list-todos を「見せて」で描画 → カード内 complete が
    往復する E2E(P2 の往復をチャット文脈で再現)。
 6. **T6: 履歴永続化 + サイドバー** — ChatStore(JSON)+ ChatHistorySidebar(引き出し・検索・
-   日付グループ)+ カードのスナップショット保存/静的再訪。
+   日付グループ)+ カードのスナップショット保存/live再接続（解決不能時は静的再訪）。
 7. **T7: コスト表示** — usage 計上 + CostEstimator + 画面表示。
 
 **判断ゲート(P2 ほど硬くないが確認すべき点)**:
-- [ ] 軽量モデル(Flash-Lite/Haiku 級)が caldav ≈18 ツールから正しいツールを選べる(T3。
+- [x] 軽量モデル(Flash-Lite/Haiku 級)が caldav ≈18 ツールから正しいツールを選べる(T3。
       選べないならツール説明の改善 or モデル格上げの判断材料)
-- [ ] visibility:["app"] が LLM ツール一覧から除外されている(T2・apps.mdx:400 MUST)
-- [ ] "app" を含まないツールへの app 発 tools/call が拒否される(T2・apps.mdx:401 MUST)
-- [ ] チャット内 complete がカード経由で往復する(T5)
-- [ ] 履歴再訪でカードがスナップショット表示され、誤って副作用が起きない(T6)
-- [ ] トークン/コストが表示され、未知モデルで嘘の金額を出さない(T7)
+- [x] visibility:["app"] が LLM ツール一覧から除外されている(T2・apps.mdx:400 MUST)
+- [x] "app" を含まないツールへの app 発 tools/call が拒否される(T2・apps.mdx:401 MUST)
+- [x] チャット内 complete がカード経由で往復する(T5)
+- [x] 履歴再訪で同一serverのカードだけlive化し、解決不能カードを静的fallbackへ倒す(T6)
+- [x] トークン/コストが表示され、未知モデルで嘘の金額を出さない(T7)
 
-## 9. 決定サマリ
+> **2026-07-23 更新:** T1〜T7の実装と実機E2Eは完了。履歴live化のうち、現在状態をApp自身に
+> refreshさせてから操作を解放する追加gateはworking treeで実装・検証済み、caldav側hint対応は未完了。
+
+## 10. 決定サマリ
 
 1. ワイヤ型 = Kernel/LLMProtocol(OpenAI 互換 Codable)、MCP↔LLM 変換 = Services/LLM。
 2. LLMClient = **ストリーミング(SSE)前提**プロトコル(`textDelta` + 終端 `completed` の
@@ -320,8 +352,9 @@ LLM ストリーミング・履歴永続化・複数カードのセッション�
 3. tool-use ループ = ChatViewModel。**visibility 除外・最大反復8・複数 tool_call 並行**。
 4. カード = 1結果1セッション(P2 踏襲)・接続共有・結果は LLM とカードへ二重配布・
    size-changed 追従を本実装。
-5. 履歴 = JSON ファイル + index。**カードはスナップショット HTML で静的再訪**
-   (再実行しない・再訪ロードは JS 無効)。ライブ WKWebView は上限付き(超過は降格)。
+5. 履歴 = JSON ファイル + index。会話本文は固定、カードは現在の同一serverへlive再接続する。
+   現在UI resource + 保存resultでbootstrapし、hostは元toolを自動再実行しない。解決不能時だけ
+   snapshot HTMLをJS無効で静的表示する。ライブ WKWebView は上限付き(超過は降格)。
 6. コスト = usage×単価テーブル概算・**未知モデルは "—"**(嘘の金額を出さない)。
 7. visibility の MUST は2つとも守る: (a) "model" を含まないツールを LLM 一覧から除外
    (apps.mdx:400・変換直前)、(b) "app" を含まないツールへの app 発 tools/call を拒否

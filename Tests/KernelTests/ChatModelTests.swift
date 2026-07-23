@@ -76,6 +76,38 @@ func toolCallStepServerNamePersistenceCompatibility() throws {
     #expect(legacy.originalToolName == nil)
 }
 
+@Test("CardEmbed はサーバーprovenanceを保存し旧JSONではnilに戻す")
+func cardEmbedServerProvenanceCompatibility() throws {
+    let serverID = UUID()
+    let card = CardEmbed(
+        toolName: "caldav__list-todos",
+        resourceUri: "ui://caldav/todos.hash.html",
+        serverID: serverID,
+        serverURL: URL(string: "https://caldav.example/mcp")!,
+        originalToolName: "list-todos"
+    )
+    #expect(try roundTrip(card) == card)
+    #expect(card.matchesSource(serverID: serverID, serverURL: card.serverURL!, originalToolName: "list-todos"))
+    #expect(!card.matchesSource(serverID: UUID(), serverURL: card.serverURL!, originalToolName: "list-todos"))
+    #expect(!card.matchesSource(
+        serverID: serverID,
+        serverURL: URL(string: "https://other.example/mcp")!,
+        originalToolName: "list-todos"
+    ))
+    #expect(!card.matchesSource(serverID: serverID, serverURL: card.serverURL!, originalToolName: "delete-todo"))
+
+    let legacyJSON = #"{"toolName":"caldav__list-todos","resourceUri":"ui://caldav/todos.old.html"}"#
+    let legacy = try JSONDecoder().decode(CardEmbed.self, from: Data(legacyJSON.utf8))
+    #expect(legacy.serverID == nil)
+    #expect(legacy.serverURL == nil)
+    #expect(legacy.originalToolName == nil)
+    #expect(!legacy.matchesSource(
+        serverID: serverID,
+        serverURL: URL(string: "https://caldav.example/mcp")!,
+        originalToolName: "list-todos"
+    ))
+}
+
 @Test("ChatSession は serverURLs(複数接続先・M2)を round-trip する")
 func chatSessionRoundTripServerURLs() throws {
     let session = ChatSession(

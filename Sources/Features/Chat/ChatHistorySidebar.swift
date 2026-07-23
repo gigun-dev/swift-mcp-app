@@ -57,10 +57,14 @@ struct ChatHistorySidebar: View {
             listOrEmpty
         }
         .background(SidebarPalette.paper)
-        // サイドバーは ZStack の下層へ常時 mount され、`.task` はアプリ起動時に一度しか走らない。
-        // turn settlement 後に初めて pane を開いた場合も最新 index を見せるため、false→true の
-        // presentation transition を正にする。initial=true は将来最初から開く構成でも読み漏らさない。
-        .onChange(of: isPresented, initial: true) { _, presented in
+        // mount 時に一度プライムする。ZStack 下層に常時 mount されるが、List の行 View は初回の
+        // reveal まで build されず、ドラッグで開き始めた瞬間に空→中身の pop と行 layout が走って
+        // 「最初のドラッグだけガクつく」原因になっていた。起動時に index を読んで行を用意しておけば、
+        // 初回オープンのドラッグ中にはもう中身が居る(2026-07-23 初回ドラッグのガクつき修正の一環)。
+        .task { reload() }
+        // turn settlement 後に初めて pane を開いた場合も最新 index を見せるため、pane を開くたびに
+        // 読み直す(.task の初回プライムに加え、false→true の transition で鮮度を保つ)。
+        .onChange(of: isPresented) { _, presented in
             if presented { reload() }
         }
         .alert("名前を変更", isPresented: $showingRenamePrompt) {
@@ -138,20 +142,28 @@ struct ChatHistorySidebar: View {
             .frame(maxWidth: .infinity)
             .padding(.bottom, 80)
         } else {
-            // 実装メモ1: 日付グループ(groupedSummaries)は廃止し単一 ForEach(平坦リスト)。
-            // loadIndex() が updatedAt 降順を保証するので並べ替えは不要(store 契約)。
+            // 実装メモ1: 日付グループ(groupedSummaries)は廃止。ただしピン留めだけは
+            // 「最近の項目」と混ぜず独立セクションにする(loadIndex はピン留めを先頭へ
+            // ソートするが、それを単一「最近の項目」見出しの下に置くと、見出しと中身が
+            // 食い違って見える — ピン留めは "最近" ではなく "固定" だから別見出しにする)。
+            // セクション内の並びは loadIndex の契約順(ピン内も通常内も updatedAt 降順)をそのまま使う。
+            let pinned = filtered.filter { $0.isPinned }
+            let recent = filtered.filter { !$0.isPinned }
             List {
-                // 実装メモ2: 「最近の項目」のみ小見出しとして残す(日付グループ見出しは廃止)。
-                Text("最近の項目")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.tertiary)
-                    .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 4, trailing: 16))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(SidebarPalette.paper)
+                // 実装メモ2: 小見出しは「ピン留め」「最近の項目」の2種。日付グループ見出しは廃止のまま。
+                // ピン留めが0件のときは見出しごと出さない(空セクションの見出しは意味の無い余白になる)。
+                if !pinned.isEmpty {
+                    sectionHeader("ピン留め")
+                    ForEach(pinned, id: \.id) { summary in
+                        row(for: summary)
+                    }
+                }
 
-                ForEach(filtered, id: \.id) { summary in
-                    historyRow(summary)
+                if !recent.isEmpty {
+                    sectionHeader("最近の項目")
+                    ForEach(recent, id: \.id) { summary in
+                        row(for: summary)
+                    }
                 }
 
                 // 実装メモ7: 下部フローティングピルの逃げ余白(リスト末尾がピルの下に隠れないため)。
@@ -170,67 +182,30 @@ struct ChatHistorySidebar: View {
         }
     }
 
-    private func historyRow(_ summary: ChatSessionSummary) -> some View {
-        let isActive = summary.id == activeSessionID
-        // active 背景と context-menu preview の正典を同じ Shape 値にする。外側 8x3 / 内側
-        // 8x11 の二段 padding は、従来の content inset 16x14 と active 背景 inset 8x3 を保つ。
-        let rowShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-        return ChatHistoryRowLabel(
+    /// セクション小見出し行(モックの .recent-label と同一スタイル)。ピン留め/最近の項目で共用。
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(.tertiary)
+            .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 4, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(SidebarPalette.paper)
+    }
+
+    /// 抽出した ChatHistoryRow(表示+操作)へ、親が所有する状態(active 判定・server chip 出し分け)と
+    /// 副作用(select/pin/rename/delete。いずれも store 直読みや @State を触る)をクロージャで束ねる薄い factory。
+    /// 行 View 自体は状態を持たず、ここで「何をするか」だけを注入する(責務抽出の結果・2026-07-23)。
+    private func row(for summary: ChatSessionSummary) -> some View {
+        ChatHistoryRow(
             summary: summary,
-            serverName: showsServerChip ? serverShortName(summary.serverURL) : nil
+            isActive: summary.id == activeSessionID,
+            serverName: showsServerChip ? serverShortName(summary.serverURL) : nil,
+            onSelectTap: { select(summary.id) },
+            onTogglePin: { togglePinned(summary) },
+            onRename: { beginRename(summary) },
+            onRequestDelete: { requestDelete(summary.id) }
         )
-        .padding(.horizontal, 8)
-        .padding(.vertical, 11)
-        .background {
-            if isActive { rowShape.fill(SidebarPalette.pillActive) }
-        }
-        // interaction と preview の hit/highlight geometry を active の灰色背景と完全に揃える。
-        .contentShape(.interaction, rowShape)
-        .contentShape(.contextMenuPreview, rowShape)
-        // List 内の Button は大きな横 swipe の終了を activate と解釈する場合があり、削除 swipe を
-        // 廃止しても onSelect + onClose が発火した。通常 View + TapGesture なら移動量の大きい gesture は
-        // tap として成立しないため、「明示 tap のみ選択」という drawer 競合排除の契約になる。
-        .onTapGesture { select(summary.id) }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .listRowInsets(EdgeInsets())
-        .listRowBackground(SidebarPalette.paper)
-        // アクティブ行はピルとヘアラインが衝突するため区切り線を消す(モックの .hrow.active::before)。
-        .listRowSeparator(isActive ? .hidden : .visible)
-        .listRowSeparatorTint(SidebarPalette.hairline)
-        // 左スワイプは drawer の開閉と競合するため使わない。破壊操作を含む管理メニューは
-        // iOS 標準の長押し context menu へ集約し、誤操作時の削除はさらに確認を挟む。
-        .contextMenu {
-            Button {
-                togglePinned(summary)
-            } label: {
-                Label(
-                    summary.isPinned ? "ピン留めを解除" : "ピン留め",
-                    systemImage: summary.isPinned ? "pin.slash" : "pin"
-                )
-            }
-            Button {
-                beginRename(summary)
-            } label: {
-                Label("名前を変更", systemImage: "pencil")
-            }
-            Button(role: .destructive) {
-                requestDelete(summary.id)
-            } label: {
-                Label("削除", systemImage: "trash")
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityValue(summary.isPinned ? "ピン留め済み" : "")
-        // 見た目を Button から View へ変えても VoiceOver の標準 activate 操作は同じ選択動作を保つ。
-        .accessibilityAction { select(summary.id) }
-        // VoiceOver では長押しを要求せず、同じ操作を rotor actions として直接公開する。
-        .accessibilityAction(named: Text(summary.isPinned ? "ピン留めを解除" : "ピン留め")) {
-            togglePinned(summary)
-        }
-        .accessibilityAction(named: Text("名前を変更")) { beginRename(summary) }
-        .accessibilityAction(named: Text("削除")) { requestDelete(summary.id) }
     }
 
     /// 下部フローティングの新規チャットピル(モックの .fab .pill)。

@@ -389,8 +389,11 @@ apps.mdx / spec.types.ts の出典行をコメントで残す。
   - **決定2b の調停**(高々 1 fullscreen)は ChatBodyView に置く: 昇格中に別カードが要求したら
     onDisplayModeRequested が inline を返し、Session が `result.mode:"inline"` を応答する。
 - 判断ゲート:
-  - [ ] H1+C2 後、実機で todos 9 件が inline maxHeight 内に畳まれて表示される
-  - [ ] H3+H4+C3 後、「すべて表示」→ sheet 全件 → 完了/追加操作 → dismiss → inline に状態が残る
+  - [x] H1+C2 後、実機で todos 9 件が inline maxHeight 内に畳まれて表示される
+  - [x] H3+H4+C3 後、「すべて表示」→ sheet 全件 → 完了/追加操作 → dismiss → inline に状態が残る
+
+> **2026-07-23 更新:** P4-DMのフルループを実機で確認済み。同一WKWebViewのreparentと
+> inline復帰後の状態保持も、画面とbridge logを突き合わせて完了した。
 
 ### caldav 側
 

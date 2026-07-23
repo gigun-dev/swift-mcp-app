@@ -372,15 +372,18 @@ apps.mdx:718)**。View 側は autoResize(ResizeObserver)が既定で有効(app.t
 
 **判断ゲート(全部 YES で路線B続行 / NO が残れば §7 の代替 → それも駄目なら路線Aへ撤退)**:
 
-- [ ] View 改変ゼロで `ui/initialize` リクエストが Swift 側に到達する(S2/S3)
-- [ ] initialized 前に host が何も送っていないことをログで確認できる(仕様 MUST NOT)
-- [ ] list-todos カードが実データで描画される(S4)
-- [ ] カード内 complete → tools/call → tool-result/応答 → 打ち消し線描画の往復が
+- [x] View 改変ゼロで `ui/initialize` リクエストが Swift 側に到達する(S2/S3)
+- [x] initialized 前に host が何も送っていないことをログで確認できる(仕様 MUST NOT)
+- [x] list-todos カードが実データで描画される(S4)
+- [x] カード内 complete → tools/call → tool-result/応答 → 打ち消し線描画の往復が
       1 サイクル通る(S5。becoming-done 演出まで出れば満点、一覧更新で合格)
-- [ ] focus refetch(refresh-todos, `visibility:["app"]`)がモデルのツール一覧に
+- [x] focus refetch(refresh-todos, `visibility:["app"]`)がモデルのツール一覧に
       **出ていない**こと(apps.mdx:400 の MUST。LLM オーケストレータ側の除外確認)
-- [ ] ContentRuleList 全遮断下でカードが動く(自己完結バンドルの実証)
-- [ ] size-changed で高さが追従し、チャットスクロールと喧嘩しない
+- [x] ContentRuleList 全遮断下でカードが動く(自己完結バンドルの実証)
+- [x] size-changed で高さが追従し、チャットスクロールと喧嘩しない
+
+> **2026-07-23 更新:** S2〜S6と実caldavカードの往復を完走し、路線Bを採用済み。
+> 完了経緯と実機E2Eは`docs/archive/next-directions-v2-2026-07-23.md`へ保存した。
 
 ---
 

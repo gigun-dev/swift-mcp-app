@@ -1,7 +1,11 @@
 # iOS エージェントハーネス正式評価
 
-> **状態:** Phase 0完了。AのH-01/K-01、Dのlocal probe、main独立のO-01/W-01、
-> AでのL-01/M-01再実行まで完走。構成間blind比較と採用判断は承認待ち。
+> **状態:** AのH-01/K-01、Dのlocal probe、main独立のO-01/W-01、AでのL-01/M-01まで完走した。
+> OpenAI公式stock BはCLI既定30秒でtool schema取得timeoutしたが、120秒timeout診断armでH-01 Pass、
+> Codex Desktop taskで追加設定なしに起動してK-01 Pass。探索E2Eへ条件付き採用する。
+> 固定版D + Aのidb fallbackを探索E2Eに採用し、Apple Xcode MCPと将来のXCUIAutomationを
+> 直交するevidence / regression層として積む。判断の要約と公式出典は
+> [`codex-plugin-and-ios-agent-audit.md`](codex-plugin-and-ios-agent-audit.md)を正とする。
 > **正典の範囲:** Claude Code / Codex から `swift-mcp-app` を build・操作・E2E 検証する
 > plugin / skill / MCP / CLI の比較と採否。製品ロードマップ自体は `docs/next-directions.md` を正とする。
 > **更新方法:** 結果を上書きせず、各試験のチェックボックスと結果表を更新する。生の経緯は
@@ -24,14 +28,13 @@ GUI mirrorやSimulator browserは、それ自体を目的にしない。semantic
 | ID | 構成 | 目的 |
 | --- | --- | --- |
 | A | 現行 `ios-simulator`(simctl + idb) + project `ios-e2e-verify` | 現行baseline |
-| B | OpenAI公式 `build-ios-apps` 0.1.2を無変更 | stock pluginとしての実用性 |
-| C | Bのskill + XcodeBuildMCP 2.6.2を`bunx`固定 | plugin設計と依存versionずれを分離する診断用 |
-| D | XcodeBuildMCP 2.6.2最小workflow + idb fallback + project `ios-e2e-verify` | 本採用候補(hybrid) |
+| B | OpenAI公式 `build-ios-apps` 0.1.2 / revision `d6169bef`を無変更 | **条件付き採用**: DesktopでH-01/K-01 Pass。CLI既定30秒timeoutと`@latest` driftは残る |
+| C | Bのskill + XcodeBuildMCP 2.6.2を`bunx`固定 | Bが失敗した場合のversion / tool drift診断arm |
+| D | XcodeBuildMCP 2.6.2最小workflow + idb fallback + project `ios-e2e-verify` | **採用**: semantic操作が必要な探索E2E |
 
-Bは公式設定の`npx ...@latest`を含めて無変更で一度測る。Bがversionずれで失敗した場合だけCを測り、
-「公式skillの問題」と「浮動依存の問題」を分ける。DのJS依存は評価中`bunx xcodebuildmcp@2.6.2`、
-採用後はまず同じ固定指定を使う。Nix packagingは評価対象外とし、再現性が不足した場合にだけ
-dotfilesの`package.json + bun.lock`、さらに必要ならNix derivationへ進む。
+当初どおりBを無変更で測り、失敗時だけCでversionずれを診断する。source inspectionで確認した
+`npx ...@latest`とtool名・workflow driftはリスクとして記録するが、それだけでBを不採用にしない。
+Dは比較可能性のため`bunx xcodebuildmcp@2.6.2`の固定指定を維持する。
 
 ## 3. 公平な実行方法
 
@@ -170,19 +173,41 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 - [x] caldavの`changeme`が検証専用fixtureであることと接続先環境を明記する。
 - [x] A/DのMCP `tools/list`、skill metadata/body量を採取する。
   > **2026-07-23 更新:** Dは36 tools / 225,990 serialized bytes、project skill metadataは1,427 bytes。
-  > Bの無変更実行はunpinnedな`npx ...@latest`を含むため実行せず、A/Dで具体的な差が残った場合だけ
-  > B/Cを診断する。mutableなthird-party code実行を「公平性」のためだけに先行させない。
+  > **2026-07-23 再更新:** B 0.1.2 / revision `d6169bef`をinstallし、新規Codex sessionで
+  > `ios-debugger-agent`をロードした。初回stock H-01はData volume 100%・空き2.4 GiBかつ
+  > `No space left on device`の状態でMCP serverが起動せずNo score。環境復旧後に再実行する。
 - [x] raw trace・スクリーンショット・ログの保存先を
   `/private/tmp/swift-mcp-app-ios-harness-9d2c168`配下に固定する。
 
 ### Phase 1: Codexでのblind比較
 
+> **2026-07-23 再更新:** ユーザー指示によりstock Bの実測をactive taskへ戻した。source inspectionだけで
+> 採否を閉じず、環境復旧後のH-01/K-01で判断する。A/Dの既取得結果はbaselineとして保持する。
+
 - [ ] H-01をA/Dで各1回blind実行する。
   > **2026-07-23 更新:** Aは合格。D担当subagentにはXcodeBuildMCP toolが露出せずCLI+idb fallbackで
   > 機能上は合格したが、Aとの差を測れていないためDのblind結果には数えない。
+- [x] ~~H-01をstock Bで再実行する。~~ ✅
+  > **2026-07-23 初回:** global install / skill load / MCP登録までは成功。`npx`初回取得が60秒無出力、
+  > exit 130となりrequired MCP toolsが公開されなかった。容量不足が同時発生したためNo score。
+  > 記録: `/private/tmp/swift-mcp-app-ios-harness-9d2c168/official-build-ios-apps-d6169bef/H-01-B/`。
+  > **2026-07-23 再試験:** 空き14 GiBで`@latest` 2.6.2を事前取得し、fresh sessionでskillを全文ロードしたが、
+  > `tools/list`が30秒timeoutして必須tool 0件のまま停止した。direct stdio probeではserverは約0.2秒で起動し、
+  > 44 tools / 約63,469 tokensのschemaを返した。容量・networkではなくstockのversion/schema driftによるFail。
+  > 記録: `/private/tmp/swift-mcp-app-ios-harness-9d2c168/official-build-ios-apps-d6169bef/H-01-B-rerun-20260723/`。
+  > **2026-07-23 訂正:** schema量を単独原因、stockを互換性不合格と断定した判断を撤回する。
+  > 同じcommand / args / envへ`startup_timeout_sec=120`だけを追加すると44 toolsが公開され、
+  > `session_show_defaults` / `session_set_defaults` / `build_run_sim` / `snapshot_ui` / `screenshot`を完走した。
+  > Harness Bへbuild / install / launch成功（56.8秒、PID 90578）、semantic 49要素 / 7 targets、JPEG取得成功。
+  > 許可prompt・fallbackは0。確定原因は既定30秒のstartup deadline不足までとする。
 - [ ] K-01をA/Dで各1回blind実行する。
   > **2026-07-23 更新:** Aは合格。Dはmain sessionからlocal MCPへ直結したcapability probeでは合格したが、
   > 外部`codex exec`によるblind実行はrepo文脈の外部送信を伴うため、ユーザーの明示承認待ち。
+- [x] ~~K-01をstock BのCodex Desktop taskで実行する。~~ ✅
+  > **2026-07-23 更新:** Harness Bへbuild / install / launch（12.5秒、PID 32776）後、semantic refだけで
+  > サーバー追加画面へ遷移。日本語clipboard、誤URL、backspace、Select All / Paste、focus / blur validation、
+  > キャンセル後の未保存を確認した。`replaceExisting:true`はIME下で文字化けしても成功応答だったため、
+  > snapshotの実値を見てclipboard置換へ回復した。macOS / Xcode promptは0、clipboardだけCodex sandbox許可あり。
 - [ ] O-01をA/B/Dで各2回実行する。
   > **2026-07-23 更新:** 正式blind比較とは別にmainがDを独立再実行。署名済みappで`changeme`入力、
   > callback、caldav 23 tools、`get-current-time`成功、terminate/relaunch後のbrowserなし無言接続まで
@@ -208,15 +233,27 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 
 ### Phase 3: 採用・実装
 
-- [ ] 結果表を本docへ追記し、A/B/C/Dの採否と根拠を確定する。
+- [x] ~~結果表を本docへ追記し、A/B/C/Dの採否と根拠を確定する。~~ ✅ 2026-07-23
 - [ ] generic knowledgeをuser plugin、MCPHost固有知識を`ios-e2e-verify`へ反映する。
-  > **2026-07-23 更新:** 専用UDID、署名run/Keychain、非表示semantic target、fullscreen focus logという
-  > 構成非依存のproject知識は先行反映。A/B/D採用workflowとgeneric user pluginは正式比較後に残す。
+  > **2026-07-23 更新:** project知識は先行反映済み。残りはgeneric `ios-simulator`の明示UDID、
+  > bounded poll、実行時scaleと、`ios-device-build`のprovider固定path解消。`gigun-dev/claude-code`へ
+  > scopeを移してFableが実装する。
 - [x] ~~real secret禁止とdisposable test credential許可をskillに明記する。~~ ✅ 2026-07-23
-- [ ] 採用するMCP workflowを最小化し、Xcode IDE gatewayはtimeout解消後にoptionalで有効化する。
+- [x] ~~採用するMCP workflowを最小化し、Xcode IDE gatewayはtimeout解消後にoptionalで有効化する。~~ ✅
+  > **2026-07-23 更新:** Apple公式`xcrun mcpbridge`直結は20 toolsで実働しX-01 Pass。
+  > XcodeBuildMCP経由の`xcode-ide` gateway timeoutとは別経路なので、gatewayを重ねずApple MCPを使う。
 - [ ] dotfilesはまずBun/NodeとMCP登録を管理し、XcodeBuildMCPは固定版`bunx`で運用する。
 - [ ] Claude Code / Codex双方のvalidator、`make check`、必須E2Eを通す。
-- [ ] `docs/next-directions.md`と`docs/log.md`へ最終判断を反映する。
+- [x] ~~`docs/next-directions.md`と`docs/log.md`へ最終判断を反映する。~~ ✅ 2026-07-23
+
+### X-01: Apple Xcode MCP（A〜Dと直交するIDE層）
+
+- [x] ~~`XcodeListWindows`で`MCPHost.xcodeproj` / `windowtab1`を取得する。~~ ✅ 2026-07-23
+- [x] ~~`XcodeListNavigatorIssues`でIssue Navigatorを取得する。~~ ✅ 2026-07-23
+- [x] ~~Apple MCPをSimulator UI backendの代替とせず、docs/build/test/issues/Preview専用に位置づける。~~ ✅
+
+Issue Navigatorはworking treeにSwift 6 captured-`self` warning 2件と不要`await` 1件を検出した。
+`make verify`成功とcompiler warning 0は別gateとして扱い、delivery前のFable queueへ送った。
 
 ## 7. 2026-07-23 予備調査(正式評価には数えない)
 
@@ -239,8 +276,10 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 | 試験 | 構成 | 判定 | wall time | tool calls / retry | 証拠と判断 |
 | --- | --- | --- | --- | --- | --- |
 | H-01 | A | **Pass** | 約3分30秒 | 15 / 1 | 明示UDIDでbuild・install・launch。screenshotと10要素のflat accessibilityをmainも再確認 |
+| H-01 | B stock + 120秒timeout診断 | **Pass** | build/run 56.8秒 | 5 / 0 | Harness Bへbuild・install・launch、49要素のsemantic snapshot、JPEGを取得。許可prompt / fallback 0。既定30秒では開始不能 |
 | H-01 | D | **No score** | 約2分44秒 | 16 / 1 | 機能上は完走したがXcodeBuildMCPがsubagentへ露出せず、CLI+idbへ全面fallbackしたためD比較になっていない |
 | K-01 | A | **Pass** | 約6分30秒 | 39 / 3 | 日本語clipboard、誤URL、backspace、Select All/Paste、blur、Cancel後に未保存を確認 |
+| K-01 | B stock / Codex Desktop | **Pass** | 約5分 | 47 / 2 | semantic ref、clipboard日本語、ASCII誤入力、backspace、Select All/Paste、validation、未保存を確認。IME文字化けをsnapshotで検出・回復 |
 | K-01 | D | **Local pass / blind pending** | 非blind | 未集計 | XcodeBuildMCP 2.6.2へlocal JSON-RPC直結しsemantic refsを検証。最終blind scoreには含めない |
 | W-01 | D | **Main independent pass / blind pending** | 非blind | 未集計 | 実Appの操作往復・同一WebView状態保持・fullscreen作成focusを画面/logで確認。正式各2回には含めない |
 | L-01 | A | **Main independent pass / blind pending** | 非blind | 未集計 | UI詳細の501とunified logを照合し、probe削除・一時server停止後の復旧まで確認 |
@@ -253,10 +292,43 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
 - raw command record: `/private/tmp/swift-mcp-app-ios-harness-9d2c168/raw/H-01-A-command-record.md`
 - build 26.801秒、install 4.189秒、launch PID 2143。別Simulator操作0、人手介入0。
 
+### H-01 B stock初回・再試験の証拠
+
+- plugin: OpenAI `build-ios-apps` 0.1.2 / cache revision `d6169bef`（installed, enabled）。
+- fresh `codex exec` sessionは`ios-debugger-agent`全文を読み、plugin `.mcp.json`も特定した。
+- `codex mcp list`では`xcodebuildmcp`がenabledだが、sessionのactive toolsへは公開されなかった。
+- stock entry `npx -y xcodebuildmcp@latest`は60秒無出力後exit 130。npm cacheにpackage実体なし。
+- 同sessionに`No space left on device`、Data volume 100%・空き2.4 GiBを確認したためNo score。
+- plugin外fallback、build、Simulator操作、repo変更は0。failure reportのみ上記artifact directoryへ保存した。
+- 再試験前はData volume空き14 GiB。`npx -y xcodebuildmcp@latest --version`は`2.6.2`を返し、package取得も成功した。
+- fresh `codex exec`は約108秒後、`timed out awaiting tools/list after 30s`で終了。必須MCP callは0。
+- 同じstock entryへのdirect stdio probeは約0.2秒でinitializeし、2.6.2が44 toolsを登録した。
+  plugin指定の`logging`はunknownとして無視され、`tools/list`応答は約63,469 tokensだった。
+- 再試験記録は`official-build-ios-apps-d6169bef/H-01-B-rerun-20260723/`。fallback、build、Simulator操作は0。
+- 上記の不合格断定は撤回した。`startup_timeout_sec=120`診断armでは44 toolsが公開され、H-01はPass。
+- 使用toolは`session_show_defaults`、`session_set_defaults`、`build_run_sim`、`snapshot_ui`、`screenshot`の5件。
+- Harness Bへのbuild / install / launchは56.8秒、PID 90578。semantic snapshotは49要素 / 7 targets。
+- screenshot: `official-build-ios-apps-d6169bef/H-01-B-timeout120/H-01-B.jpg`（368x800 JPEG）。
+- macOS / Xcode許可prompt、別backend fallback、repo変更はいずれも0。
+
 ### K-01 Aの証拠と発見
 
 - 誤URL / backspace / 最終blur / cancel後の4画面を`artifacts/K-01-A-*`へ保存した。
 - 表示名`検証サーバー`はclipboard + semantic `Paste`で入力した。
+
+### K-01 B Desktopの証拠と発見
+
+- 記録: `official-build-ios-apps-d6169bef/K-01-B-desktop/`。誤URL focus / blur、backspace、
+  IME文字化け、訂正後blur、キャンセル後一覧の6画面と`final-report.md`を保存した。
+- Harness Bへ現行dirtyをbuild / install / launchし、buildは12.5秒、PID 32776。caller指定の固定座標は0。
+- `type_text`の日本語は`US keyboard characters only`で明示的に失敗したため、`simctl pbcopy`後に
+  semantic fieldをlong-pressし、snapshot内の`Paste` text refへ`touch`して`検証サーバー`を入力した。
+- `htp://bad`はfocus中にvalidation非表示、表示名fieldへblur後に
+  `https://、または開発用の localhost URL を入力してください。`が出た。keycode 42で`htp://ba`へ削除した。
+- `replaceExisting:true`は成功応答でもIMEにより`hっtps：・・えぁmpぇ。cおm・mcp`へ化けた。
+  long-press → semantic `Select All` → `Paste`で`https://example.com/mcp`へ直し、blur後の警告消滅を確認した。
+- 追加画面と設定画面をキャンセルし、既存`caldav` 1件だけで未保存を確認した。macOS / Xcode許可promptは0。
+  clipboard用`xcrun simctl pbcopy`のみCodex sandbox approvalを使い、UI操作の外部backend fallbackは0。
 
 ### W-01 D main独立再実行の証拠と発見
 

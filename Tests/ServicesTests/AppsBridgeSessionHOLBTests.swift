@@ -52,6 +52,11 @@ extension AppsBridgeSessionTests {
         var count: Int { heights.count }
     }
 
+    private actor CompletionRecorder {
+        private(set) var values: [Bool] = []
+        func record(_ value: Bool) { values.append(value) }
+    }
+
     @Test("HOLB①: ゲート停止中の tools/call を追い越して size-changed が応答より先に処理される")
     func sizeChangedNotBlockedByInflightToolsCall() async throws {
         let transport = MockTransport()
@@ -137,5 +142,50 @@ extension AppsBridgeSessionTests {
         await proxy.open("slow", result: .object(["ok": .bool(true)]))
         try? await Task.sleep(for: .milliseconds(50))
         #expect(transport.sentRawJSON.count == afterClose)
+    }
+
+    @Test("tools/call完了callbackはCallToolResult.isError=trueを成功扱いしない")
+    func toolCallCompletionRejectsMCPErrorResult() async {
+        let transport = MockTransport()
+        let proxy = GatedMockProxy()
+        let recorder = CompletionRecorder()
+        let session = await makeReadySession(
+            transport: transport,
+            proxy: proxy,
+            onCardToolCallCompleted: { await recorder.record($0) }
+        )
+
+        transport.push(
+            #"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"refresh","arguments":{"k":"error"}}}"#
+        )
+        await waitUntil { await proxy.isWaiting("error") }
+        await proxy.open("error", result: .object(["isError": .bool(true)]))
+        await waitUntil { await recorder.values.count == 1 }
+
+        #expect(await recorder.values == [false])
+        await session.close()
+    }
+
+    @Test("観測arm前に開始したtools/callの遅着完了はcallbackへ流さない")
+    func toolCallStartedBeforeObservationIsIgnored() async {
+        let transport = MockTransport()
+        let proxy = GatedMockProxy()
+        let recorder = CompletionRecorder()
+        let session = await makeReadySession(
+            transport: transport,
+            proxy: proxy,
+            shouldObserveCardToolCall: { false },
+            onCardToolCallCompleted: { await recorder.record($0) }
+        )
+
+        transport.push(
+            #"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"early","arguments":{"k":"early"}}}"#
+        )
+        await waitUntil { await proxy.isWaiting("early") }
+        await proxy.open("early", result: .object(["isError": .bool(false)]))
+        try? await Task.sleep(for: .milliseconds(30))
+
+        #expect(await recorder.values.isEmpty)
+        await session.close()
     }
 }

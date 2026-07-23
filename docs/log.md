@@ -850,3 +850,168 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   `What time is it?`は`get-current-time`を広告できずgeneric回答になった。これはtool context破損ではなく接続状態で、
   caldav接続済みの専用Simulator Dでは同tool成功を既に確認済み。最終`make verify`は206 tests / 21 suites、
   SwiftFormat 0/120、SwiftLint 0 violations / 119 files、generic iOS Simulator build成功。
+
+## 2026-07-23: 過去会話のMCP Appを安全なlive islandへ変更
+
+- 履歴全体を静的snapshotにしてカード操作も失う従来設計を改め、会話本文はread-onlyのまま、カードだけを
+  現在の同一MCP serverへ再接続する。HistoryDetailViewがlive/static両registry、fullscreen、haptics、
+  keyboard avoidanceを所有し、画面終了時に全bridgeをteardownする。
+- 新規CardEmbedへoptional `serverID` / `serverURL` / `originalToolName` provenanceを保存する。
+  新履歴はID+URL一致、元tool存在、現在のmodel-visible UI resource広告をすべて要求する。旧履歴は現在の
+  wireNameが一意に厳密一致するときだけbest-effortでlive化し、曖昧・切断・endpoint変更はJS無効snapshotへ
+  fail-closedする。slug推測fallbackやapp-only toolの通常チャット表面化は行わない。
+- live再構築は現在のUI resource HTMLへ保存済みarguments/structuredContentをbootstrapとして配送し、Swift hostは
+  元toolを自動再実行しない。authoritative dataはserverにあり、App自身の副作用なしrefreshに委ねる。caldavでは
+  list/complete/delete todo等から同じAppを復元後`refresh-todos`、event系は`refresh-events`を使う。汎用hostは
+  mutation/readやrefresh tool名を推測しない。
+- CardEmbed旧JSON互換とprovenance round-trip、ToolCallRunnerからのprovenance保存をtestへ追加した。
+- 最終`make verify`: 207 tests / 21 suites、SwiftFormat 0/122、SwiftLint 0 violations / 121 files、
+  generic iOS Simulator build成功。caldav App自身のrefresh発火と現在状態反映のSimulator実証はmain sessionへ渡す。
+
+## 2026-07-23: sidebarの全pane swipeとMCP App除外帯を両立
+
+- 閉状態はchat pane全域の右swipeでdrawerを開けるようにし、live/history双方のMCP Appが現在占める
+  CGRectをPreferenceKeyで集約した。開始Yがいずれかのカード縦帯に入るgestureは最初から拒否し、
+  WKWebView内のcarousel・graph・sliderへ横操作を譲る。gesture途中のscrollでframeが変わっても判定は固定する。
+- 開状態はsidebar幅内の左swipeでも閉じられるようにした。Listの縦scrollとcontext menuを残すため
+  simultaneousかつ横優位・左向きだけを採用し、外側の全画面frameへgestureを広げない。
+- 露出main cardのtap closeとleft-drag closeは別recognizerの併置をやめ、minimumDistance 0の単一gestureで
+  8pt以内をtap、それ以上をdirectional dragとして排他的に確定する。offsetの二重更新によるガクつきを除いた。
+- 方向、22%/flick閾値、MCP App除外帯、tap/drag排他をKernel純関数へ分離し回帰testを追加した。
+  `make check`は210 tests / 22 suites、SwiftFormat 0/125、SwiftLint 0 violations / 124 files、
+  `make app`はgeneric iOS Simulatorで`BUILD SUCCEEDED`。実gestureの触感確認はユーザー操作へ委ねる。
+
+## 2026-07-23: 履歴MCP Appを現在状態の確認完了まで操作不可にする
+
+- 保存済みresultを即操作可能にする設計を改め、既存`_meta`を保持したままnamespacedな
+  historical-revalidation hintを配送する。Swift hostは元toolやrefresh tool名を推測せず、App自身が選ぶ
+  最初の`tools/call`が応答配送まで成功したときだけinteraction overlayを解除する。
+- transport失敗だけでなくCallToolResultの`isError:true`も失敗扱いにした。未対応Appは10秒timeout、
+  HTML/session構築失敗も永久spinnerにせずfail closedとし、保存表示上のmutation操作を解放しない。
+  再試行は同じhint付き保存resultの再配送だけに限定した。
+- caldav todos/agendaは初回resultの適用で`lastFetchAt`を更新するため、直後のfocus/pageshowは2.5秒の
+  staleTimeで抑止される。各Appがhintを見て`refresh-todos` / `refresh-events`を即時に1回呼ぶ対応を
+  別repo側の後続タスクとして`next-directions`へ明記した。
+- `make check`は215 tests / 23 suites、SwiftFormat 0/128、SwiftLint 0 violations / 127 files。
+  `make app`もgeneric iOS Simulatorで`BUILD SUCCEEDED`。
+- 同じdirtyをApple Development署名でiPhone 12 mini向けにbuildし、`dev.gigun.mcphost`を
+  install / launchまで再実施した。CoreDevice先頭の`No provider was found`警告は継続するが、
+  tunnel取得・install・launchはいずれも成功した。
+
+## 2026-07-23: Goal棚卸しとCodex固有plugin / iOS harness調査
+
+- P0〜P4-DMでSwift製MCP Apps hostの技術MVPは達成、汎用中立性とSaaS差替えseamも目標水準へ到達した。
+  SaaS backend / billingは授業外、提出rubric / presentation / CIは外部入力待ちとして分離した。
+- 第4版`next-directions`をarchiveし、第5版はgoal status、未配達dirty、Codex調査完了、Fable実装queue、
+  user / external waitだけへ再編した。design 01 / 02 / 04に残っていた完了済み判断gateも実績に合わせて閉じた。
+- Codex公式manualで`.claude-plugin/marketplace.json`がlegacy-compatible repo marketplaceであること、
+  plugin本体の公式entry pointは`.codex-plugin/plugin.json`であること、install後はsourceでなく
+  `~/.codex/plugins/cache/...`を読むことを確認した。既存`gigun` catalogは共通正典として維持し、
+  cache symlinkは行わない。各pluginのCodex manifest化は触る時に段階移行する。
+- OpenAI公式`build-ios-apps` 0.1.2は`xcodebuildmcp@latest`と古いtool名を併存させているためstock採用を終了。
+  固定版XcodeBuildMCP最小workflow + idb fallbackを探索E2Eに採用し、正式A/B/C/D blind比較を終了した。
+- Apple公式`xcrun mcpbridge`へ現在のCodex sessionから接続し、Xcode windowとIssue Navigatorを取得して
+  X-01 Pass。Apple MCPはIDE docs / build / test / issues / Preview層でありSimulator UI backendではない。
+- Issue Navigatorはworking treeにSwift 6 captured-`self` warning 2件と不要`await` 1件を検出した。
+  `make verify`とは別のdelivery前修正としてFable queueへ送った。
+- Appleのtest pyramid / XCUIAutomationに合わせ、agent操作は探索、安定したnative flowはsource-controlled
+  UI testへ昇格する方針を追加した。現repoにはUITest targetが無いため、connection validation、drawer、
+  context menu、reparent、履歴revalidation gateを最初の候補とした。
+- `openai-docs` skillの公式source routeを満たすため、global Codexへ`openaiDeveloperDocs`
+  (`https://developers.openai.com/mcp`)を追加した。repo configは変更していない。
+- 棚卸し後の最終`make verify`では215 tests / 23 suitesとSwiftFormatは成功したが、同時にworking treeへ
+  加わったsidebarの「ピン留め / 最近の項目」分離により`ChatHistorySidebar`が251行となり、
+  SwiftLintのtype body 250行上限を1行超えて停止した。lint gateを迂回せず、app build / 実機deployも
+  実行していない。section責務の抽出をFable delivery queueの先頭へ追加した。
+
+## 2026-07-23: OpenAI公式build-ios-appsの実導入とApple Xcode MCP責務整理
+
+- `codex plugin add build-ios-apps@openai-curated`でOpenAI公式`build-ios-apps` 0.1.2、cache revision
+  `d6169bef`をglobal Codexへinstall / enableした。新規`codex exec` sessionでstock
+  `ios-debugger-agent`を読み、専用Harness Bだけを対象にH-01を開始した。
+- `codex mcp list`にはplugin由来の`xcodebuildmcp`がenabledで現れたが、sessionにはMCP toolsが公開されず、
+  `.mcp.json`の`npx -y xcodebuildmcp@latest`確認は60秒無出力後exit 130となった。同時にCodexの
+  `No space left on device`、Data volume 100%・空き2.4 GiB、npm cacheにpackage実体なしを確認した。
+  plugin外fallback、build、Simulator操作、repo変更は行わず、初回結果を環境阻害 / No scoreとした。
+- source inspectionだけでstockを非採用とした先行判断を撤回した。容量確保→stock package取得→fresh sessionで
+  MCP tool公開確認→H-01→K-01を次session queueへ戻し、実測後まで採否を保留する。
+- Apple `xcrun mcpbridge`は現在のsessionで再度実接続し、`MCPHost.xcodeproj` / `windowtab1`を取得した。
+  公開20 toolsをcontext、build/test、diagnostics、docs/snippet、Preview、project editに分類した。
+  Issue NavigatorのSwift 6 warning 2件と不要`await` 1件もfreshのまま確認した。
+- Apple Xcode MCPはIDE evidence層として使い、Simulator install / launch / accessibility操作 / log captureや
+  SwiftFormat・SwiftLint・pre-push gateを代替しない。deliveryは`make verify`とIssue Navigatorの双方で確認する。
+
+## 2026-07-23: OpenAI公式build-ios-apps stock H-01再試験
+
+- Data volumeは空き14 GiBへ復旧していたため削除を行わず、`npx -y xcodebuildmcp@latest --version`を
+  network許可下で完走した。stockが解決したXcodeBuildMCPは2.6.2。
+- 専用Harness B（`DAE87C7B-6495-4115-B332-5FA9134554DB`）をBootedで確認し、fresh `codex exec`へ
+  `build-ios-apps:ios-debugger-agent`、stock MCPのみ、fallback禁止、repo編集禁止のH-01を渡した。
+- skill全文とplugin設定は読めたが、required XcodeBuildMCP toolsは0件のまま。約108秒後に
+  `MCP startup failed: timed out awaiting tools/list after 30s`で終了し、build / install / launch / semantic UI /
+  screenshotは未実行。Apple Xcode MCP、direct xcodebuild、simctl、idbへのfallbackも0。
+- 同じstock entryをdirect stdio probeするとserver 2.6.2は約0.2秒でinitializeした。pluginの`logging` workflowは
+  unknownとして無視され、debugging / session-management / simulator / ui-automationの44 toolsを登録し、
+  `tools/list`は約63,469 tokensだった。容量・network・package欠落ではなく、plugin 0.1.2の浮動`@latest`と
+  Codex CLI 0.145.0のstartup/tool-schema互換性不合格としてstock採用を終了した。
+
+## 2026-07-23: build-ios-apps不合格断定を撤回、120秒timeoutでH-01 Pass
+
+- ユーザーからXcode許可prompt等の別原因ではないか指摘を受け、前項の「schema量が原因」「stock不採用」を
+  確定事実として扱った判断を撤回した。direct MCPの`list_sims`は許可promptなしで即成功し、Harness Bを確認した。
+- stockと同じcommand / args / envへ`startup_timeout_sec=120`だけを追加したfresh `codex exec`では、
+  XcodeBuildMCP 2.6.2の44 toolsが公開された。既定30秒では同じ`tools/list`がtimeoutするため、確定した問題は
+  startup deadline不足までであり、約63,469 tokensのschema量は相関に留める。
+- `session_show_defaults`、`session_set_defaults`、`build_run_sim`、`snapshot_ui`、`screenshot`をplugin toolだけで実行。
+  専用Harness Bへbuild / install / launch成功（56.8秒、PID 90578）、semantic 49要素 / 7 targets、
+  368x800 JPEGを取得した。macOS / Xcode許可prompt、Apple Xcode MCP / direct CLI / idb fallbackは0。
+- CLIでは`build-ios-apps@openai-curated`がinstalled / enabledでconfigとcacheも存在する。一方、起動済み
+  Codex DesktopのPlugins検索には表示されず、現taskのskill snapshotにも無い。Desktop再起動・新規taskでの
+  反映確認とK-01を残し、公式stockの採否は保留へ戻した。
+
+## 2026-07-23: Build iOS AppsをCodex Desktopへ反映
+
+- Codex Desktopのplugin導線から`Build iOS Apps`を有効化し、現在sessionのskill一覧へplugin由来の
+  iOS / SwiftUI skills、MCP server一覧へ`xcodebuildmcp`が公開された。CLIだけに見えていた状態は解消した。
+- 次は現在sessionからK-01を実行し、既定startup timeoutの挙動とsemantic入力訂正を確認する。
+
+## 2026-07-23: Codex DesktopのBuild iOS AppsでK-01 Pass
+
+- 現在taskへ公開されたOpenAI公式`build-ios-apps` 0.1.2 / XcodeBuildMCP 2.6.2だけをUI backendとして使い、
+  `session_show_defaults`から開始した。Booted一覧でHarness B（`DAE87C7B-6495-4115-B332-5FA9134554DB`）を確認し、
+  `MCPHost.xcodeproj` / `MCPHost` / `dev.gigun.mcphost`へ固定。build / install / launchは12.5秒、PID 32776で成功した。
+- semantic refで設定→サーバー追加→表示名 / URL fieldを選択した。日本語直接入力はpluginが
+  `US keyboard characters only`で拒否したため、Codex sandbox許可下の`simctl pbcopy`とsemantic long-press / Pasteで
+  `検証サーバー`を入力した。macOS / Xcode許可promptは出ていない。
+- `htp://bad`をASCII入力し、focus中はvalidation非表示、表示名へblurすると
+  `https://、または開発用の localhost URL を入力してください。`が出ることをsemantic snapshotで確認した。
+  keycode 42のbackspaceで`htp://ba`へ削除した。
+- `replaceExisting:true`は成功応答だったが、IMEによりURLが`hっtps：・・えぁmpぇ。cおm・mcp`へ化けた。
+  snapshotのvalue照合で検出し、long-press → Select All → clipboard Pasteで`https://example.com/mcp`へ訂正。
+  blur後にvalidationが消えたことを確認した。tool成功応答だけを合格根拠にしない運用要件が増えた。
+- 追加画面と設定画面をキャンセルし、一覧は既存`caldav` 1件のままで未保存を確認した。
+  6枚のscreenshotと報告を`/private/tmp/swift-mcp-app-ios-harness-9d2c168/official-build-ios-apps-d6169bef/K-01-B-desktop/`
+  へ保存。K-01 BはPass（約5分、47 XcodeBuildMCP calls、recovery 2）とした。
+- H-01/K-01が揃ったため、公式pluginをCodex Desktopの探索E2Eへ条件付き採用する。恒久回帰はXCUIAutomation、
+  reproducible診断は固定版XcodeBuildMCPを維持する。CLI既定30秒timeout、`@latest`、tool名driftは残存risk。
+
+## 2026-07-23 caldav申し送りの裁定と履歴gate撤去への方針転換
+
+- claude.ai iOS描画失敗とSwift履歴カード操作不能の調査から着手。後者はgateのfail-closed
+  (caldav hint未対応で必ず10秒timeout)と特定。
+- caldav側申し送り(next-directions末尾)を根拠レビュー: modeling/15(ユーザー承認済み正典)、
+  楽観復元の本番実測、SWR実装56551ac(freshness.ts・generatedAt 60秒判定・欠落時フォールバック)、
+  キーボード修正ce7d5aaを確認。Swift側影響面はExplore調査で全接点を列挙。
+- 裁定: gate/hint撤去を採択。host再push経路が残るためSWRはホスト協力ゼロで成立、
+  focus/visibility配送も不要。queue 2差し替え、R4をqueue 7、fullscreen/観測をqueue 8へ。
+- 別件が浮上: claude.ai iOSでcaldavカードのみ描画失敗(TDRは描画される・webは両方OK)。
+  Workersログではresources/read到達なし+401 invalid_token単発2回。認証説とサイズ説の
+  切り分けをnext-directions後注に記録。
+
+## 2026-07-23 delivery gate解消(lint + warning)
+
+- `ChatHistoryRow`をChatHistorySidebarComponents.swiftへ抽出(コールバック注入・意図コメント移設)し、
+  type body 251→約240行でSwiftLint strictを解消。disable/閾値変更なし。
+- InlineCardViewのSwift 6警告4件(captured-`self`×3+Sendable×1)を構造修正。
+  AppsBridgeSessionの不要awaitは+ToolDelivery分割で解消済み(docs記述がstaleだった)。
+- `make verify`完走。implementer(opus)委譲・mainレビュー。

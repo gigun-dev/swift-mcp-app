@@ -108,6 +108,10 @@ public actor AppsBridgeSession {
         onCardCapabilities: (@Sendable (_ supportsFullscreen: Bool) async -> Void)? = nil,
         // カード発tools/callのハプティクスフック。
         onCardToolCall: (@Sendable () async -> Void)? = nil,
+        // tools/call のサーバー往復と View への応答配送が終わった後のフック。履歴カードの
+        // revalidation gate は「開始」ではなく成功完了を待つため、ハプティクスとは分ける。
+        shouldObserveCardToolCall: (@Sendable () async -> Bool)? = nil,
+        onCardToolCallCompleted: (@Sendable (_ succeeded: Bool) async -> Void)? = nil,
         // ui/open-link の実行フック(既定 nil = 常に拒否)。本番は Features が UIApplication.open へ配線する。
         onOpenLink: (@Sendable (URL) async -> Bool)? = nil
     ) {
@@ -116,7 +120,9 @@ public actor AppsBridgeSession {
         self.passthroughDispatcher = AppsBridgePassthroughDispatcher(
             transport: transport,
             proxy: proxy,
-            onCardToolCall: onCardToolCall
+            onCardToolCall: onCardToolCall,
+            shouldObserveCardToolCall: shouldObserveCardToolCall,
+            onCardToolCallCompleted: onCardToolCallCompleted
         )
         self.hostInfo = hostInfo
         self.containerWidth = containerWidth
@@ -147,33 +153,6 @@ public actor AppsBridgeSession {
                 await self.handleIncoming(item.message)
             }
         }
-    }
-
-    // MARK: - Host→View API(basic-host implementation.ts:229/235 と同じ語彙)
-
-    /// ツール入力(arguments)を tool-input 通知として送る。ready 前なら outbox へ積む。
-    public func sendToolInput(arguments: JSONValue) async {
-        let params = ToolInputParams(arguments: arguments)
-        let note = JSONRPCNotification(
-            method: AppsMethod.toolInput,
-            params: try? JSONValue(encoding: params))
-        await enqueueOrSend(note, label: "tool-input")
-    }
-
-    /// ツール結果(CallToolResult 相当の JSON をそのまま)を tool-result 通知として送る。
-    /// params は CallToolResult を **JSONValue のまま素通し**(設計 §3 のロスレス要件)。
-    public func sendToolResult(_ raw: JSONValue) async {
-        let note = JSONRPCNotification(method: AppsMethod.toolResult, params: raw)
-        await enqueueOrSend(note, label: "tool-result")
-    }
-
-    /// ツールキャンセルを送る(結果取得に失敗したとき等)。
-    public func sendToolCancelled(reason: String) async {
-        let params = ToolCancelledParams(reason: reason)
-        let note = JSONRPCNotification(
-            method: AppsMethod.toolCancelled,
-            params: try? JSONValue(encoding: params))
-        await enqueueOrSend(note, label: "tool-cancelled")
     }
 
     /// コンテナ幅の変化を View に伝える(host-context-changed・設計 §5)。
@@ -382,7 +361,7 @@ public actor AppsBridgeSession {
     // MARK: - outbox / 配送ヘルパ
 
     /// ready なら即送信、そうでなければ outbox に積む(MUST NOT の機械的遵守)。
-    private func enqueueOrSend(_ note: JSONRPCNotification, label: String) async {
+    func enqueueOrSend(_ note: JSONRPCNotification, label: String) async {
         if state == .ready {
             await delivery.send(note)
             logger.notice("\(label, privacy: .public) 即送信(ready)")

@@ -1,88 +1,214 @@
-# 次の方向性（2026-07-23 第4版）
+# 次の方向性（2026-07-23 第5版）
 
-> **位置づけ:** セッション引き継ぎの正典。ここには現在地、着手順、未完了タスクだけを置く。
-> **更新ルール:** 完了は打ち消し線 + ✅、状況変化は該当箇所へ`> **YYYY-MM-DD 更新:**`を
-> 積層し、時系列の生記録は`docs/log.md`へ追記する。棚卸し時も完了計画を削除せず、版全体を
-> 日付付きarchiveへ退避してこの文書から辿れるようにする。
-> **履歴:** 第3版の全文は
-> [`docs/archive/next-directions-v3-2026-07-23.md`](archive/next-directions-v3-2026-07-23.md)、
-> 第2版までの完成計画・判断根拠・参照スタックは
-> [`docs/archive/next-directions-v2-2026-07-23.md`](archive/next-directions-v2-2026-07-23.md)。
+> **位置づけ:** セッション引き継ぎの正典。goal達成状況、未完了タスク、所有者、着手順だけを置く。
+> 完了計画と判断の履歴は
+> [第4版](archive/next-directions-v4-2026-07-23.md)、
+> [第3版](archive/next-directions-v3-2026-07-23.md)、
+> [第2版](archive/next-directions-v2-2026-07-23.md)を参照する。
+> 状況変化は該当箇所へ `> **YYYY-MM-DD 更新:**` を積層し、生記録は `docs/log.md` へ追記する。
 
-## セッション開始時の現在地（2026-07-23）
+## Goal達成状況
 
-- **製品基盤:** MCP Apps host、OpenAI互換tool-use、OAuth、複数server、履歴、inline↔fullscreen、
-  app-only tool隔離まで実装済み。モデルへ広告したdefinition・明示route・カード帰属は同じ集合から生成し、
-  未広告toolはChatHomeのexecutorでfail-closedにする。カード内部のapp-only呼出しだけは維持する。
-- **検証基盤:** `make check`はKernel/Servicesのbuild・206 tests / 21 suites・baselineなしlint、
-  `make app`はSwiftUIを含むSimulator build、`make verify`は両方を束ねる。tracked pre-push hookは通常の
-  main pushで`make verify`を実行する。複数端末では`make run SIMULATOR_UDID=<UDID>`を必須とする。
-- **Simulator skill:** 汎用CLI操作は`ios-simulator`、MCPHost固有のbuild・認証・ログ・カードE2Eは
-  project `ios-e2e-verify`を使い分ける。どちらも必要で、一方へ統合しない。
-- **横操作の所有権:** drawerのopen gestureは物理左端24pt、close gestureは開状態で露出する
-  main cardだけに限定する。中央WKWebViewとsidebar/listにはhost横gestureを置かず、MCP App内の
-  横操作はWKWebViewが所有する。履歴管理は標準context menu（pin・rename・確認付きdelete）へ集約する。
-- **現在の主要slice:** composer tool picker、iOS agent harness正式比較、caldav本番を使う残E2E。
-- **承認待ち:** pickerの4 UX判断、外部`codex exec`へrepo文脈を渡すblind、固定版stock Bの実行、
-  caldav本番の一時書込と専用SimulatorへのCalDAV account追加。実credentialは入力せず、ユーザーが
-  用途と値を明示したdisposable fixture（現状`changeme`）だけを使う。
-- **外部待ち:** Claude Code parityはrate limit解消後に再開する。harnessの採用判断前に現行fallbackを
-  削除しない。
-- **着手順:** ①picker方針の合意→実装・回帰 ②承認後にD blindと固定版B→差がある試験だけC
-  ③caldav書込承認後にagenda/open-link/標準Calendar・Reminders往復 ④raw trace採点・採用判断・
-  generic/pluginとproject skillへの反映 ⑤Claude parity。
+| Goal | 状態 | 判定 |
+| --- | --- | --- |
+| Swift製の汎用MCP Apps host | **MVP達成** | OAuth、tool-use、WKWebView bridge、inline↔fullscreen、履歴、複数server、app-only隔離まで実装・E2E済み。P0〜P4-DMの履歴は第2版に保存 |
+| 汎用ホストとしての中立性 | **MVP達成・拡張継続** | caldav固有解釈をhostへ入れず、definition・route・attributionを同じ集合から生成。将来のnetwork permission / geolocationは未実装 |
+| SaaSへ差し替え可能な構造 | **準備達成** | LLM呼出しはServicesの中立protocolとOpenAI互換adapterへ集約。Workers proxy、metering、billingは授業外の将来実装 |
+| 品質・再現可能なdelivery | **基盤達成** | `make verify`、baselineなしlint、tracked pre-push hook、明示Simulator UDID、実機build/install/launchを確立 |
+| Claude Code / Codex共有harness | **基盤達成・parity継続** | instructions・project skill・hookはsymlink共有。Apple Xcode MCPは実働確認済み。Codex DesktopのOpenAI公式`build-ios-apps`はH-01/K-01 Pass。Claude parityだけ継続中 |
+| 授業提出 | **技術MVP達成・提出物未確定** | repoは動作可能。正式rubric、プレゼン、CI要否は外部入力待ち |
+
+## 現在のworking tree
+
+- **delivery待ち:** 履歴カードlive island + revalidation gate、drawer gesture分離、tool route堅牢化を
+  同じ意図的sliceとして実装済み。履歴revalidation時点では215 tests / 23 suites、lint 0、
+  generic Simulator build、iPhone 12 miniへのinstall / launchまで成功したが、まだcommit / pushしていない。
+- **最新gate:** 棚卸し中に追加されたsidebarの「ピン留め / 最近の項目」分離を含めると215 testsは成功するが、
+  `ChatHistorySidebar`が251行となりSwiftLintのtype body 250行上限を1行超える。`make verify`はlintで停止し、
+  app build / 実機deployを行っていない。disableや閾値変更ではなくsection責務を抽出して直す。
+- **履歴refreshの境界:** Swift hostは保存resultへnamespaced hintを付け、App自身のrefresh成功まで
+  操作をfail-closedにする。caldav todos/agenda側のhint対応が未実装なので、現状は古い本文を編集可能にしない。
+  > **2026-07-23 更新: 方針転換 — gate/hint機構は撤去へ。** caldav側の一次資料裁定
+  > (modeling/15・楽観復元の本番実測・SWR実装 56551ac)を本セッションでレビューし採択した。
+  > 根拠: ①hintはホスト固有プロトコルでサードパーティカードが履歴上永久操作不能=汎用ホスト不成立
+  > ②RFC 5861 SWR思想の逆 ③ext-appsに標準化の足場なし ④host再push経路(`sendInitialPayload`)は
+  > 残るためcaldavの`generatedAt`60秒判定がホスト協力ゼロで成立する(focus/visibility配送も不要)。
+  > 影響面調査済み: 撤去対象は`HistoricalCardRevalidationGate.swift`・
+  > `Kernel/AppsProtocol/HistoricalRevalidation.swift`・`AppsBridgePassthroughDispatcher`の
+  > tools/call観測(gate専用)・InlineCardView/HistoryDetailView/InlineCardPresentation/
+  > AppsBridgeSessionの配線・`AppsProtocolTests`のgateテスト。`HistoricalCardRouting.swift`は
+  > 別責務(保存カードの接続再解決)なので残す。実装はqueue 2(差し替え済み)。
+- **Xcode Issue Navigator:** Apple公式 `xcrun mcpbridge` で3 warningを検出した。
+  `InlineCardView.swift`のSwift 6 captured-`self`警告2件と、
+  `AppsBridgeSession.swift`の不要な`await`1件。delivery前に解消して再検証する。
+  > **2026-07-23 更新: 解消済み ✅。** 実測ではInlineCardViewのcaptured-`self`は3件+
+  > `onOpenLink: Self.openLink`直渡しのSendable警告1件で、内側`MainActor.run`への独立
+  > `[weak self]`付与と無キャプチャクロージャ包みで構造的に修正。AppsBridgeSessionの
+  > 不要`await`は`+ToolDelivery.swift`分割時点で既に消えていた(記述がstaleだった)。
+  > あわせて`ChatHistoryRow`を`ChatHistorySidebarComponents.swift`へ抽出しtype body lintも解消。
+  > `make verify`完走・警告grep 0件。
+- **実操作確認:** drawerのMCP App gesture隔離と履歴refreshは、実装・自動testとは別に
+  専用Simulatorまたは実機で最終触感を確認する。
+
+## Codex固有調査
+
+- [x] ~~Codex公式plugin / marketplace / cache / scopeを現行公式資料とローカル実測で照合する。~~ ✅
+- [x] ~~OpenAI公式`build-ios-apps` 0.1.2（cache revision `d6169bef`）をglobal Codexへinstall / enableし、
+  新規`codex exec` sessionで`ios-debugger-agent`をロードする。~~ ✅
+- [x] ~~OpenAI公式stock `build-ios-apps`でH-01を実測し、固定版XcodeBuildMCP、simctl+idbと比較する。~~ ✅
+  > **2026-07-23 更新:** 初回stock実行は`codex mcp list`に`xcodebuildmcp`がenabledで現れ、skillも
+  > 読み込めたが、`npx -y xcodebuildmcp@latest`の初回取得が60秒無出力のまま終了コード130となり、
+  > MCP toolsは公開されなかった。同時にCodexが`No space left on device`を報告し、Data volumeは
+  > 100%・空き2.4 GiBだったため、plugin不合格ではなく**環境阻害 / No score**とする。
+  > **2026-07-23 再更新:** 空き14 GiBへ復旧し、`xcodebuildmcp@latest` 2.6.2の取得を完走して再試験した。
+  > server自体は約0.2秒で起動・initialize成功したが、stock設定は2.6.2で未知の`logging`を含み、44 tools / 約63,469 tokensの
+  > `tools/list`となった。fresh Codexは30秒でtool schema取得timeoutし、必須tool 0件のためH-01開始不能。
+  > **2026-07-23 再々更新:** 上記から互換性不合格と断定した判断を撤回する。同一command / args / envへ
+  > `startup_timeout_sec=120`だけを加えたfresh sessionでは44 toolsが公開され、Harness Bへ
+  > build / install / launch（56.8秒）、49要素のsemantic snapshot、screenshotまでfallbackなしで成功した。
+  > macOS / Xcode許可promptも出なかった。確定した問題は既定30秒のstartup deadlineであり、schema量は相関まで。
+  > CLIではplugin installed / enabledだが、起動済みCodex Desktopのplugin一覧と本taskのskill snapshotには未反映。
+  > Desktop再起動後の新規taskで表示・stock実行を確認し、K-01後に採否を決める。
+  > **2026-07-23 再々々更新:** Codex Desktopから`Build iOS Apps`を有効化し、現在sessionへplugin由来skill群と
+  > `xcodebuildmcp`が公開された。Desktop未反映は解消。次はこのsessionでK-01を実行する。
+- [x] ~~Codex DesktopのOpenAI公式`build-ios-apps`でK-01を実測し、semantic入力訂正を評価する。~~ ✅
+  > **2026-07-23 更新:** stock pluginが現在taskで追加設定なしに起動し、Harness Bへのbuild / install / launch
+  > （12.5秒）とK-01を完走した。日本語はclipboard + semantic Paste、誤URLはASCII入力、backspace、
+  > Select All / Pasteで訂正し、blur時のvalidation出現・解消、キャンセル後の未保存を確認した。
+  > `replaceExisting:true`は日本語IME下でも成功応答を返しつつ文字化けしたため、操作後snapshotの値検証を必須とする。
+  > macOS / Xcode許可promptは0。clipboard用`xcrun simctl pbcopy`だけCodex sandbox許可が必要だった。
+- [x] ~~Apple公式Xcode MCPを実接続し、X-01（window取得 + Issue Navigator）を確認する。~~ ✅
+- [x] ~~agent Simulator操作の証拠階層と採用方針を確定する。~~ ✅
+
+詳細と公式出典は
+[`docs/codex-plugin-and-ios-agent-audit.md`](codex-plugin-and-ios-agent-audit.md)、
+試験履歴は[`docs/ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)を正とする。
 
 <!-- session-head-end: SessionStartフックはここまでを常時注入する。以下は未完了タスクだけを置く。 -->
 
-## 1. ユーザー合意・承認gate
+## Codex次session queue（公式plugin benchmark）
 
-- [ ] [`docs/design/06-composer-tool-picker.md`](design/06-composer-tool-picker.md)の推奨4点を合意する。
-  chat単位freeze、発話後の変更はnew chat確認、app-onlyはread-only補助表示、履歴へtool snapshot保存。
-- [ ] Dの正式blind用に、repo contextを外部`codex exec`へ渡すことを承認する。
-- [ ] unpinnedな`@latest`を避け、解決した固定versionでstock Bを実行することを承認する。
-- [ ] caldav本番へ明示名のテスト予定・リマインダーを作成→確認→削除し、専用Simulatorへ
-  CalDAV accountを追加することを承認する。日常用Simulatorは使わない。
+- H-01 / K-01のDesktop実測は完了。追加のbenchmark taskはない。
+- delivery後、必要ならO-01 / W-01を公式pluginで各1回だけparity確認する。実credentialは扱わない。
 
-## 2. Composer tool picker
+## Fableへ渡す実装queue
 
-- [ ] 合意後、設定の永続「自動接続」とcomposerのchat単位「このチャットで使用」を分離する。
-- [ ] stable keyを`ToolKey(serverID, originalToolName)`とし、server renameや64字wire短縮に耐える。
-- [ ] 選択集合からLLM definition・executor route・UI attribution・表示名を原子的に生成する。
-- [ ] picker sheet、44pt hit area、VoiceOver、接続状態、0件、tool増減、draft/session保持を実装する。
-- [ ] 純関数・統合testと専用Simulator回帰で、未広告拒否とapp-only card call維持を証明する。
+1. **現在のdirtyをdeliveryする**
+   - `ChatHistorySidebar`のsection構築を既存components側へ抽出し、type body lintを解消する。
+   - Xcode warning 3件を構造的に解消する。
+   - `make verify`、専用Simulatorのgesture/revalidation確認、実機build/install/launchを再実施する。
+   - docsとの整合を確認し、現在の意図的sliceをcommit / pushする。
+2. ~~**caldavで履歴revalidationを完成させる**~~ → **履歴revalidation gateを撤去する**(2026-07-23差し替え)
+   - 前提が崩れた: caldav側はhint対応不要と裁定し、SWR(generatedAt 60秒判定)を本番実装済み(56551ac)。
+   - `HistoricalCardRevalidationGate.swift`と`Kernel/AppsProtocol/HistoricalRevalidation.swift`を全撤去し、
+     `sendInitialPayload`は素のstructuredContent送信へ簡素化する。
+   - `AppsBridgePassthroughDispatcher`のtools/call観測(gate専用の存在理由)と、
+     InlineCardView / HistoryDetailView / InlineCardPresentation / AppsBridgeSessionの
+     `requiresHistoricalRevalidation`配線・overlay UIを除去する。`HistoricalCardRouting.swift`は残す。
+   - `AppsProtocolTests`のgateテストを削除し、履歴復元で保存済みtoolResultが再pushされること
+     (caldavのSWR発火条件)をテストで固定する。
+   - E2E: 履歴カードが即操作可能で、60秒超の古いカードは背景revalidateされることをcaldav本番で確認する。
+3. **再現可能なnative UI回帰層を追加する**
+   - `MCPHostUITests`と安定したaccessibility identifierを追加する。
+   - connection validation、drawer/context menu、reparent spike、履歴revalidation gateから固定する。
+   - live OAuth / caldav本番はpre-push必須にせず、project E2Eへ残す。
+4. **共有harness sourceを中立化する**（`gigun-dev/claude-code`へscopeを移してから）
+   - generic `ios-simulator`を明示UDID、bounded poll、実行時scaleへ直す。
+   - `ios-device-build`の`~/.claude/...`ハードコードを実行中skillからの相対pathへ直す。
+   - 触るpluginから`.codex-plugin/plugin.json`とroot `.mcp.json`を追加し、隔離installで検証する。
+5. **Composer tool picker**
+   - [design/06](design/06-composer-tool-picker.md)の4判断をユーザー合意後に実装する。
+   - chat単位freeze、stable `ToolKey`、atomic surface、44pt/VoiceOver、session保持をtestする。
+6. **caldav残E2Eとagenda**
+   - 予定行色、filter、追加・終日保存、action-row、open-link、C3/C4を確認する。
+   - fullscreen月grid、日timeline、echo pinの`calendarId`問題を順に扱う。
+7. **ツール許可ゲート(R4・caldav申し送り採択)**
+   - 影響面調査済み: annotationsは現状一切パースしていない。`ToolConversion.swift`でMCP
+     `tool.annotations`(readOnlyHint/destructiveHint等)を`ToolDefinition`へ保持する所から始める。
+   - 挿入点は`ToolCallRunner.executeValid`の`callTool`直前。カード発は`AppsServerProxy.callTool`側。
+   - UXはclaude.aiカスタムコネクタと同じ境界(常に許可/毎回確認(既定)/拒否)。queue 5のpickerと
+     surface設計を揃える。annotationsはuntrusted hintなので既定は確認側に倒す。
+8. **後続設計**
+   - claude.ai iOSでcaldavカードのみ描画失敗する問題の切り分け(下記「caldavセッションからの申し送り」後注)。
+   - fullscreen UX再確認: キーボード閉じはカード側根因修正済み(caldav ce7d5aa)なので再現確認から。
+     カード成長起点の自動スクロール追従(`ChatBodyView`のscrollTo群)はmodeling/15 §B採用に伴い
+     削減方向で見直す(カード発のスクロール要求機構はもともと存在しない)。
+   - 観測: クラッシュのみSentry(SPM sentry-cocoa)、行動イベントはcaldav telemetry v1が真実源。
+     セッションIDを`_meta["gigun.dev/session"]`で透過しSentry scopeへ同じIDを置く。
+   - 書込前HITL確認カード、C6+C7 geocode/map、宣言型network permission、geolocation。
 
-## 3. iOS agent harness正式評価
+## 採用済みiOS agent harness
 
-試験票、prompt、固定環境、合格条件、artifact、raw結果の正は
-[`docs/ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)。予備調査やmain独立再実行を
-構成間blind比較の代用にしない。
+1. `make check/app/verify` — fast gate
+2. Apple Xcode MCP — Apple docs、Xcode build/test/log、Issue Navigator、file diagnostics、Preview
+   （runtime UI操作とlint / pre-push gateの代替には使わない）
+3. source-controlled XCUIAutomation — 安定したnative UI回帰
+4. `ios-simulator`（simctl + idb）— 明示UDID、accessibility-firstの汎用fallback
+5. OpenAI公式`build-ios-apps` — Codex Desktopでのsemantic ref、入力訂正、log/debugを伴う探索E2E
+6. **固定版**XcodeBuildMCP最小workflow — versionを固定した再現可能な探索E2Eと公式pluginの診断arm
+7. project `ios-e2e-verify` — OAuth、caldav、WKWebView、JS状態、unified log
+8. 実機 — 通常のiOS変更後はbuild/install/launchまで行う
 
-- [ ] 承認後、未完了のD H-01/K-01と、A/B/DのO-01・W-01・L-01・M-01を規定回数blind実行する。
-  AのH-01/K-01（ASCII、日本語、backspace、全選択/置換を含む）は完走済みで再実行しない。
-- [ ] Bの失敗が依存version由来の場合だけCで該当試験を診断する。
-- [ ] main sessionがraw traceを採点し、採用候補のO-01/W-01を独立再実行する。
-- [ ] 採用結果を確定し、generic知識はuser plugin、MCPHost固有知識は`ios-e2e-verify`へ反映する。
-- [ ] Claude Codeのrate limit解消後、同じ候補でH-01/O-01とprovider非依存性を再検証する。
+OpenAI公式stock `build-ios-apps`はCodex Desktopの探索E2Eへ**条件付き採用**する。H-01/K-01はPassしたが、
+`@latest`の浮動依存、0.1.2 skillのtool名drift、CLI既定30秒のstartup timeout、IME下での
+`replaceExisting:true`成功応答と実値の不一致は残る。恒久回帰はXCUIAutomation、再現可能な診断は固定版を使い、
+plugin操作後はsemantic snapshotで値を再確認する。
 
-## 4. caldav連携の残E2E
+## ユーザー・外部待ち
 
-- [ ] agendaの予定行色、色filter、追加・終日保存、action-row、カード内部scroll消滅を確認する。
-- [ ] 会議「参加」のopen-linkとC3/C4作成を確認する。
-- [ ] 専用Simulatorの標準Calendar/RemindersへCalDAV accountを追加し、URL/CONFERENCE等を裏取る。
-- [ ] 本番書込を行う各試験は明示名fixtureを作成し、確認後に削除して残存物がないことを確かめる。
+- pickerの4 UX判断を最終確定する。
+- caldav本番へ明示名fixtureを作成→確認→削除すること、および専用SimulatorへCalDAV accountを
+  追加することは、実行直前に対象を再確認する。
+- 授業のrubric、提出形式、プレゼン期限が分かり次第、presentation / CIをscopeする。
+- Claude Codeのrate limit解消後、採用済みharnessのH-01/O-01だけprovider parity確認する。
 
-## 5. 後続slice（順序を維持）
+## 完了条件
 
-- [ ] fullscreenのリスト/月/日切替と月grid（合意済みagenda-views-v6）を実装・検証する。
-- [ ] 日timeline（現在時刻線、重なり解決、終日chip帯）を実装・検証する。
-- [ ] agenda echo pinが全collection取得から単一`calendarId`へcollapseする問題を直すか決める。
-- [ ] 書き込み前human-in-the-loop確認カードを設計する。
-- [ ] C6+C7 geocode/mapと監査LOW残件を処理する。
-- [ ] reasoning表示、宣言型network permission、geolocationを将来sliceとして扱う。
+- 各sliceは実装、対応test、必要な専用Simulator E2E、`make verify`、実機再deploy、docs/log、
+  commit / pushまでを一単位とする。
+- agentの探索操作だけを恒久回帰とみなさない。安定したnative flowはXCUIAutomationへ昇格する。
+- 実credentialは入力しない。ユーザーが値と用途を明示したdisposable fixtureだけを扱う。
 
-## 6. 完了・棚卸し条件
+## caldav セッションからの申し送り(2026-07-23・caldav 側 Claude Code セッションが追記。コミットは本セッションに委ねる)
 
-- 現sliceの完了は、対象実装だけでなく対応test、必要な専用Simulator E2E、`make verify`、docs/log反映を要する。
-- SessionStart hookはheadだけを注入し、マーカー以降の行数と更新block数を測る。
-- 閾値超過時は完了済み計画を日付付きarchiveへ移し、最新docからリンクする。archiveは削除しない。
-- 詳細な試験票・設計・時系列記録は各専用docを正とし、この文書へ結果全文を重複させない。
+caldav 側の設計転換・実測に伴う swift-mcp-app への提案・依頼。根拠の詳細は
+caldav リポジトリ docs/next-directions.md の 2026-07-23 更新ブロック群と docs/modeling/15。
+
+1. **履歴カード revalidation ゲート(fail-closed)の撤去を推奨。**
+   - claude.ai web の履歴復元は楽観復元と実測確認(履歴を複数遡っても tool call ほぼゼロ・
+     focus 時のみカード自身の refetch が発火。caldav 本番ログ 2026-07-23)。
+   - hint(dev.gigun.mcphost/historical-revalidation)はホスト固有プロトコルで、
+     知らないサードパーティカードは履歴上で永久操作不能になる=汎用ホストとして不成立。
+   - RFC 5861(stale-while-revalidate)の設計思想(stale を出して背景検証・エラー時こそ
+     stale)と逆。ext-apps 仕様にこの種の gate/hint を標準化する足場も無い。
+   - caldav 側は代替として view model に generatedAt を追加し「60秒超の古い push は
+     カード自身が背景 revalidate」する SWR を実装済み(deploy 56551ac)。ホストの責務は
+     素の focus/visibility イベントを WebView に届けることだけ(無くても成立する)。
+2. **ツール許可ゲート(R4)**: ToolCallRunner.executeValid の手前に annotations 駆動の
+   per-tool 許可(常に許可/毎回確認/拒否・claude.ai カスタムコネクタと同じ境界モデル)。
+   caldav は全23+ツールに annotations(readOnlyHint/destructiveHint 等)を申告済み。
+3. **fullscreen UX**: キーボードが勝手に閉じる問題はカード側根因(シート表示中の破壊的
+   renderAll)と判明し caldav 側で修正済み(ce7d5aa)。swift 側は再現確認から。
+   スクロール過剰発火は「カードはプログラム的スクロールを要求しない」原則(caldav
+   modeling/15 §B)採用後は発火機構ごと削る方向を推奨。HostContext.safeAreaInsets は
+   ホストクローム分を含めて正道申告する(カードは申告を第一優先で読む実装済み)。
+4. **観測**: クラッシュは Sentry(SPM sentry-cocoa・privacy manifest)のみ導入を推奨。
+   行動イベントはサーバー(caldav telemetry v1)が真実源なのでクライアントで二重計測
+   しない。相関は tools/call の _meta["gigun.dev/session"] にセッション ID を透過し、
+   同じ ID を Sentry scope へ。
+
+> **2026-07-23 後注(本セッション裁定):** 上記1〜4を根拠レビュー(modeling/15・実測ログ・
+> 実装コミット56551ac/ce7d5aa・Swift側影響面調査)の上ですべて採択した。1はqueue 2へ差し替え、
+> 2はqueue 7、3・4はqueue 8へ反映済み。
+>
+> **別件・claude.ai iOSのcaldavカード描画失敗(要切り分け):** claude.ai iOSアプリで
+> caldavカードだけ「MCPアプリの読み込みに失敗しました サーバーに接続できません」となる。
+> 事実関係: ①同端末・同会話でTDR Wait Timesカードは描画される=モバイル全面未対応ではない
+> ②web/Desktopではcaldavも描画される=契約自体は有効 ③失敗時、caldav Workersログに
+> resources/read相当の到達なし・`Claude-User` UAのtools/callは全成功 ④近接時刻に
+> `401 invalid_token`が単発2回(23:46:40/23:54:40 UTC・UA未記録)。
+> 有力仮説: (a) iOSアプリのカードレンダラーがOAuth必須サーバーでのresource取得に
+> token を正しく載せない/失効tokenを使う(TDRは認証構成が異なり成立する説)、
+> (b) caldavのUIリソースサイズ(bundle約1MB超)がモバイル側の上限に当たる。
+> 次の一手: TDR側の認証方式・resourceサイズを caldav と突き合わせ、caldav側で
+> 最小HTMLのテスト用app resourceを1つ生やしてiOSで描画可否を見る(サイズ説と認証説を分離)。

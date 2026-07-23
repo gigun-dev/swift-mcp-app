@@ -155,6 +155,8 @@ public final class ChatViewModel {
         uiResourceURIs: [String: String] = [:],
         serverNames: [String: String] = [:],
         originalToolNames: [String: String] = [:],
+        serverIDs: [String: UUID] = [:],
+        serverURLsByTool: [String: URL] = [:],
         traceSink: (any TraceSink)? = nil,
         sessionId: String = UUID().uuidString,
         serverURL: URL = ChatViewModel.placeholderServerURL,
@@ -167,6 +169,8 @@ public final class ChatViewModel {
             resourceURIs: uiResourceURIs,
             serverNames: serverNames,
             originalToolNames: originalToolNames,
+            serverIDs: serverIDs,
+            serverURLs: serverURLsByTool,
             traceSink: traceSink
         )
         self.tools = tools
@@ -389,11 +393,5 @@ public final class ChatViewModel {
         turns[assistantIndex].toolSteps = batch.steps
         turns[assistantIndex].cards.append(contentsOf: batch.cards)
         wireMessages.append(contentsOf: batch.wireMessages)
-    }
-
-    typealias ArgumentsDecodeResult = ToolCallRunner.ArgumentsDecodeResult
-
-    static func decodeArguments(_ raw: String) -> ArgumentsDecodeResult {
-        ToolCallRunner.decodeArguments(raw)
     }
 }

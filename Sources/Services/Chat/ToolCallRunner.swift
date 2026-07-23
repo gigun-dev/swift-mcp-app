@@ -40,6 +40,10 @@ struct ToolCallRunner: Sendable {
     /// slug を逆算できないため、完全な wire 名で引いて ToolCallStep へ当時値を焼き付ける。
     private let serverNames: [String: String]
     private let originalToolNames: [String: String]
+    /// wire tool 名からカード生成元を復元するための安定 provenance。UI 層が slug を推測せず、
+    /// 履歴カードを同じ登録・同じ endpoint にだけ再接続するため CardEmbed へ焼き付ける。
+    private let serverIDs: [String: UUID]
+    private let serverURLs: [String: URL]
     private let traceSink: (any TraceSink)?
 
     init(
@@ -47,12 +51,16 @@ struct ToolCallRunner: Sendable {
         resourceURIs: [String: String],
         serverNames: [String: String],
         originalToolNames: [String: String],
+        serverIDs: [String: UUID],
+        serverURLs: [String: URL],
         traceSink: (any TraceSink)?
     ) {
         self.executor = executor
         self.resourceURIs = resourceURIs
         self.serverNames = serverNames
         self.originalToolNames = originalToolNames
+        self.serverIDs = serverIDs
+        self.serverURLs = serverURLs
         self.traceSink = traceSink
     }
 
@@ -123,6 +131,9 @@ struct ToolCallRunner: Sendable {
             return CardEmbed(
                 toolName: result.toolName,
                 resourceUri: uri,
+                serverID: serverIDs[result.toolName],
+                serverURL: serverURLs[result.toolName],
+                originalToolName: originalToolNames[result.toolName],
                 snapshotHTML: nil,
                 structuredContent: result.result,
                 arguments: result.arguments

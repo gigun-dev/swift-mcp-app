@@ -134,6 +134,9 @@ struct ChatTurnView: View {
                         // .zoomTransition(id: host.id) と同じ id/namespace で「その場から拡大」になる。
                         // iOS 18+ でのみ効き、未満では no-op。
                         .zoomSource(id: host.id, in: cardZoom)
+                        // ChatHome の swipe-open は、このカードが占める現在の縦帯から始まった場合だけ
+                        // 拒否する。WKWebView 内 carousel/graph/slider の横操作を host が奪わない境界。
+                        .reportsMCPAppGestureFrame()
                         }  // if let proxy = cardProxyResolver(...)
                     }
                 }

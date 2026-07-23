@@ -19,9 +19,14 @@ extension ChatViewModelTests {
         ])
         let structured: JSONValue = .object(["todos": .array([.string("a")])])
         let executor = StubToolExecutor(results: ["list-todos": structured])
+        let serverID = UUID()
+        let serverURL = URL(string: "https://caldav.example/mcp")!
         let viewModel = ChatViewModel(
             llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
-            uiResourceURIs: ["list-todos": "ui://todos/list"])
+            uiResourceURIs: ["list-todos": "ui://todos/list"],
+            originalToolNames: ["list-todos": "list-todos"],
+            serverIDs: ["list-todos": serverID],
+            serverURLsByTool: ["list-todos": serverURL])
 
         await viewModel.send("todos 見せて")
 
@@ -33,6 +38,9 @@ extension ChatViewModelTests {
         #expect(cards[0].resourceUri == "ui://todos/list")
         #expect(cards[0].structuredContent == structured)
         #expect(cards[0].arguments == .object(["filter": .string("open")]))
+        #expect(cards[0].serverID == serverID)
+        #expect(cards[0].serverURL == serverURL)
+        #expect(cards[0].originalToolName == "list-todos")
         // 二重配布維持: role:tool テキストも従来どおり LLM へ渡る(JSON)。
         let toolMsg = llm.receivedRequests[1].messages.first { $0.role == .tool }
         #expect(toolMsg?.content?.contains("todos") == true)

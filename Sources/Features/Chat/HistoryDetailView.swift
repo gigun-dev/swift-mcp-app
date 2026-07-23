@@ -1,24 +1,38 @@
 // 読み取り専用の履歴詳細ビュー(T6 後半・タスク指示 C-3・設計 §5)。
 //
-// 過去セッション(ChatSession・純データ)を ChatBodyView 風に描画するが **read-only**:
-// composer(入力欄)を持たず、ライブ接続(ChatViewModel / AppsServerProxy / LLM)にも一切触れない。
-// カードはスナップショット HTML を StaticCardView で**静的表示**するだけ(設計 §5「過去セッションで
-// 再実行しない=副作用ゼロ」)。ここが副作用ゼロの担保点。
+// 過去セッション(ChatSession・純データ)の会話本文は **read-only** のまま描画する。composer や LLM
+// 再開口は持たない。一方、MCP App カードは生成元と現在の ready 接続を安全に同定できた場合だけ
+// live island として bridge を再構築する。元 tool は再実行せず、保存済み tool-input / tool-result を
+// 配送して初期表示し、それ以後のカード内 tools/call だけを現在の同一 MCP へ流す。
 //
 // ChatBodyView との関係: 吹き出し・ツールステップの見た目は ChatBodyView に寄せる。ただし
 // ChatBodyView は ChatViewModel(ライブ)前提で composer やカード構築(InlineCardView)を持つため
 // 流用せず、read-only の描画だけを持つ別 View にする(過剰共通化はしない・タスク指示)。ツール
 // req/res 展開行だけは共通の ToolStepRow(ChatBodyView.swift・internal)を再利用する。
 import SwiftUI
+import UIKit
 import Kernel   // ChatSession・ChatTurn・ToolCallStep・CardEmbed・ChatMessage.Role・JSONValue
+import Services // AppsServerProxy
 
 struct HistoryDetailView: View {
     let session: ChatSession
+    let cardConnectionResolver: (CardEmbed) -> HistoricalCardConnection?
 
     // 静的カードのセッション台帳(StaticCardView.swift)。@State で1個所有し、スクロール再生成でも
     // 同じ host を引いて WKWebView を作り直さない(StaticCardRegistry のコメント参照)。
-    // ライブと違い proxy は不要(snapshotHTML を静的ロードするだけ・設計 §5)。
+    // provenance解決不能時だけ使い、proxy無しでsnapshotHTMLを静的ロードする。
     @State private var cardRegistry = StaticCardRegistry()
+    /// live 復元できたカードだけを保持する台帳。履歴画面を閉じるまで card の操作状態を維持する。
+    @State private var liveCardRegistry = InlineCardRegistry()
+    @State private var fullscreenCoordinator = FullscreenCoordinator()
+    @State private var haptics = ChatHapticsController()
+    @State private var columnWidth: CGFloat = 0
+    @State private var visibleHeight: CGFloat = 0
+    @Namespace private var cardZoom
+
+    private var inlineMaxHeight: CGFloat {
+        (visibleHeight * 0.65).rounded(.down)
+    }
 
     var body: some View {
         ScrollView {
@@ -27,11 +41,49 @@ struct HistoryDetailView: View {
                     turnView(turn, turnIndex: index)
                 }
             }
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: ColumnWidthKey.self, value: geo.size.width)
+                }
+            )
             .padding(.horizontal, 12)
             .padding(.vertical, 14)
         }
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: VisibleHeightKey.self, value: geo.size.height)
+            }
+        )
+        .onPreferenceChange(ColumnWidthKey.self) { columnWidth = $0 }
+        .onPreferenceChange(VisibleHeightKey.self) { visibleHeight = $0 }
         .navigationTitle(session.title.isEmpty ? "履歴" : session.title)
         .navigationBarTitleDisplayMode(.inline)
+        .task { haptics.prepareAll() }
+        .fullScreenCover(item: activeHostBinding) { host in
+            FullscreenCardView(host: host)
+                .zoomTransition(id: host.id, in: cardZoom)
+        }
+        // 履歴カード内の編集フォームも通常カードと同じ keyboard avoidance を使う。fullscreen は
+        // WKWebView 自身の内部スクロールへ任せ、zoom 中に元カードの座標を動かさない。
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            guard fullscreenCoordinator.activeHost == nil else { return }
+            InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { note in
+            guard fullscreenCoordinator.activeHost == nil else { return }
+            InlineCardKeyboardAvoider.handleKeyboardWillShow(note)
+        }
+        .onDisappear {
+            liveCardRegistry.teardownAll()
+            fullscreenCoordinator.activeHost = nil
+        }
+    }
+
+    private var activeHostBinding: Binding<InlineCardHost?> {
+        Binding(
+            get: { fullscreenCoordinator.activeHost },
+            set: { if $0 == nil { fullscreenCoordinator.dismiss() } }
+        )
     }
 
     // MARK: - 1ターン(ChatBodyView.turnView の read-only 版)
@@ -56,7 +108,7 @@ struct HistoryDetailView: View {
                         Spacer(minLength: 40)
                     }
                 }
-                // カード: snapshotHTML があれば静的表示、無ければプレースホルダ。
+                // 会話本文は固定だが、安全に由来を解決できるカードだけ live に戻す。
                 ForEach(Array(turn.cards.enumerated()), id: \.offset) { cardIndex, card in
                     cardView(card, key: "\(turnIndex)-\(cardIndex)")
                 }
@@ -76,15 +128,76 @@ struct HistoryDetailView: View {
         return ToolStepRow(step: display, serverName: serverName)
     }
 
-    // MARK: - カード(スナップショット静的表示 / プレースホルダ)
+    // MARK: - カード(live island / fail-closed の静的表示)
 
     @ViewBuilder
     private func cardView(_ card: CardEmbed, key: String) -> some View {
-        if let html = card.snapshotHTML, !html.isEmpty {
-            // 設計 §5: スナップショット HTML を JS 無効・ブリッジ無しで静的ロード(副作用ゼロ)。
+        if let connection = cardConnectionResolver(card), columnWidth > 0, visibleHeight > 0 {
+            let host = liveCardRegistry.host(
+                for: "\(key)-\(connection.registryIdentity)",
+                coordinator: fullscreenCoordinator
+            )
+            // swiftlint:disable:next redundant_discardable_let
+            let _ = { host.onCardToolCall = { haptics.cardAction() } }()
+            InlineCardView(
+                host: host,
+                proxy: connection.proxy,
+                card: connection.card,
+                containerWidth: columnWidth,
+                maxHeight: inlineMaxHeight,
+                requiresHistoricalRevalidation: true,
+                // 履歴レコードは不変。復元後の DOM を snapshotHTML へ上書きせず、再訪時は常に
+                // 保存時の tool-input/result を起点にする。
+                onSnapshot: nil
+            )
+            .overlay {
+                historicalRevalidationOverlay(for: host)
+            }
+            .zoomSource(id: host.id, in: cardZoom)
+            .reportsMCPAppGestureFrame()
+        } else if let html = card.snapshotHTML, !html.isEmpty {
+            // 接続先を断定できないカードは JS 無効・bridge 無しの保存 snapshot へ fail closed。
             StaticCardView(host: cardRegistry.host(for: key), html: html)
+                .reportsMCPAppGestureFrame()
         } else {
             cardPlaceholder(card)
+        }
+    }
+
+    /// 保存 result は「当時の表示」に過ぎない。App が hint を受け、自身の read-only refresh tool を
+    /// 成功完了するまで hit testing をこの host overlay で奪う。timeout/失敗でも stale DOM の mutation
+    /// ボタンは解放しない(fail closed)。
+    @ViewBuilder
+    private func historicalRevalidationOverlay(for host: InlineCardHost) -> some View {
+        if host.buildFailed {
+            EmptyView()
+        } else if host.historicalRevalidation.state == .waiting {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("現在の状態を確認中…")
+                        .font(.footnote)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("現在の状態を確認中")
+        } else if host.historicalRevalidation.state == .failed {
+            ZStack {
+                Rectangle().fill(.regularMaterial)
+                VStack(spacing: 8) {
+                    Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
+                        .foregroundStyle(.secondary)
+                    Text("現在の状態を確認できないため操作できません")
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                    Button("再試行") { host.retryHistoricalRevalidation() }
+                        .buttonStyle(.bordered)
+                }
+                .padding(12)
+            }
+        } else {
+            EmptyView()
         }
     }
 

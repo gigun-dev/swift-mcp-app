@@ -95,6 +95,8 @@ final class InlineCardHost: Identifiable {
     /// Session の onCardToolCall フック経由で任意の MCP アプリに中立に効く(ビジョン2)。nil = 無効。
     var onCardToolCall: (() -> Void)?
 
+    let historicalRevalidation = HistoricalCardRevalidationGate()
+
     /// `.sheet(item:)` 用の Identifiable 準拠。インスタンス同一性で識別する(host は registry で
     /// cardID キーに1つ、生存中は同一インスタンス)。
     nonisolated var id: ObjectIdentifier { ObjectIdentifier(self) }
@@ -157,13 +159,17 @@ final class InlineCardHost: Identifiable {
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        requiresHistoricalRevalidation: Bool = false
     ) {
         guard buildTask == nil else { return }  // 既に構築開始済み(= host は生存中)なら何もしない。
         // 寸法を保持(onSizeChanged クランプ・inline 復帰通知で使う)。build は非同期なのでここで確定させる。
         self.containerWidth = containerWidth
         self.inlineMaxHeight = maxHeight
         self.currentColorScheme = colorScheme  // #5: initialize の theme/styles に載せる初期外観。
+        if requiresHistoricalRevalidation {
+            historicalRevalidation.begin(with: card.structuredContent ?? .null)
+        }
         buildTask = Task { await self.build(
             proxy: proxy,
             card: card,
@@ -217,13 +223,23 @@ final class InlineCardHost: Identifiable {
                 onDisplayModeRequested: { [weak self] requested in
                     await self?.resolveDisplayMode(requested) ?? DisplayModeResolution(mode: .inline)
                 },
+                // 【Swift 6 captured-var 対応(2026-07-23)】外側の [weak self] で束ねた optional self を
+                // 内側 MainActor.run クロージャがそのまま参照すると「concurrently-executing code での
+                // captured var 'self' 参照」になる(Swift 6 ではエラー)。内側にも独立した [weak self]
+                // キャプチャを付け、外側の var を跨がず内側クロージャ自身が weak 参照を持つ形にして解消する。
                 onCardCapabilities: { [weak self] supports in
-                    await MainActor.run { self?.cardSupportsFullscreen = supports }
+                    await MainActor.run { [weak self] in self?.cardSupportsFullscreen = supports }
                 },
                 onCardToolCall: { [weak self] in
-                    await MainActor.run { self?.onCardToolCall?() }
+                    await MainActor.run { [weak self] in self?.onCardToolCall?() }
                 },
-                onOpenLink: Self.openLink
+                shouldObserveCardToolCall: historicalRevalidation.observationPredicate(),
+                onCardToolCallCompleted: { [weak self] succeeded in
+                    await MainActor.run { [weak self] in self?.historicalRevalidation.complete(succeeded: succeeded) }
+                },
+                // Self.openLink 直渡しは「非 Sendable 関数値→@Sendable クロージャ変換」で data race 警告が
+                // 出る。何もキャプチャしないクロージャで包むと @Sendable 推論が効く(static 呼び出しは安全)。
+                onOpenLink: { await Self.openLink($0) }
             )
             self.session = session
             await session.start()
@@ -235,8 +251,7 @@ final class InlineCardHost: Identifiable {
 
             // 5. tool-input(引数)→ tool-result(結果)の順で配送。ready 前は outbox に退避され、
             //    initialized 受信で FIFO flush される(設計 §2・スパイクと同順)。
-            await session.sendToolInput(arguments: card.arguments ?? .object([:]))
-            await session.sendToolResult(card.structuredContent ?? .null)
+            await sendInitialPayload(card: card, session: session)
             logger.notice("インラインカード構築完了 uri=\(card.resourceUri, privacy: .public)")
         } catch {
             // 構築失敗(HTML 取得失敗・mimeType 不一致など)。webView は nil のままだが、buildFailed を
@@ -249,6 +264,7 @@ final class InlineCardHost: Identifiable {
                     "インラインカード構築失敗 uri=\(card.resourceUri, privacy: .public): \(String(reflecting: error), privacy: .public)"
                 )
             self.buildFailed = true
+            historicalRevalidation.failBuildIfWaiting()
         }
     }
 
@@ -281,7 +297,12 @@ final class InlineCardHost: Identifiable {
         let session = self.session
         // fullscreen 提示中に画面自体が破棄された場合も、待機中の JSON-RPC callback を残さない。
         fullscreenPresentationGate.cancel()
+        historicalRevalidation.cancel()
         Task { await session?.teardown() }
+    }
+
+    func retryHistoricalRevalidation() {
+        historicalRevalidation.retry(using: session)
     }
 
     // MARK: - fullscreen(sheet)器の連携(P4-DM・設計 04 §5 H4)

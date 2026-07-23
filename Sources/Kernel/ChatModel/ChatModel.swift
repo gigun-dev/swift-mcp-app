@@ -139,6 +139,19 @@ public struct ToolCallStep: Codable, Equatable, Sendable {
 public struct CardEmbed: Codable, Equatable, Sendable {
     public var toolName: String
     public var resourceUri: String
+    /// カードを生成した登録済み MCP サーバーの安定 ID。
+    ///
+    /// 履歴を開き直した際、現在接続中の別サーバーへ保存済み tool-result を誤配送しないための
+    /// provenance。nil はこの情報を保存していなかった旧履歴を表し、その場合は呼び出し側が
+    /// wire 名の厳密一致だけで best-effort 解決する。slug はサーバー名・登録順で変わり得るため、
+    /// 新規履歴の正典には使わない。
+    public var serverID: UUID?
+    /// serverID が同じ登録を別 endpoint へ編集した場合を見分ける、生成時の URL。
+    /// ID の再利用だけでは「同一 MCP サーバー」と断定できないため、新規カードでは併記する。
+    public var serverURL: URL?
+    /// 名前空間化・長名 hash 短縮前の tools/list 上の名前。現在の slug が変わっても、同じ
+    /// serverID の現在 tool と再結合して live card を復元できる。nil は旧履歴との後方互換。
+    public var originalToolName: String?
     /// 履歴再訪時に静的表示するための HTML スナップショット。
     /// ライブ表示中(まだ一度も size-changed に到達していない等)は nil を許容する。
     public var snapshotHTML: String?
@@ -159,15 +172,29 @@ public struct CardEmbed: Codable, Equatable, Sendable {
     public init(
         toolName: String,
         resourceUri: String,
+        serverID: UUID? = nil,
+        serverURL: URL? = nil,
+        originalToolName: String? = nil,
         snapshotHTML: String? = nil,
         structuredContent: JSONValue? = nil,
         arguments: JSONValue? = nil
     ) {
         self.toolName = toolName
         self.resourceUri = resourceUri
+        self.serverID = serverID
+        self.serverURL = serverURL
+        self.originalToolName = originalToolName
         self.snapshotHTML = snapshotHTML
         self.structuredContent = structuredContent
         self.arguments = arguments
+    }
+
+    /// provenance付きカードが現在の接続/toolと完全一致するか。optionalのどれかが欠ける旧・部分記録を
+    /// 安全側でfalseにし、serverIDだけ同じ別endpointや別toolへのlive再接続を防ぐ。
+    public func matchesSource(serverID: UUID, serverURL: URL, originalToolName: String) -> Bool {
+        self.serverID == serverID
+            && self.serverURL == serverURL
+            && self.originalToolName == originalToolName
     }
 }
 

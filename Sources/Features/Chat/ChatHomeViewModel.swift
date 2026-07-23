@@ -99,6 +99,8 @@ public final class ChatHomeViewModel {
         let toolRoutes: [ToolRoute]
         let serverNames: [String: String]
         let originalToolNames: [String: String]
+        let serverIDs: [String: UUID]
+        let serverURLsByTool: [String: URL]
     }
 
     /// 現在 ready な接続群から ChatContext を組む(ツール定義・ui:// マップ・executor を合成)。
@@ -110,7 +112,6 @@ public final class ChatHomeViewModel {
         var uiMap: [String: String] = [:]
         var urls: [URL] = []
         var toolRoutes: [ToolRoute] = []
-        var routeServerNames: [ToolRoute: String] = [:]
         for readyConnection in ready {
             executors[readyConnection.slug] = readyConnection.proxy
             slugProxies[readyConnection.slug] = readyConnection.proxy
@@ -121,9 +122,6 @@ public final class ChatHomeViewModel {
                 ToolNamespacing.route(slug: readyConnection.slug, tool: $0.name)
             }
             toolRoutes.append(contentsOf: routes)
-            for route in routes {
-                routeServerNames[route] = readyConnection.name
-            }
         }
         // LLM 定義を正として、executor route とカード帰属も同じ集合へ閉じる。
         // app-only tool は readyConnection.tools / AppsServerProxy には残るため、カード内部の
@@ -133,9 +131,7 @@ public final class ChatHomeViewModel {
             routes: toolRoutes,
             uiResourceURIs: uiMap
         )
-        let serverNames = Dictionary(uniqueKeysWithValues: surface.routes.compactMap { route in
-            routeServerNames[route].map { (route.wireName, $0) }
-        })
+        let metadata = chatRouteMetadata(routes: surface.routes, connections: ready)
         let originalToolNames = Dictionary(uniqueKeysWithValues: surface.routes.map {
             ($0.wireName, $0.toolName)
         })
@@ -151,8 +147,10 @@ public final class ChatHomeViewModel {
             serverURLs: urls,
             slugProxies: slugProxies,
             toolRoutes: surface.routes,
-            serverNames: serverNames,
-            originalToolNames: originalToolNames
+            serverNames: metadata.serverNames,
+            originalToolNames: originalToolNames,
+            serverIDs: metadata.serverIDs,
+            serverURLsByTool: metadata.serverURLs
         )
     }
 
@@ -177,6 +175,8 @@ public final class ChatHomeViewModel {
             uiResourceURIs: context.uiResourceURIs,
             serverNames: context.serverNames,
             originalToolNames: context.originalToolNames,
+            serverIDs: context.serverIDs,
+            serverURLsByTool: context.serverURLsByTool,
             traceSink: OSLogTraceSink(),
             sessionId: sessionId,
             serverURL: context.serverURL,

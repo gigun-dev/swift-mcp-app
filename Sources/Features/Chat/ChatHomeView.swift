@@ -12,13 +12,10 @@
 // タスク指示で要求されている(接続ボタン + 設定ボタン / プログレス)。デバッグ画面ではなく
 // 本番導線なので、SwiftUI 標準の素直な見た目にする(モックのトーンから逸脱しない範囲)。
 import SwiftUI
+import Kernel
 import Services  // ServerRegistryStore(サーバー登録簿・M1)
 
 struct ChatHomeView: View {
-    /// 閉じた drawer を開くために host が予約する物理左端。中央の WKWebView には recognizer を
-    /// 一切置かず、iOS の edge-pan と同じ限定領域だけで navigation intent を判定する。
-    private static let sidebarEdgeWidth: CGFloat = 24
-
     // 設定は Home と Sheet で共有する1インスタンス。@State で所有(@Observable を SwiftUI が観測)。
     // 初期値は init で注入する(settings を home にも渡す必要があるため既定式は置かない)。
     @State private var settings: LLMSettingsStore
@@ -28,10 +25,18 @@ struct ChatHomeView: View {
     @State private var showingSettings = false
     // 履歴サイドバーの開閉(committed 状態)。実際の見せ方は「メイン画面を右へスライドして
     // 下層のサイドバーを露出する」方式(body 参照)。
-    @State private var showingSidebar = false
+    @State var showingSidebar = false
     // committed 状態と指追従を分ける。onEnded で showingSidebar と同じ animation transaction 内に
     // 0へ戻すことで、指を離した瞬間の一フレーム跳ねを防ぐ。
-    @State private var sidebarDragTranslation: CGFloat = 0
+    @State var sidebarDragTranslation: CGFloat = 0
+    // live/history 双方の現在表示中 MCP App frame。open drag の開始Yがこのいずれかに入る場合、
+    // host はoffsetを一切動かさずWKWebViewへ横操作を譲る。
+    @State var mcpAppFrames: [CGRect] = []
+    // 3つの入力面(chat/sidebar/exposed-main)が同じoffsetを同時更新しないための排他状態。
+    @State var activeSidebarGesture: SidebarGestureSource?
+    // open gestureは開始時のframe判定を指が離れるまで固定する。scroll中のpreference更新で
+    // gestureの可否が途中反転しないようにする。
+    @State var openGestureAllowed: Bool?
 
     init() {
         // settings を先に作り、それを home に注入する。@State の init 直接代入は
@@ -48,8 +53,8 @@ struct ChatHomeView: View {
         // 手本は「drawer がコンテンツの上に被さる」のではなく、**サイドバーが下層にいて、
         // メイン画面(角丸カード + ドロップシャドウ)が右へスライドして退く**方式。
         // → 下層 = ChatHistorySidebar(左 revealWidth・全高)、上層 = メインを角丸カード化して
-        //   x オフセット。☰に加え、閉時は物理左端だけを右drag、開時は右へ退いたmain cardだけを
-        //   tap/左dragできる。sidebar本体とWKWebView中央にはhostの横 recognizer を置かない。
+        //   x オフセット。☰に加え、閉時はMCP Appの現在の縦帯以外を右drag、開時はsidebar本体または
+        //   右へ退いたmain cardを左dragできる。MCP App帯から始まる横操作は常にWKWebViewへ譲る。
         GeometryReader { geo in
             // 露出幅: 画面の 84%(上限 330)。手本はカードの左端 ~15% が右に残る = reveal ~85%。
             let revealWidth = min(geo.size.width * 0.84, 330)
@@ -74,6 +79,9 @@ struct ChatHomeView: View {
                     onClose: { closeSidebar() }
                 )
                 .frame(width: revealWidth)
+                // 必ず固定幅frameの直後へ付ける。外側のmaxWidth frameより後だとgesture hit領域が
+                // 全画面へ広がり、露出mainの単一gestureと再び競合してしまう。
+                .simultaneousGesture(sidebarPaneCloseGesture(revealWidth: revealWidth))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .padding(.top, topInset)
                 .padding(.bottom, bottomInset)
@@ -101,9 +109,25 @@ struct ChatHomeView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar { toolbarContent }
                 }
+                .coordinateSpace(name: MCPAppGestureCoordinateSpace.name)
+                .onPreferenceChange(MCPAppFrameKey.self) { frames in
+                    // layout途中のzero/null frameは除外し、実際のカード帯だけをgesture policyへ渡す。
+                    mcpAppFrames = frames.filter { !$0.isNull && !$0.isEmpty }
+                }
+                // chat pane全域の右dragを許すが、開始YがMCP App帯ならpolicyが拒否する。
+                // simultaneousなので縦ScrollViewや各controlのgestureを取り上げない。
+                .simultaneousGesture(chatPaneOpenGesture(revealWidth: revealWidth))
                 .background(Color(.systemBackground))  // 下層が透けないよう不透明。ZStack ごと bleed する。
-                .clipShape(RoundedRectangle(cornerRadius: offset > 0.5 ? 22 : 0, style: .continuous))
-                .shadow(color: .black.opacity(offset > 0.5 ? 0.22 : 0), radius: 16, x: -6, y: 0)
+                // 【2026-07-23 初回ドラッグのガクつき修正 — 角丸/影を boolean 閾値でなく progress で連続駆動】
+                // 旧: `offset > 0.5 ? 22 : 0` / `? 0.22 : 0`。ドラッグ開始の最初のフレームで offset が
+                // 0→0.5 を跨いだ瞬間に、clipShape のマスク(角丸 0→22)と shadow の offscreen レンダリング
+                // パスが「開くたびの初回だけ」一気に確保され、最初のドラッグだけ hitch していた。
+                // ベスプラ(上の progress コメントと同じ思想)どおり 0..1 の progress で連続補間すれば、
+                // レイヤ属性が毎フレーム滑らかに変化し、初回フレームでの一括生成が起きない。
+                // cornerRadius は progress*4 を 1 で頭打ちにし、開き始め(~25%)で最大 22 へ滑らかに立ち上げる
+                // (手本 Claude iOS は退き始めた瞬間からカードが丸い)。影は progress にほぼ線形で追従。
+                .clipShape(RoundedRectangle(cornerRadius: 22 * min(progress * 4, 1), style: .continuous))
+                .shadow(color: .black.opacity(0.22 * progress), radius: 16, x: -6, y: 0)
                 // 開いている間は、退いたメインカードをタップで閉じる(手本と同じ・操作を「閉じる」に一本化)。
                 //
                 // 【2026-07-17 実機バグ修正(サイドバー全操作不能)— overlay/gesture は .offset の"前"に付ける】
@@ -120,24 +144,13 @@ struct ChatHomeView: View {
                     if showingSidebar {
                         Color.black.opacity(0.0001)
                             .contentShape(Rectangle())
-                            .onTapGesture { closeSidebar() }
-                            // overlay は .offset 前なのでmain cardと一緒に右へ退き、sidebar/listには
-                            // 被らない。開状態の見えているcard上だけがinteractive close領域になる。
-                            .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .close))
+                            // tap recognizerとdrag recognizerを併置すると同じ指離れで双方が確定し、
+                            // offsetが二重更新されてガクつく。minimumDistance=0の単一gestureで
+                            // 終端距離をtap/left-dragへ分類する。
+                            .gesture(exposedMainCloseGesture(revealWidth: revealWidth))
                     }
                 }
                 .offset(x: offset)
-
-                // 閉状態のopen gestureは物理左端24ptだけ。中央のMCP App carousel/slider/graphは
-                // recognizer treeに入らないので、横操作をhost drawerが横取りしない。
-                if !showingSidebar {
-                    Color.clear
-                        .frame(width: Self.sidebarEdgeWidth)
-                        .frame(maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .gesture(sidebarDragGesture(revealWidth: revealWidth, intent: .open))
-                        .accessibilityHidden(true)
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // paper を全画面へ(サイドバーのステータスバー下も埋める)+ ZStack ごと物理端まで広げる
@@ -225,7 +238,12 @@ struct ChatHomeView: View {
         case .live:
             content
         case .viewingHistory(let session):
-            HistoryDetailView(session: session)
+            HistoryDetailView(
+                session: session,
+                cardConnectionResolver: { home.historicalCardConnection(for: $0) }
+            )
+            // 履歴を切り替えたら live/static 両方の WKWebView 台帳を作り直す。
+            .id(session.id)
         }
     }
 
@@ -236,62 +254,13 @@ struct ChatHomeView: View {
 
     // MARK: - 引き出し(メイン画面を右へスライドして下層サイドバーを露出する方式)
 
-    private enum SidebarDragIntent {
-        case open
-        case close
-    }
-
-    /// committed offset と live translation の和を物理範囲へ収める。open は0から右へ、closeは
-    /// revealWidthから左へ0へ戻るため、指とcardの移動方向が常に一致する。
-    private func sidebarOffset(revealWidth: CGFloat) -> CGFloat {
-        let committed: CGFloat = showingSidebar ? revealWidth : 0
-        return min(max(committed + sidebarDragTranslation, 0), revealWidth)
-    }
-
-    /// Drawer のinteractive open/close。取り付け先を left edge / exposed main card に限定することが
-    /// 中央WKWebViewとの競合を避ける本質であり、方向判定だけに依存しない。
-    private func sidebarDragGesture(revealWidth: CGFloat, intent: SidebarDragIntent) -> some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else {
-                    sidebarDragTranslation = 0
-                    return
-                }
-                switch intent {
-                case .open:
-                    sidebarDragTranslation = max(value.translation.width, 0)
-                case .close:
-                    sidebarDragTranslation = min(value.translation.width, 0)
-                }
-            }
-            .onEnded { value in
-                let isHorizontal = abs(value.translation.width) > abs(value.translation.height)
-                let moved = value.translation.width
-                let projectedVelocity = value.predictedEndTranslation.width - moved
-                // 長距離を要求せず、幅22%または軽いflickで確定する。open/closeを対称に扱う。
-                let positionThreshold = revealWidth * 0.22
-                let velocityThreshold: CGFloat = 100
-                let reachedTarget: Bool
-                switch intent {
-                case .open:
-                    reachedTarget = isHorizontal
-                        && (moved > positionThreshold || projectedVelocity > velocityThreshold)
-                case .close:
-                    reachedTarget = isHorizontal
-                        && (moved < -positionThreshold || projectedVelocity < -velocityThreshold)
-                }
-                withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
-                    showingSidebar = intent == .open ? reachedTarget : !reachedTarget
-                    sidebarDragTranslation = 0
-                }
-            }
-    }
-
     private func closeSidebar() {
         withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
             showingSidebar = false
             sidebarDragTranslation = 0
         }
+        activeSidebarGesture = nil
+        openGestureAllowed = nil
     }
 
     /// サイドバーの .active ハイライト対象。ライブ時は現在セッション、履歴閲覧時は閲覧中セッション。
