@@ -35,6 +35,12 @@
   `HistoricalCardRouting.swift`は保存カードの接続再解決という別責務なので残す。
 - **残る実操作確認:** 専用Simulatorまたは実機で、ゆっくりdrawer dragの指追従、
   MCP App内横gestureとの隔離、履歴カードの復元直後の操作、60秒超カードの背景revalidateを確認する。
+  > **2026-07-23 更新: ゆっくりdrawer dragは実機確認済み ✅。** 軸ロック(81ace79)後も残振動があり、
+  > 実機録画のフレーム解析で「進む→約2フレーム遅れへ戻る」2系列交互振動を特定。第2根因は
+  > DragGestureが.offsetで動くビュー自身の.local空間でtranslationを測る座標空間フィードバックで、
+  > named空間をoffset外側のZStackへ移設して解消(`616e4e2`)。ユーザーがiPhone 12 mini実機で
+  > 改善を確認した。原則P5としてdocs/design/07とrules/interaction.mdへ制定済み。
+  > 残: MCP App内横gesture隔離・履歴カード即操作・60秒超SWR背景revalidateの実機確認。
 
 ## Codex固有調査
 
