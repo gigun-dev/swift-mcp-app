@@ -113,7 +113,16 @@ struct ChatHomeView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar { toolbarContent }
                 }
-                .coordinateSpace(name: MCPAppGestureCoordinateSpace.name)
+                // 2026-07-23 座標空間を offset の外側へ移動(第2根因・drawer 残振動の修正):
+                // coordinateSpace はこの NavigationStack(=.offset(x:) で毎フレーム動くビュー)には
+                // 付けない。DragGesture の translation/startLocation をここで測ると、offset 適用 →
+                // 名前付き空間が右へ動く → 次フレームの translation が縮む → offset が戻る、の
+                // フィードバックループになり、境界が「進む→約2フレーム遅れ位置へ戻る」を交互に
+                // 繰り返す振動(録画のフレーム解析で2系列交互を確認)を生む。振幅≒速度×遅延なので
+                // 速いフリックでは知覚されず、ゆっくりドラッグで露見していた(軸ロック修正 81ace79 後の残存)。
+                // → 空間定義は下の ZStack(.offset の影響を受けない・ignoresSafeArea の内側)へ移した。
+                // ここには preference 読み取りだけ残す(frame 測定側 reportsMCPAppGestureFrame も同名空間を
+                // 参照するので、測定と gesture が同一の「動かない」空間を見続ける)。
                 .onPreferenceChange(MCPAppFrameKey.self) { frames in
                     // layout途中のzero/null frameは除外し、実際のカード帯だけをgesture policyへ渡す。
                     mcpAppFrames = frames.filter { !$0.isNull && !$0.isEmpty }
@@ -157,6 +166,15 @@ struct ChatHomeView: View {
                 .offset(x: offset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 2026-07-23 drawer 残振動の修正(第2根因): DragGesture の translation を測る名前付き空間は
+            // ここ(ZStack)に置く。ZStack 自身は .offset を持たない(offset は内側の NavigationStack だけ)ので
+            // ドラッグ中も動かず、translation が offset にフィードバックしない。offset は x のみを平行移動する
+            // だけで Y 原点は変えないため、MCP App 帯判定(startLocation.y と mcpAppFrames の Y 比較)は
+            // 空間移動の影響を受けない。frame 測定側 reportsMCPAppGestureFrame も同じ .named(...) を参照するので
+            // 「gesture 側の startLocation.y」と「測定側の frame.minY/maxY」は常に同一空間の座標で突き合う。
+            // .ignoresSafeArea() は下(この修飾子の後)にあり、この空間定義は ignoresSafeArea の内側なので
+            // Y 原点は safe area 変換前で一貫する。
+            .coordinateSpace(name: MCPAppGestureCoordinateSpace.name)
             // paper を全画面へ(サイドバーのステータスバー下も埋める)+ ZStack ごと物理端まで広げる
             // (これがカード bleed の肝。個別 .ignoresSafeArea(edges:.vertical) では効きが弱かった)。
             .background(SidebarPalette.paper)

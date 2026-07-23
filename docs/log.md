@@ -1034,3 +1034,45 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   回帰テストaxisLockKeepsTrackingRegardlessOfVertical等を追加(6 tests)。
 - 恒久対策: docs/design/07(指追従の設計原則P1〜P4)と.claude/rules/interaction.mdを制定、
   CLAUDE.mdへ必読参照を追記。「カクつき(官能)」を「不連続性(単体テスト)」へ還元する方針。
+
+## 2026-07-23 正典をClaude Code作業後の実態へ同期
+
+- `git status -sb`でworking tree clean、`main...origin/main`、ahead / behind 0を確認した。
+- 未配達と記載されていたsliceは`0bcf864`、gate/hint撤去は`bdb3e1b`、
+  drawer軸ロック修正は`81ace79`としてcommit / push済みだったため、
+  `docs/next-directions.md`の「delivery待ち」「lint停止」「warning未解消」を現状へ更新した。
+- Fable queue 1は実装deliveryから「delivery後のSimulator / 実機E2Eを閉じる」へ変更した。
+  未完了は①ゆっくりdrawer dragの連続追従、②MCP App横gesture隔離、
+  ③履歴カードの復元直後操作、④60秒超カードの背景revalidateの4項目。
+- gate撤去後の恒久回帰候補は、存在しない`履歴revalidation gate`ではなく
+  `履歴復元/SWR発火条件`へ表現を修正した。計画の判断履歴はqueue 2と本logに保持した。
+
+## 2026-07-23 Simulator標準運用とCodex非依存方針を整理
+
+- 現在sessionのXcodeBuildMCPで`session_show_defaults`と`list_sims`を再確認した。Harness Bへの
+  project / scheme / bundle ID / UDID固定は有効で、同時に4台がBootedだった。曖昧な`booted`配送を禁止し、
+  全工程を同一UDIDへ固定する根拠を`docs/ios-simulator-best-practices.md`へ集約した。
+- OpenAI `build-ios-apps`は必須dependencyではなく、skill群とXcodeBuildMCPをCodexへ束ねる
+  optional adapterと裁定した。iOS検証能力は固定版XcodeBuildMCP CLI / MCP、simctl、XCUIAutomation、
+  project `ios-e2e-verify`でprovider非依存に維持する。Codex固有なのはMarketplace、自動tool公開、
+  Desktop内の承認・会話統合など導入UXであり、製品E2Eの成立条件ではない。
+- stock pluginは44 tools / 約63,469 schema tokens、既存固定版Dは36 tools /
+  225,990 serialized bytesだった。後者も十分小さいとは扱わず、build/runと最小UI操作だけの
+  custom workflow、必要時だけCLIでdebug / profilingを呼ぶ三段階へ改める。
+- `ios-skills@gigun`はinstall / enable済みだが、skillの引数なし`idb connect`が現行CLIと不一致。
+  `idb list-targets`も古いcompanion登録を除去した後に失敗し、sandbox外の再試行は完了しなかった。
+  idb 1.1.7 / companion 1.1.8、古いsocket、Xcode 26.4互換性を整理するまで標準fallbackとは扱わない。
+  socketやSimulatorの破壊的cleanupは行っていない。
+- plugin onboarding用H-01/K-01は十分。残る検証不足は、drawer低速drag、MCP App gesture隔離、
+  履歴カード即操作、60秒超SWRという直近実装の製品E2E 4項目である。
+
+## 2026-07-23 drawer残振動の第2根因修正(座標空間フィードバック)
+
+- 軸ロック(81ace79)後もカクつき報告。実機録画をffmpeg+フレーム解析し、境界が
+  「進む→約2フレーム遅れへ戻る」2系列交互振動を定量確認(進行系列と遅延系列が交互)。
+- 根因: DragGestureが.offsetで動くビュー自身の.local空間でtranslationを測る
+  フィードバックループ。offset適用→空間移動→translation縮小→offset後退の2周期振動。
+- 修正: coordinateSpaceをoffsetの外側のZStackへ移し、3 gestureに.named(...)を明示。
+  帯判定はY比較のみ・測定側と同一空間参照でxのみのoffsetの影響なし。
+- 原則P5として rules/interaction.md と docs/design/07 に追記。
+  録画のフレーム解析(境界位置の系列抽出)は同種不具合の定量検証手法として有効だった。

@@ -14,3 +14,8 @@ drawer 境界のカクつき(2026-07-23 軸ロック修正)のような「追従
    「単調に動く指の入力列に対して出力列が跳ばない」ことを表すテストケースを必ず添える。
 4. **ライブ追従に withAnimation を混ぜない。** アニメーションは onEnded の確定遷移だけ。
    onChanged 中の値は素の state 代入で指へ直結する(暗黙アニメーションが追従遅延・波打ちを生む)。
+5. **ドラッグの translation は、そのドラッグで動くビューの座標空間で測らない。** offset 適用 →
+   空間移動 → translation 逆補正のフィードバックループが毎フレーム振動(進む→戻るの2周期)を生む。
+   translation・startLocation は offset の外側の named 空間で測る(DragGesture の `coordinateSpace:` と
+   ビュー側の `.coordinateSpace(name:)` を offset を持たない祖先に置く)。振幅≒速度×遅延なので
+   速いフリックでは知覚されず、ゆっくりドラッグで露見する(P1 と同じ「速い操作では正常」シグネチャ)。

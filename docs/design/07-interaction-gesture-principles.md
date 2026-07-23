@@ -14,6 +14,13 @@
   「速い操作では正常・遅い操作でカクつく」はこのクラスの不具合の典型シグネチャ。
 - 同型の判定(帯除外・commit 閾値)が gesture ごとに増えるたび、毎フレーム再判定の
   誘惑が再生産される構造だった。
+- 軸ロック修正(81ace79)後も drawer のゆっくりドラッグで境界の残振動が残った(2026-07-23・第2根因)。
+  録画のフレーム解析で、境界が「進む→約2フレーム遅れ位置へ戻る」を交互に繰り返す2系列交互振動を確認。
+  根因は座標空間のフィードバックループ: DragGesture を `.offset(x:)` で動くビュー自身に付け、既定の
+  `.local` 空間で translation を測っていた。offset 適用 → 名前付き/ローカル空間が右へ動く → 次フレームの
+  translation が縮む → offset が戻る、が毎フレーム繰り返される。振幅≒速度×遅延なので速いフリックでは
+  知覚されず、ゆっくりドラッグでだけ露見する(軸ロックと同じ「速い操作では正常」シグネチャ)。
+  修正は translation・startLocation を offset の外側の不動 named 空間で測ること(P5)。
 
 ## 原則
 
@@ -45,6 +52,21 @@ onChanged が state へ書く値は、指の入力列が連続なら出力列も
 
 - onChanged 中は素の代入で指へ直結する。暗黙/明示アニメーションは追従遅延と波打ちを生む。
 - withAnimation(interactiveSpring 等)は onEnded の確定遷移(open/close への収束)だけ。
+
+### P5. ドラッグの translation は、そのドラッグで動くビューの座標空間で測らない
+
+DragGesture の `translation`・`startLocation` は、offset で動くビュー自身の座標空間(既定の `.local`)で
+測ってはならない。
+
+- offset 適用 → 座標空間が動く → 次フレームの translation が offset のぶん縮む → 出力 offset が戻る、の
+  フィードバックループが毎フレーム振動(進む→戻るの2周期)を生む。
+- translation・startLocation は offset を持たない祖先に置いた named 空間で測る。実装は DragGesture の
+  `coordinateSpace: .named(...)` と、その空間を定義する `.coordinateSpace(name:)` を **offset より外側**の
+  ビューへ付けること(swift-mcp-app では GeometryReader 直下の ZStack に置き、`.offset(x:)` は内側の
+  NavigationStack だけが持つ)。
+- 帯判定など Y 座標の突き合わせ(gesture の startLocation.y と preference で測った frame の minY/maxY)は、
+  測定側と gesture 側が同一 named 空間を参照し続ける限り不変(x のみの offset は Y 原点を変えない)。
+- 症状は P1 の軸ロックと同じ「速い操作では正常・遅い操作でカクつく」。振幅≒速度×遅延。
 
 ## ボツ案(Why not)
 

@@ -20,35 +20,21 @@
 
 ## 現在のworking tree
 
-- **delivery待ち:** 履歴カードlive island + revalidation gate、drawer gesture分離、tool route堅牢化を
-  同じ意図的sliceとして実装済み。履歴revalidation時点では215 tests / 23 suites、lint 0、
-  generic Simulator build、iPhone 12 miniへのinstall / launchまで成功したが、まだcommit / pushしていない。
-- **最新gate:** 棚卸し中に追加されたsidebarの「ピン留め / 最近の項目」分離を含めると215 testsは成功するが、
-  `ChatHistorySidebar`が251行となりSwiftLintのtype body 250行上限を1行超える。`make verify`はlintで停止し、
-  app build / 実機deployを行っていない。disableや閾値変更ではなくsection責務を抽出して直す。
-- **履歴refreshの境界:** Swift hostは保存resultへnamespaced hintを付け、App自身のrefresh成功まで
-  操作をfail-closedにする。caldav todos/agenda側のhint対応が未実装なので、現状は古い本文を編集可能にしない。
-  > **2026-07-23 更新: 方針転換 — gate/hint機構は撤去へ。** caldav側の一次資料裁定
-  > (modeling/15・楽観復元の本番実測・SWR実装 56551ac)を本セッションでレビューし採択した。
-  > 根拠: ①hintはホスト固有プロトコルでサードパーティカードが履歴上永久操作不能=汎用ホスト不成立
-  > ②RFC 5861 SWR思想の逆 ③ext-appsに標準化の足場なし ④host再push経路(`sendInitialPayload`)は
-  > 残るためcaldavの`generatedAt`60秒判定がホスト協力ゼロで成立する(focus/visibility配送も不要)。
-  > 影響面調査済み: 撤去対象は`HistoricalCardRevalidationGate.swift`・
-  > `Kernel/AppsProtocol/HistoricalRevalidation.swift`・`AppsBridgePassthroughDispatcher`の
-  > tools/call観測(gate専用)・InlineCardView/HistoryDetailView/InlineCardPresentation/
-  > AppsBridgeSessionの配線・`AppsProtocolTests`のgateテスト。`HistoricalCardRouting.swift`は
-  > 別責務(保存カードの接続再解決)なので残す。実装はqueue 2(差し替え済み)。
-- **Xcode Issue Navigator:** Apple公式 `xcrun mcpbridge` で3 warningを検出した。
-  `InlineCardView.swift`のSwift 6 captured-`self`警告2件と、
-  `AppsBridgeSession.swift`の不要な`await`1件。delivery前に解消して再検証する。
-  > **2026-07-23 更新: 解消済み ✅。** 実測ではInlineCardViewのcaptured-`self`は3件+
-  > `onOpenLink: Self.openLink`直渡しのSendable警告1件で、内側`MainActor.run`への独立
-  > `[weak self]`付与と無キャプチャクロージャ包みで構造的に修正。AppsBridgeSessionの
-  > 不要`await`は`+ToolDelivery.swift`分割時点で既に消えていた(記述がstaleだった)。
-  > あわせて`ChatHistoryRow`を`ChatHistorySidebarComponents.swift`へ抽出しtype body lintも解消。
-  > `make verify`完走・警告grep 0件。
-- **実操作確認:** drawerのMCP App gesture隔離と履歴refreshは、実装・自動testとは別に
-  専用Simulatorまたは実機で最終触感を確認する。
+- **実装clean / docs同期中:** 整理開始時点で`main`は`origin/main`と一致し、working treeはclean。
+  履歴カードlive island・drawer gesture分離・tool route堅牢化は`0bcf864`、
+  履歴revalidation gate/hint撤去は`bdb3e1b`、ゆっくりdrawer dragの軸ロック修正は
+  `81ace79`としてcommit / push済み。現在の未commit差分は、この現状同期による
+  `docs/next-directions.md`、`docs/log.md`、Simulator運用正典の追加だけ。
+- **delivery gate解消済み:** `ChatHistoryRow`をcomponentsへ抽出してtype body lintを解消し、
+  `InlineCardView`のSwift 6 captured-`self` / Sendable警告も構造修正した。
+  delivery時の`make verify`は完走・警告grep 0件。gate撤去後は211 tests / 22 suites・lint 0、
+  軸ロックには6件の回帰testを追加した。
+- **履歴refreshの現行境界:** host固有のfail-closed gate/hintは全撤去した。
+  履歴復元時の`sendInitialPayload`で保存済みtoolResultを無改変再pushし、鮮度判定と
+  60秒超の背景revalidateはcaldav SWR（deploy `56551ac`）へ委ねる。
+  `HistoricalCardRouting.swift`は保存カードの接続再解決という別責務なので残す。
+- **残る実操作確認:** 専用Simulatorまたは実機で、ゆっくりdrawer dragの指追従、
+  MCP App内横gestureとの隔離、履歴カードの復元直後の操作、60秒超カードの背景revalidateを確認する。
 
 ## Codex固有調査
 
@@ -83,6 +69,8 @@
 詳細と公式出典は
 [`docs/codex-plugin-and-ios-agent-audit.md`](codex-plugin-and-ios-agent-audit.md)、
 試験履歴は[`docs/ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)を正とする。
+日常運用、pluginの役割、Codex非依存化の境界は
+[`docs/ios-simulator-best-practices.md`](ios-simulator-best-practices.md)へ集約した。
 
 <!-- session-head-end: SessionStartフックはここまでを常時注入する。以下は未完了タスクだけを置く。 -->
 
@@ -93,11 +81,13 @@
 
 ## Fableへ渡す実装queue
 
-1. **現在のdirtyをdeliveryする**
-   - `ChatHistorySidebar`のsection構築を既存components側へ抽出し、type body lintを解消する。
-   - Xcode warning 3件を構造的に解消する。
-   - `make verify`、専用Simulatorのgesture/revalidation確認、実機build/install/launchを再実施する。
-   - docsとの整合を確認し、現在の意図的sliceをcommit / pushする。
+1. **delivery後のSimulator / 実機E2Eを閉じる**
+   > **2026-07-23 更新:** lint / Xcode warning修正、`make verify`、commit / pushは完了。
+   > `main`は`origin/main`と同期済み。残るのは実操作4項目だけ。
+   - [ ] drawerをゆっくりdragして、軸ロック後も指へ連続追従することを確認する。
+   - [ ] MCP App内の横gestureがdrawerを露出させないことを確認する。
+   - [ ] 復元した履歴カードが待機なしで即操作できることを確認する。
+   - [ ] `generatedAt`から60秒超のカードが、表示を維持したまま背景revalidateすることを確認する。
 2. ~~**caldavで履歴revalidationを完成させる** → **履歴revalidation gateを撤去する**(2026-07-23差し替え)~~ ✅
    > **2026-07-23 更新: 撤去完了。** 専用2ファイル削除+8ファイルの配線撤去(net -227行)。
    > 再push経路は`sendInitialPayload`に残し、`historyRestorePushesSavedToolResult`テストで
@@ -114,12 +104,17 @@
    - E2E: 履歴カードが即操作可能で、60秒超の古いカードは背景revalidateされることをcaldav本番で確認する。
 3. **再現可能なnative UI回帰層を追加する**
    - `MCPHostUITests`と安定したaccessibility identifierを追加する。
-   - connection validation、drawer/context menu、reparent spike、履歴revalidation gateから固定する。
+   - connection validation、drawer/context menu、reparent spike、履歴復元/SWR発火条件から固定する。
    - live OAuth / caldav本番はpre-push必須にせず、project E2Eへ残す。
 4. **共有harness sourceを中立化する**（`gigun-dev/claude-code`へscopeを移してから）
    - generic `ios-simulator`を明示UDID、bounded poll、実行時scaleへ直す。
+   - 引数なし`idb connect`を現行CLIに合わせ、idb / companionのversion、古いsocket、
+     Xcode 26.4互換性を隔離環境で検証する。現在の`idb list-targets`は標準fallbackとして未ready。
    - `ios-device-build`の`~/.claude/...`ハードコードを実行中skillからの相対pathへ直す。
    - 触るpluginから`.codex-plugin/plugin.json`とroot `.mcp.json`を追加し、隔離installで検証する。
+   - 固定版XcodeBuildMCPのcustom workflowをbuild/runと最小UI操作へ絞り、stock 44 tools、
+     既存D 36 toolsと同じtokenizerでschema token数を比較する。
+   - H-01 / K-01 / O-01を`build-ios-apps`なしの隔離環境で再実行し、Codexなしでもdelivery可能と固定する。
 5. **Composer tool picker**
    - [design/06](design/06-composer-tool-picker.md)の4判断をユーザー合意後に実装する。
    - chat単位freeze、stable `ToolKey`、atomic surface、44pt/VoiceOver、session保持をtestする。
@@ -147,16 +142,18 @@
 2. Apple Xcode MCP — Apple docs、Xcode build/test/log、Issue Navigator、file diagnostics、Preview
    （runtime UI操作とlint / pre-push gateの代替には使わない）
 3. source-controlled XCUIAutomation — 安定したnative UI回帰
-4. `ios-simulator`（simctl + idb）— 明示UDID、accessibility-firstの汎用fallback
-5. OpenAI公式`build-ios-apps` — Codex Desktopでのsemantic ref、入力訂正、log/debugを伴う探索E2E
-6. **固定版**XcodeBuildMCP最小workflow — versionを固定した再現可能な探索E2Eと公式pluginの診断arm
+4. **固定版**XcodeBuildMCP CLI / 最小workflow — client非依存の再現可能な探索E2E
+5. `ios-simulator`（simctl + idb）— 修繕後に使う明示UDID、accessibility-firstの汎用fallback
+6. OpenAI公式`build-ios-apps` — Codex Desktopで探索を始めやすくするoptional adapter
 7. project `ios-e2e-verify` — OAuth、caldav、WKWebView、JS状態、unified log
 8. 実機 — 通常のiOS変更後はbuild/install/launchまで行う
 
 OpenAI公式stock `build-ios-apps`はCodex Desktopの探索E2Eへ**条件付き採用**する。H-01/K-01はPassしたが、
 `@latest`の浮動依存、0.1.2 skillのtool名drift、CLI既定30秒のstartup timeout、IME下での
 `replaceExisting:true`成功応答と実値の不一致は残る。恒久回帰はXCUIAutomation、再現可能な診断は固定版を使い、
-plugin操作後はsemantic snapshotで値を再確認する。
+plugin操作後はsemantic snapshotで値を再確認する。pluginは必須dependencyではなく、Codex Marketplace、
+taskへの自動公開、Desktop内の承認・会話統合というUXだけをprovider固有層に置く。build、run、UI操作、log、
+debug、OAuth / WKWebView E2Eは固定版CLI / MCP、simctl、XCUIAutomation、project skillで代替する。
 
 ## ユーザー・外部待ち
 

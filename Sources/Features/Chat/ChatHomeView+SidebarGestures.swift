@@ -19,7 +19,10 @@ extension ChatHomeView {
 
     /// 閉じたchat paneの右drag。開始Yが現在のMCP App frame帯なら、そのgesture中は永続的に拒否する。
     func chatPaneOpenGesture(revealWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 12)
+        // 2026-07-23 drawer 残振動の修正(第2根因): translation/startLocation は既定の .local(=このドラッグで
+        // 動くビュー自身の空間)で測ってはいけない。offset 適用 → 空間移動 → 次フレームの translation が縮む
+        // → offset が戻る、のフィードバックで境界が2周期振動する。offset の外側に置いた不動の named 空間で測る。
+        DragGesture(minimumDistance: 12, coordinateSpace: .named(MCPAppGestureCoordinateSpace.name))
             .onChanged { value in
                 guard !showingSidebar else { return }
                 if activeSidebarGesture == nil { activeSidebarGesture = .chatPane }
@@ -73,7 +76,8 @@ extension ChatHomeView {
     /// sidebarのどこからでも左dragで閉じる。simultaneousでListの縦scrollを残し、pure policyが
     /// 横優位かつ左向きのときだけmain cardを指追従させる。
     func sidebarPaneCloseGesture(revealWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 12)
+        // 2026-07-23 drawer 残振動の修正(第2根因・chatPaneOpenGesture と同じ理由): offset の外側の不動空間で測る。
+        DragGesture(minimumDistance: 12, coordinateSpace: .named(MCPAppGestureCoordinateSpace.name))
             .onChanged { value in
                 guard showingSidebar else { return }
                 if activeSidebarGesture == nil { activeSidebarGesture = .sidebarPane }
@@ -108,7 +112,9 @@ extension ChatHomeView {
     /// 露出mainはtapとleft-dragを1本のrecognizerで排他する。小移動はtap close、8ptを超えた
     /// 移動は十分なleft-dragだけcloseになり、drag終了後に別tapが追撃しない。
     func exposedMainCloseGesture(revealWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0)
+        // 2026-07-23 drawer 残振動の修正(第2根因・chatPaneOpenGesture と同じ理由): offset の外側の不動空間で測る。
+        // tapSlop(8pt)判定も同じ空間の translation を使うので、tap/close 分類の閾値は空間移動の影響を受けない。
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(MCPAppGestureCoordinateSpace.name))
             .onChanged { value in
                 guard showingSidebar else { return }
                 if activeSidebarGesture == nil { activeSidebarGesture = .exposedMain }
