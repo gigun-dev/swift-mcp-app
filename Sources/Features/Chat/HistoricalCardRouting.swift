@@ -43,9 +43,12 @@ extension ChatHomeViewModel {
     /// 新しい app HTML へ配送する。返す resourceUri は現在 tools/list が広告する値へ差し替えるため、
     /// content hash 付き URI がデプロイで変わっても古い HTML を要求し続けない。
     ///
-    /// 新履歴は serverID + serverURL + originalToolName の全一致を要求する。旧履歴(provenance 無し)は
-    /// 現在の model-visible route の wireName が一意かつ厳密一致するときだけ best-effort で許可する。
-    /// 文字列から slug を推測する fallback は、hash 短縮・衝突・app-only tool の表面化を招くため行わない。
+    /// 新履歴は serverID + serverURL + originalToolName の全一致を第一優先で要求し、外したときだけ
+    /// serverURL(canonical identity)一致の一意候補へフォールバックする(OAuth 再追加で serverID が
+    /// 変わっても URL 同一なら復元できる・2026-07-24)。旧履歴(provenance 無し)は現在の model-visible
+    /// route の wireName が一意かつ厳密一致するときだけ best-effort で許可する。文字列から slug を推測する
+    /// fallback は、hash 短縮・衝突・app-only tool の表面化を招くため行わない。同定判定そのものは Kernel の
+    /// 純関数 HistoricalCardResolver に切り出し(テスト可能化)、ここは projection と引き戻しだけを担う。
     func historicalCardConnection(for savedCard: CardEmbed) -> HistoricalCardConnection? {
         let resolved = resolveHistoricalSource(savedCard)
         guard let resolved else { return nil }
@@ -63,39 +66,26 @@ extension ChatHomeViewModel {
     }
 
     private func resolveHistoricalSource(_ card: CardEmbed) -> HistoricalSource? {
-        if let serverID = card.serverID {
-            return resolveProvenanceCard(card, serverID: serverID)
+        // ReadyConnection(proxy 等を抱える Services 依存の重い型)を、同定に必要な面だけ射影した
+        // HistoricalCardSurface へ落とす。判定は Kernel の純関数へ委ね、ここは projection と
+        // 「返った surfaceIndex → 実 ReadyConnection の引き戻し」だけを担う(順序は一致させる)。
+        let ready = connections.readyConnections
+        let surfaces = ready.map { connection in
+            HistoricalCardSurface(
+                serverID: connection.serverID,
+                url: connection.url,
+                slug: connection.slug,
+                wireNames: Set(connection.toolDefs.map(\.function.name)),
+                originalToolNames: Set(connection.tools.map(\.name)),
+                uiResourceURIs: connection.uiResourceURIs
+            )
         }
-        // 旧履歴は保存時 slug しか手掛かりがない。現在の広告 surface に同じ wireName がある
-        // connection がちょうど1本の場合だけ許可し、0件/複数件は別サーバー誤配送を避け静的表示へ戻す。
-        let candidates = connections.readyConnections.compactMap { connection -> HistoricalSource? in
-            guard connection.toolDefs.contains(where: { $0.function.name == card.toolName }) else {
-                return nil
-            }
-            return connection.uiResourceURIs[card.toolName].map {
-                HistoricalSource(connection: connection, wireName: card.toolName, resourceURI: $0)
-            }
-        }
-        return candidates.count == 1 ? candidates[0] : nil
-    }
-
-    private func resolveProvenanceCard(_ card: CardEmbed, serverID: UUID) -> HistoricalSource? {
-        guard let originalToolName = card.originalToolName,
-              let connection = connections.readyConnections.first(where: { $0.serverID == serverID }),
-              card.matchesSource(
-                  serverID: connection.serverID,
-                  serverURL: connection.url,
-                  originalToolName: originalToolName
-              )
-        else { return nil }
-        let wireName = ToolNamespacing.wireName(slug: connection.slug, tool: originalToolName)
-        // uiResourceURIs は全広告tool由来なので、それだけではapp-only toolも通る。現在のstrict surface
-        // にwireNameが残っていることも要求し、過去のsource toolを権限の広い経路へ復活させない。
-        guard connection.toolDefs.contains(where: { $0.function.name == wireName }),
-              connection.tools.contains(where: { $0.name == originalToolName }),
-              let resourceURI = connection.uiResourceURIs[wireName]
-        else { return nil }
-        return HistoricalSource(connection: connection, wireName: wireName, resourceURI: resourceURI)
+        guard let resolved = HistoricalCardResolver.resolve(card: card, surfaces: surfaces) else { return nil }
+        return HistoricalSource(
+            connection: ready[resolved.surfaceIndex],
+            wireName: resolved.wireName,
+            resourceURI: resolved.resourceURI
+        )
     }
 }
 

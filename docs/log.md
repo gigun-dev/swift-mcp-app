@@ -1108,3 +1108,17 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 別件: delete-todo完了後にUIスピナー固着1回(再現未特定)。
 - subagent委譲は機能した(90 tool uses・mainのコンテキスト消費はスクショゼロ)。
   テストデータは復元済み。
+
+## 2026-07-24 履歴カードの正しさ slice(層4 URL束縛 + 鮮度再push)
+
+- プレースホルダ・バグ根因(実機JSONで裏取り): OAuth再追加でserverIDが変わり旧履歴カードが
+  serverID完全一致で解決不能。修正: 同定をKernel純関数HistoricalCardResolverへ切り出し、
+  serverID厳密→serverURL(canonical identity・RFC 8707/9728)フォールバック(候補ちょうど1本)
+  →旧履歴legacy、の順に。strict surface検査は全経路維持でapp-only tool復活を防ぐ。
+- 鮮度ギャップ(一次資料調査で(a)再push確定): live island再利用時はbuildIfNeededがno-opで
+  sendInitialPayloadが走らずSWR発火機会ゼロ。修正: InlineCardView.taskでbuildの戻り値を見て
+  HistoryCardRepushDecision(isHistoryRevisit && !startedNewBuild)のときtool-resultを1回再push。
+  ext-apps/OpenAI Apps SDKとも鮮度モデルは「tool完了時のみ流入」で一致・(b)visibility配送は
+  仕様に足場なしのため不採用。252 tests。
+- 観測調査結論: OSLog(Logger+os_signpost)+_metaのtraceparent互換ID+Sentry(crashのみ)、
+  KernelにTelemetryPort抽象。OTel Swiftフルは過剰。card.resolveイベントで今回のJSON発掘が不要に。
