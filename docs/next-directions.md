@@ -175,14 +175,18 @@
    > 鮮度ギャップは(a)再push採択(ext-apps/OpenAI Apps SDKとも「tool完了時のみデータ流入」・
    > (b)visibility配送は仕様に足場なし): live island再訪時にtool-resultを1回再push。252 tests。
    > E2E裏取り(再訪でtool-result 1回・再追加後もライブ描画)を実施中。
-10. **接続ライフサイクルの堅牢化(再追加を不要にする・4層防御の層2/層3)**
+10. ~~**接続ライフサイクルの堅牢化(再追加を不要にする・4層防御の層2/層3)**~~ ✅ `514b01b`
    - 動機: 再追加せざるを得なかった過去(トークン切り分け)が履歴孤児化の真因。層4(履歴URL束縛・
      上記9)は対症で、上流を断つべき。ベスプラは canonical URI = identity(RFC 8707/9728)。
-   - **層3(本丸): `ServerRegistry.add`を冪等化**。同一canonical URLの追加は新規serverID採番でなく
-     既存entryを再利用/更新(caldav側create-calendar冪等化と同原理)。再追加してもserverID不変に。
-   - **層2の検証**: needsAuth→「認証して接続」のin-place再認可が、腐ったKeychain tokenを確実に
-     上書き/クリアするか(できないと結局delete+re-addに手が伸びる)。ReauthorizationGate済み。
-   - `ServerRegistry`/`ConnectionsManager`を触るのでqueue 9と別ファイル。順番に実施(並列編集しない)。
+   - ~~**層3(本丸): `ServerRegistry.add`を冪等化**~~ ✅。`ServerURLIdentity.canonicalKey`(Kernel純関数・
+     末尾スラッシュ/host大小/既定ポート/fragmentを吸収・query/user温存)で既存entryを引き当て、
+     あればid温存で再利用(name更新・enabled=true・url文字列とKeychain tokenは温存)。再追加でserverID不変に。
+     canonical化は「どのentryを再利用するか」の判断に閉じ、保存url文字列は差し替えないので
+     Keychainキー(absoluteString)とresolverのserverURL厳密等価は壊れない。275 tests / lint 0。
+   - ~~**層2の検証**~~ ✅(コード変更なし): `performInteractiveConnect`が成功時に新tokenをKeychainへ
+     上書きする既存挙動で達成済み。実機E2E確認は残(次の実操作チェックで裏取り)。
+   > **2026-07-24 更新:** 層3実装完了。queue 11で入れた観測`card.resolve reason=server-url-mismatch`が
+   > 今後の再追加では発火しなくなるはず(観測で回帰監視できる)。残: 層2のE2E裏取りのみ。
 11. **クライアント観測(TelemetryPort)**
    - 調査結論(ベスプラ): OSLog(`Logger`+`os_signpost`)+`_meta`のtraceparent互換ID+Sentry(crashのみ)。
      OTel Swiftフルは過剰(gRPC依存・metrics未成熟・iOS RUM統合がAndroid先行)。将来OTLP差し替え可に。
