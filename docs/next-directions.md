@@ -138,12 +138,14 @@
    - 挿入点は`ToolCallRunner.executeValid`の`callTool`直前。カード発は`AppsServerProxy.callTool`側。
    - UXはclaude.aiカスタムコネクタと同じ境界(常に許可/毎回確認(既定)/拒否)。queue 5のpickerと
      surface設計を揃える。annotationsはuntrusted hintなので既定は確認側に倒す。
-8. **OAuthトークンライフサイクル実装(2026-07-23調査で新設・優先度高)**
-   - 正典は[design/08](design/08-oauth-token-lifecycle.md)。現状Swiftホストはrefresh実装ゼロ
-     (`refresh_token` grep 0件)で、TTL 1時間ごとにフル再認可している(claude.ai iOSと同じ穴)。
-   - ハイブリッドrefresh(expiry5分前先回り+401反応1回)、actorによるsingle-flight、
-     Keychain原子更新(server単位1レコード)、`invalid_grant`→再認可導線、SSE再接続を実装する。
-   - Anthropicへのバグ報告(iOSカード描画パスの未refresh・claude-ai-mcp#228同根)は別途。
+8. ~~**OAuthトークンライフサイクル実装(2026-07-23調査で新設・優先度高)**~~ ✅
+   > **2026-07-23 更新: 完了(8dbebfa)。** 前提「refresh実装ゼロ」は誤りで、swift-sdk 0.12.1が
+   > 大半を実装済みと実物確認(design/08末尾の前提修正参照)。ホストは真の欠落3点のみ:
+   > proactive窓60s→300s明示、KeychainTokenStorage.saveのエンコード先行化(旧refresh token温存)、
+   > 窓計算純関数のKernel化。242 tests。残: TTL動的窓(SDK制約)、対話中invalid_grant時の
+   > 「要再認可」状態化(SDKフック要)、SSE再接続refresh検証。
+   > Anthropicへのバグ報告は[external-issues/claude-ai-ios-card-token-refresh.md]
+   > (external-issues/claude-ai-ios-card-token-refresh.md)に台帳化(英文ドラフト同梱・未起票)。
 9. **後続設計**
    - claude.ai iOSでcaldavカードのみ描画失敗する問題の切り分け(下記「caldavセッションからの申し送り」後注)。
    - fullscreen UX再確認: キーボード閉じはカード側根因修正済み(caldav ce7d5aa)なので再現確認から。
