@@ -41,6 +41,13 @@
   > named空間をoffset外側のZStackへ移設して解消(`616e4e2`)。ユーザーがiPhone 12 mini実機で
   > 改善を確認した。原則P5としてdocs/design/07とrules/interaction.mdへ制定済み。
   > 残: MCP App内横gesture隔離・履歴カード即操作・60秒超SWR背景revalidateの実機確認。
+  > **2026-07-23 深夜更新: R4許可ゲートE2E完走 ✅ + 要再認可UX実装(f13a3c7)。**
+  > Harness Aでcreate-todo=確認ダイアログ→許可→成功、list-todos=readOnly無確認即実行、
+  > delete-todo=destructive警告つきダイアログの3経路を実画面+ログで確認。OAuth同意フローも
+  > 一発完走(skillへ実測知見を追記)。要再認可UX: ReauthorizationGateDelegateで会話中の
+  > refresh失効時にブラウザを開かずneedsAuthバッジへ載せ替え。
+  > **今後のSimulator操作は`.claude/agents/simulator-operator.md`(sonnet・skill必読の実行役)へ
+  > 委譲する** — mainでスクショ往復しない(ユーザー方針・memory記録済み)。
 
 ## Codex固有調査
 
@@ -90,10 +97,13 @@
 1. **delivery後のSimulator / 実機E2Eを閉じる**
    > **2026-07-23 更新:** lint / Xcode warning修正、`make verify`、commit / pushは完了。
    > `main`は`origin/main`と同期済み。残るのは実操作4項目だけ。
-   - [ ] drawerをゆっくりdragして、軸ロック後も指へ連続追従することを確認する。
+   - [x] ~~drawerをゆっくりdragして、軸ロック後も指へ連続追従することを確認する。~~ ✅
+     実機で2根因(軸ロック81ace79・座標空間616e4e2)修正後にユーザー確認済み。
    - [ ] MCP App内の横gestureがdrawerを露出させないことを確認する。
    - [ ] 復元した履歴カードが待機なしで即操作できることを確認する。
    - [ ] `generatedAt`から60秒超のカードが、表示を維持したまま背景revalidateすることを確認する。
+   > **2026-07-23 深夜更新:** 残り3項目はsimulator-operator subagent(下記)で消化できる。
+   > R4ゲート・OAuth同意フローのE2Eは完了済み(f13a3c7・「残る実操作確認」の更新参照)。
 2. ~~**caldavで履歴revalidationを完成させる** → **履歴revalidation gateを撤去する**(2026-07-23差し替え)~~ ✅
    > **2026-07-23 更新: 撤去完了。** 専用2ファイル削除+8ファイルの配線撤去(net -227行)。
    > 再push経路は`sendInitialPayload`に残し、`historyRestorePushesSavedToolResult`テストで
