@@ -127,12 +127,54 @@ public struct ToolDefinition: Codable, Equatable, Sendable {
         /// (§1 決定:JSON Schema の値は JSONValue 再利用)。
         public var parameters: JSONValue
 
-        public init(name: String, description: String? = nil, parameters: JSONValue) {
+        /// MCP `tool.annotations`(readOnlyHint 等)を R4 の許可ゲート判定へ運ぶための additive フィールド。
+        ///
+        /// **wire へ出さない**: ToolDefinition は OpenAI chat/completions のリクエストへそのまま
+        /// エンコードされる型なので、OpenAI が知らない annotations を載せると無用なフィールドが混じる
+        /// (プロバイダによっては 400 になりうる)。annotations はホスト内部で HITL ゲート
+        /// (ToolPermissionPolicy)にだけ使うので、下の手書き Codable で encode/decode 対象から外し、
+        /// ToolConversion(MCP.Tool → ToolDefinition)でだけ埋める。decode 時は常に nil に戻す
+        /// (wire から復元しない。ホスト内で改めて注入する運用)。
+        public var annotations: ToolAnnotations?
+
+        public init(
+            name: String,
+            description: String? = nil,
+            parameters: JSONValue,
+            annotations: ToolAnnotations? = nil
+        ) {
             self.name = name
             self.description = description
             self.parameters = parameters
+            self.annotations = annotations
+        }
+
+        // 手書き Codable(合成でなく)にした理由: annotations を wire から除外するには CodingKeys で
+        // 列挙キーを絞る必要があるが、Function は既に ToolDefinition 内にネストしており、その中へ
+        // さらに CodingKeys を入れると nesting 違反(2階層)になる。そこで keys を file scope の
+        // ToolFunctionCodingKeys(下)に出し、init(from:)/encode(to:) だけをここに書く。
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: ToolFunctionCodingKeys.self)
+            self.name = try container.decode(String.self, forKey: .name)
+            self.description = try container.decodeIfPresent(String.self, forKey: .description)
+            self.parameters = try container.decode(JSONValue.self, forKey: .parameters)
+            self.annotations = nil  // wire には無い。ホスト内で ToolConversion が別途注入する。
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: ToolFunctionCodingKeys.self)
+            try container.encode(name, forKey: .name)
+            try container.encodeIfPresent(description, forKey: .description)
+            try container.encode(parameters, forKey: .parameters)
+            // annotations は意図的にエンコードしない(上のプロパティコメント参照)。
         }
     }
+}
+
+/// `ToolDefinition.Function` の手書き Codable キー(annotations を wire から除外するため file scope に置く。
+/// Function 内へネストすると nesting 違反になる・Function 側コメント参照)。
+private enum ToolFunctionCodingKeys: String, CodingKey {
+    case name, description, parameters
 }
 
 /// 完成した tool_call(非ストリーミング応答、またはストリーミングを ToolCallAccumulator で

@@ -65,8 +65,26 @@ public actor AppsServerProxy {
     // 満たすための防御(prod で app が model 専用ツールを叩こうとする不正フローへの門)。
     private var toolsForVisibility: [Tool]?
 
+    // R4 許可ゲート(カード発 tools/call 用)。nil = 未注入 = ゲートなし(後方互換・スパイク/テスト)。
+    //
+    // 【カード発経路の扱い(重要な設計判断・タスク指示 §2 で報告要求)】
+    // カード内 UI の tools/call は、WKWebView 上で**ユーザーが明示的にボタンを押した**結果であり、
+    // 「モデルが勝手に叩く副作用」ではない(モデルがカードを操作する経路は無い——カードは
+    // postMessage⇔ブリッジでサーバーとだけ会話する)。よって「毎回確認(ask)」の確認ダイアログを
+    // ここで再度出すのは、直前に自分でタップしたユーザーへの二重確認になり過剰。
+    // 一方 **deny(ハードブロック)は境界として尊重する**——ユーザーが「このツールは実行させない」と
+    // 決めたなら、モデル発でもカード発でも一貫してブロックすべき(境界の一貫性)。
+    // したがってカード発は「deny のみ尊重・confirm はスキップ(= ask/allow は素通し)」とする。
+    private var permissionGate: (store: any ToolPermissionResolving, serverURL: URL)?
+
     public init(client: Client) {
         self.client = client
+    }
+
+    /// R4 許可ゲートを注入する(接続確立時に一度呼ぶ・ConnectionsManager.makeReady)。
+    /// setTools と同じくセッターにして既存の `AppsServerProxy(client:)` 生成箇所を壊さない。
+    public func setPermissionGate(store: any ToolPermissionResolving, serverURL: URL) {
+        self.permissionGate = (store, serverURL)
     }
 
     /// visibility 判定用のツール一覧を注入する(接続直後に一度呼ぶ想定・設計 §7-D)。
@@ -232,6 +250,14 @@ public actor AppsServerProxy {
             }
         }
 
+        // R4 許可ゲート: カード発は deny だけをハードブロックし、confirm はスキップする
+        // (上の permissionGate プロパティコメントの設計判断参照)。name はカードが名乗る素の
+        // ツール名(前置なし)なので、store の originalToolName キーと一致する。
+        if let gate = permissionGate,
+           gate.store.decision(serverURL: gate.serverURL, toolName: name) == .deny {
+            throw AppsServerProxyError.toolDenied(name: name)
+        }
+
         return try await callTool(name: name, arguments: params?["arguments"])
     }
 
@@ -293,6 +319,8 @@ public enum AppsServerProxyError: Error, CustomStringConvertible {
     /// app 発の tools/call が、visibility に "app" を含まないツールを対象にした(apps.mdx:401 MUST 違反)。
     /// このツールはカード内 UI からは呼べない(モデル専用 or 非公開)。
     case toolNotAppCallable(name: String)
+    /// R4 許可ゲート: ユーザーが per-tool に「拒否(deny)」したツールへの tools/call をブロックした。
+    case toolDenied(name: String)
 
     public var description: String {
         switch self {
@@ -302,6 +330,8 @@ public enum AppsServerProxyError: Error, CustomStringConvertible {
             return "必須フィールド欠落: \(field)"
         case let .toolNotAppCallable(name):
             return "ツール \(name) は visibility に \"app\" を含まないため app からの tools/call を拒否した(apps.mdx:401)"
+        case let .toolDenied(name):
+            return "ツール \(name) はユーザーが実行を拒否(deny)しているため呼び出せません(R4 許可ゲート)"
         }
     }
 }

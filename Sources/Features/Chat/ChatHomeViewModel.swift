@@ -52,6 +52,12 @@ public final class ChatHomeViewModel {
     public let chatStore = ChatStore(baseDirectory: ChatHomeViewModel.defaultChatsDirectory())
     private let pricingStore = PricingStore(baseDirectory: ChatHomeViewModel.defaultPricingDirectory())
 
+    /// R4 per-tool 許可ゲートの決定ストア(UserDefaults 永続化)。**合成ルートで必ず注入する**ことで、
+    /// セキュリティの既定を ask(毎回確認)にする(ChatViewModel の既定は後方互換の AllowAll なので、
+    /// 本番の ask 既定はこの1箇所の注入で担保される・ToolPermissionStore 冒頭コメント参照)。
+    /// チャットをまたいで共有する(「常に許可」の保存はセッションを越えて効く)。
+    private let toolPermissionStore = ToolPermissionStore()
+
     /// 現在のチャットが握る slug→proxy スナップショット(カード由来サーバーの解決に使う)。
     /// makeChatViewModel のたびに更新する。cardProxy(forToolName:) がここから引く。
     private var currentSlugProxies: [String: AppsServerProxy] = [:]
@@ -165,6 +171,7 @@ public final class ChatHomeViewModel {
         let sessionId = UUID().uuidString
         let store = chatStore
         let sessionLogger = logger
+        let annotationsByTool = Self.annotationsMap(from: context.toolDefs)
         var chatVM: ChatViewModel!
         chatVM = ChatViewModel(
             llm: llm,
@@ -181,6 +188,8 @@ public final class ChatHomeViewModel {
             sessionId: sessionId,
             serverURL: context.serverURL,
             serverURLs: context.serverURLs.isEmpty ? nil : context.serverURLs,
+            annotationsByTool: annotationsByTool,
+            permissionStore: toolPermissionStore,
             onTurnSettled: {
                 do {
                     try store.save(chatVM.currentSession)
@@ -206,6 +215,15 @@ public final class ChatHomeViewModel {
         state = .ready(chatVM)
         displayMode = .live
         applyPricingToCurrentChatVM()
+    }
+
+    /// R4: wire tool 名 → annotations マップを LLM 定義から畳む(ToolConversion が載せた annotations)。
+    /// annotations を持つツールだけ入れる(未申告は Runner 側で nil 扱い = 性悪説の既定・確認必須)。
+    private static func annotationsMap(from toolDefs: [ToolDefinition]) -> [String: ToolAnnotations] {
+        Dictionary(
+            toolDefs.compactMap { def in def.function.annotations.map { (def.function.name, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 
     /// ready 集合が変わったとき、現行チャットが「空 & 実行中でない」なら最新ツールで組み直す。

@@ -1076,3 +1076,15 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   帯判定はY比較のみ・測定側と同一空間参照でxのみのoffsetの影響なし。
 - 原則P5として rules/interaction.md と docs/design/07 に追記。
   録画のフレーム解析(境界位置の系列抽出)は同種不具合の定量検証手法として有効だった。
+
+## 2026-07-23 R4ツール許可ゲート実装 + iOS描画切り分けdiag-cardデプロイ
+
+- R4(queue 7): annotations駆動per-tool許可ゲートを3層で実装。Kernel純関数
+  ToolPermissionPolicy(緩和はreadOnlyHint==true申告のみ・未申告は確認必須・denyはハードブロック)、
+  ToolPermissionStore(serverURL×originalToolName・UserDefaults)、ToolCallRunnerゲート
+  (確認はFeatures注入のasyncフック・並行callはToolConfirmationQueue)、確認ダイアログ
+  (1回許可/常に許可/拒否・破壊的警告)。annotationsはOpenAI wireへ漏らさない手書きCodable。
+  カード発tools/callはdenyのみ尊重・confirmスキップ(ユーザーが直前に自分でタップした操作への
+  再確認は二重確認のため)。232 tests。設定画面の決定一覧・リセットUIは次slice。
+- 別件: caldav側にdiag-card(1243B・依存ゼロ)を追加しwrangler deploy(b7074f32)。
+  claude.ai iOSでの描画可否によりサイズ説/認証説を切り分ける(ユーザー検証待ち)。

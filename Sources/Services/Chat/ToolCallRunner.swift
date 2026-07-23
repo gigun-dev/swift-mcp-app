@@ -17,7 +17,8 @@ struct ToolCallRunner: Sendable {
         case invalid(String)
     }
 
-    private struct Execution: Sendable {
+    // ToolCallRunner+PermissionGate.swift(別ファイルの extension)からも参照するため internal。
+    struct Execution: Sendable {
         let index: Int
         let toolCallId: String
         let toolName: String
@@ -27,10 +28,21 @@ struct ToolCallRunner: Sendable {
         let arguments: JSONValue?
     }
 
-    private struct ExecutionContext: Sendable {
+    // ToolCallRunner+PermissionGate.swift からも参照するため internal(nested type の可視性)。
+    struct ExecutionContext: Sendable {
         let executor: any MCPToolExecuting
         let traceSink: (any TraceSink)?
         let turnId: String
+        // R4 許可ゲート: static な execute から参照するため、Runner のインスタンス状態
+        // (annotations・serverURL・表示名マップ・store)をここへ束ねて運ぶ。
+        let permissionStore: any ToolPermissionResolving
+        let annotationsByTool: [String: ToolAnnotations]
+        let serverURLsByTool: [String: URL]
+        let serverNamesByTool: [String: String]
+        let originalToolNamesByTool: [String: String]
+        /// 確認 UI への問い合わせ(Features が実装を注入)。Runner は UI を知らない
+        /// (traceSink と同じ依存注入の流儀)。並行 tool call ごとに独立して await される。
+        let confirm: @Sendable (ToolCallConfirmationRequest) async -> ToolCallConfirmationResponse
     }
 
     private static let logger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-diag")
@@ -45,6 +57,11 @@ struct ToolCallRunner: Sendable {
     private let serverIDs: [String: UUID]
     private let serverURLs: [String: URL]
     private let traceSink: (any TraceSink)?
+    /// R4 許可ゲートの判定材料: wire tool 名 → annotations(untrusted hint)。ToolConversion で
+    /// ToolDefinition に載せた annotations を ChatViewModel が wire 名キーで畳んで渡す。空 = 未申告扱い。
+    private let annotationsByTool: [String: ToolAnnotations]
+    /// per-tool 決定の永続化ストア。既定は AllowAllToolPermissionStore(注入省略時は従来どおり即実行)。
+    private let permissionStore: any ToolPermissionResolving
 
     init(
         executor: any MCPToolExecuting,
@@ -53,7 +70,9 @@ struct ToolCallRunner: Sendable {
         originalToolNames: [String: String],
         serverIDs: [String: UUID],
         serverURLs: [String: URL],
-        traceSink: (any TraceSink)?
+        traceSink: (any TraceSink)?,
+        annotationsByTool: [String: ToolAnnotations] = [:],
+        permissionStore: any ToolPermissionResolving = AllowAllToolPermissionStore()
     ) {
         self.executor = executor
         self.resourceURIs = resourceURIs
@@ -62,6 +81,8 @@ struct ToolCallRunner: Sendable {
         self.serverIDs = serverIDs
         self.serverURLs = serverURLs
         self.traceSink = traceSink
+        self.annotationsByTool = annotationsByTool
+        self.permissionStore = permissionStore
     }
 
     func runningSteps(for calls: [ToolCall]) -> [ToolCallStep] {
@@ -76,9 +97,17 @@ struct ToolCallRunner: Sendable {
         }
     }
 
-    func run(_ calls: [ToolCall], turnId: String) async -> Batch {
+    /// - Parameter confirm: 許可ゲートが「確認必須」と判定したときに呼ぶ問い合わせ。既定は
+    ///   「今回だけ許可」を即返す no-op(注入省略時は従来どおり実行——AllowAllStore との組で二重に安全)。
+    ///   本番は ChatViewModel が確認 UI へ橋渡しする実装を渡す。
+    func run(
+        _ calls: [ToolCall],
+        turnId: String,
+        confirm: @escaping @Sendable (ToolCallConfirmationRequest) async -> ToolCallConfirmationResponse
+            = { _ in .allowOnce }
+    ) async -> Batch {
         Self.logger.notice("tool calls開始 count=\(calls.count, privacy: .public)")
-        let results = await executeConcurrently(calls, turnId: turnId)
+        let results = await executeConcurrently(calls, turnId: turnId, confirm: confirm)
         Self.logger.notice("tool calls完了 count=\(results.count, privacy: .public)")
 
         return Batch(
@@ -88,8 +117,22 @@ struct ToolCallRunner: Sendable {
         )
     }
 
-    private func executeConcurrently(_ calls: [ToolCall], turnId: String) async -> [Execution] {
-        let context = ExecutionContext(executor: executor, traceSink: traceSink, turnId: turnId)
+    private func executeConcurrently(
+        _ calls: [ToolCall],
+        turnId: String,
+        confirm: @escaping @Sendable (ToolCallConfirmationRequest) async -> ToolCallConfirmationResponse
+    ) async -> [Execution] {
+        let context = ExecutionContext(
+            executor: executor,
+            traceSink: traceSink,
+            turnId: turnId,
+            permissionStore: permissionStore,
+            annotationsByTool: annotationsByTool,
+            serverURLsByTool: serverURLs,
+            serverNamesByTool: serverNames,
+            originalToolNamesByTool: originalToolNames,
+            confirm: confirm
+        )
         return await withTaskGroup(of: Execution.self) { group in
             for (index, call) in calls.enumerated() {
                 group.addTask {
@@ -107,7 +150,11 @@ struct ToolCallRunner: Sendable {
             return collected
         }
     }
+}
 
+// 結果組み立て(steps/cards/wire)と素通しユーティリティ。primary 宣言の type body を膨らませないよう
+// 同一ファイルの extension へ分ける(private メンバは同一ファイルなのでそのまま参照できる)。
+extension ToolCallRunner {
     private func makeFinishedSteps(calls: [ToolCall], results: [Execution]) -> [ToolCallStep] {
         var steps = runningSteps(for: calls)
         for result in results {
@@ -209,6 +256,12 @@ struct ToolCallRunner: Sendable {
         arguments: JSONValue,
         context: ExecutionContext
     ) async -> Execution {
+        // R4 許可ゲート(HITL): callTool の副作用が起きる前に確認要否を判定する(詳細は下の
+        // permissionGateDenial・正典: caldav docs/modeling/15 §A)。拒否なら failed Execution を返して終了。
+        if let denial = await permissionGateDenial(call: call, index: index, arguments: arguments, context: context) {
+            return denial
+        }
+
         context.traceSink?.emit(.toolCallStarted(
             turnId: context.turnId,
             callId: call.id,

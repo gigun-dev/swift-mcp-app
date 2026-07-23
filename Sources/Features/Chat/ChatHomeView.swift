@@ -314,6 +314,8 @@ struct ChatHomeView: View {
                 cardProxyResolver: { home.cardProxy(forToolName: $0) }
             )
             .id(chatVM.currentSession.id)
+            // R4 実行前確認(HITL)。確認が要るツールが積まれたら action sheet を出す。
+            .toolConfirmationDialog(chatVM: chatVM)
         case .failed(let message):
             failedView(message)
         }

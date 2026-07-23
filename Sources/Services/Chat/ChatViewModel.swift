@@ -24,9 +24,11 @@ import os // tools/call診断ログ(chat-diag)。原因確定後は撤去可能�
 public final class ChatViewModel {
     // MARK: - 公開状態(UI が観測)
 
+    // internal(set): setCardSnapshot を別ファイル extension(ChatViewModel+Persistence.swift・
+    // file_length 分割)へ出したため同一モジュールからの書き込みを許す(外部からは依然 read-only)。
     /// 表示用のターン列。user 発話と assistant 応答が交互に並ぶ。
     /// ストリーミング中は末尾 assistant ターンの text/toolSteps を逐次書き換える。
-    public private(set) var turns: [ChatTurn] = []
+    public internal(set) var turns: [ChatTurn] = []
 
     /// userと空assistantが同一トランザクションで追加されても失われない、明示的な送信イベント。
     /// retryで同じindexを再利用してもseqを増やすため、Viewは配列形状を推測せず変化を観測できる。
@@ -50,6 +52,10 @@ public final class ChatViewModel {
 
     /// ユーザーに見せるエラー(最大反復超過・ストリーム失敗など)。次の send で消える。
     public private(set) var errorMessage: String?
+
+    /// R4 許可ゲート(HITL)の確認キュー。Runner の confirm と確認 UI を仲介する(別型に隔離)。
+    /// View は `chatVM.toolConfirmations.pending` を観測し `respond(id:response:)` で応答する。
+    public let toolConfirmations = ToolConfirmationQueue()
 
     /// モデルの単価(設計 §6・T7)。**settable・既定 nil**。pricing(litellm データ)は
     /// PricingStore が async で後から取得するため、ChatViewModel の構築時点では未確定なことが
@@ -114,12 +120,13 @@ public final class ChatViewModel {
     private let sessionServerURLs: [URL]?
     private let sessionCreatedAt = Date()
 
+    // internal(private でなく): setCardSnapshot(別ファイル extension)から参照するため。
     /// 1ユーザーターン(send 呼び出し)が確定(.stop 到達 or 最大反復打ち切り)したときに呼ばれる。
     /// **ストリーム失敗による早期 return を含め、send() が返る直前に必ず呼ぶ**(defer)。
     /// 置き場の判断(設計に明記なし・こう解釈): ChatHomeViewModel が ChatStore.save を
     /// ここから呼ぶ想定(A5)。保存の成否はこのコールバック内で ChatViewModel の外側が扱う
     /// (ループを保存の成否でブロックしない・TraceSink と同じ fire-and-forget の思想)。
-    private let onTurnSettled: (() -> Void)?
+    let onTurnSettled: (() -> Void)?
 
     // MARK: - 内部状態
 
@@ -161,6 +168,8 @@ public final class ChatViewModel {
         sessionId: String = UUID().uuidString,
         serverURL: URL = ChatViewModel.placeholderServerURL,
         serverURLs: [URL]? = nil,
+        annotationsByTool: [String: ToolAnnotations] = [:],
+        permissionStore: any ToolPermissionResolving = AllowAllToolPermissionStore(),
         onTurnSettled: (() -> Void)? = nil
     ) {
         self.llm = llm
@@ -171,7 +180,9 @@ public final class ChatViewModel {
             originalToolNames: originalToolNames,
             serverIDs: serverIDs,
             serverURLs: serverURLsByTool,
-            traceSink: traceSink
+            traceSink: traceSink,
+            annotationsByTool: annotationsByTool,
+            permissionStore: permissionStore
         )
         self.tools = tools
         self.model = model
@@ -206,22 +217,6 @@ public final class ChatViewModel {
         ))
     }
 
-    public func setCardSnapshot(
-        turnIndex: Int,
-        cardIndex: Int,
-        expectedResourceUri: String,
-        html: String
-    ) {
-        let changed = ChatPersistenceAssembler.updateSnapshot(
-            in: &turns,
-            turnIndex: turnIndex,
-            cardIndex: cardIndex,
-            expectedResourceURI: expectedResourceUri,
-            html: html
-        )
-        if changed { onTurnSettled?() }
-    }
-
     // MARK: - ループのエントリ
 
     /// View用の送信入口。同期的に完了を待つテスト向けにsend自体もpublicのまま保つ。
@@ -241,6 +236,9 @@ public final class ChatViewModel {
     /// 進行中のsend/retryを打ち切る。構造化並行のtool callにもキャンセルが伝播する。
     public func cancelActiveSend() {
         sendTaskController.cancel()
+        // 確認待ちの tool call を deny で解く。これをしないと Runner の TaskGroup 子が await のまま残り
+        // cancel が完了しない(キャンセルされたチャットに確認ダイアログだけ残る事故も防ぐ)。
+        toolConfirmations.failAll()
     }
 
     /// ユーザー発話を1つ受けて、tool-use ループを .stop / 最大反復まで回す。
@@ -318,7 +316,12 @@ public final class ChatViewModel {
             // 伝播し、URLSession 呼び出し自体が中断される(サーバー副作用が「もう見ていないチャット」で
             // 走り続ける事故を防ぐ・タスク指示)。
             turns[assistantIndex].toolSteps = toolCallRunner.runningSteps(for: calls)
-            let toolBatch = await toolCallRunner.run(calls, turnId: turnId)
+            // R4: closure は Runner の TaskGroup 子(非 MainActor)から呼ばれるが、enqueue は MainActor
+            // 隔離なので await で MainActor へホップして安全に確認キューを触る(Request/Response は Sendable)。
+            let toolBatch = await toolCallRunner.run(calls, turnId: turnId) { [weak self] request in
+                guard let self else { return .deny }
+                return await self.toolConfirmations.enqueue(request)
+            }
             recordToolBatch(toolBatch, assistantIndex: assistantIndex)
             if Task.isCancelled { return }
             // continue(次の反復へ) — モデルがツール結果を見て次を判断する(設計 §3-5)。

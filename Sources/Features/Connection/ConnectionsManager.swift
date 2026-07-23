@@ -322,6 +322,10 @@ public final class ConnectionsManager {
         let proxy = AppsServerProxy(client: connection.client)
         // app 発 tools/call の visibility 判定用に一覧を注入(設計 §7 の 401 MUST)。
         await proxy.setTools(connection.tools)
+        // R4 許可ゲート(カード発 tools/call の deny ブロック)を注入。ToolPermissionStore は
+        // UserDefaults 実装で状態を持たない(同じ永続データを見る)ので、ChatHomeViewModel が持つ
+        // インスタンスと別インスタンスでも決定は一致する——プラミングを増やさず新規生成でよい。
+        await proxy.setPermissionGate(store: ToolPermissionStore(), serverURL: entry.url)
         // LLM 定義は前置名(slug__tool)+ 出自注記つき(prefixedToolDefinitions)。
         let toolDefs = try prefixedToolDefinitions(from: connection.tools, slug: slug, serverName: entry.name)
         // ui:// マップも前置名キーで作る(ChatViewModel.uiResourceURIs は前置名で引く)。

@@ -40,9 +40,28 @@ public func toolDefinitions(from tools: [Tool]) throws -> [ToolDefinition] {
         return ToolDefinition(function: .init(
             name: tool.name,
             description: tool.description,
-            parameters: parameters
+            parameters: parameters,
+            // R4: annotations(untrusted hint)を Kernel の許可ゲート判定へ運ぶ。従来はここで落ちていた。
+            annotations: kernelAnnotations(from: tool.annotations)
         ))
     }
+}
+
+/// swift-sdk の `Tool.Annotations`(Tools.swift:35)を Kernel の `ToolAnnotations` へ写す。
+///
+/// なぜ Services で写すか(Kernel でなく): swift-sdk の型に触れる変換なので、他の MCP→Kernel 変換
+/// (uiMeta 抽出等)と同じく最も内側で swift-sdk に触れてよい層 = Services に置く。全フィールドが
+/// 空(サーバーが annotations を一切付けていない)なら nil を返す——「未申告」を Kernel 側でも
+/// nil として表現し、性悪説の既定(確認必須)へ自然に倒す(ToolPermissionPolicy 参照)。
+func kernelAnnotations(from annotations: Tool.Annotations) -> ToolAnnotations? {
+    if annotations.isEmpty { return nil }
+    return ToolAnnotations(
+        title: annotations.title,
+        readOnlyHint: annotations.readOnlyHint,
+        destructiveHint: annotations.destructiveHint,
+        idempotentHint: annotations.idempotentHint,
+        openWorldHint: annotations.openWorldHint
+    )
 }
 
 /// MCP のツール一覧を、slug で名前空間化しつつ LLM の ToolDefinition 配列へ変換する(M2)。
@@ -72,7 +91,9 @@ public func prefixedToolDefinitions(from tools: [Tool], slug: String, serverName
         return ToolDefinition(function: .init(
             name: ToolNamespacing.prefixed(slug: slug, tool: tool.name),
             description: annotated,
-            parameters: parameters
+            parameters: parameters,
+            // R4: 前置名変換でも annotations を保持する(名前空間化は許可ゲートの判定材料を変えない)。
+            annotations: kernelAnnotations(from: tool.annotations)
         ))
     }
 }
