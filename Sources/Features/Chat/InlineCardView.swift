@@ -152,14 +152,16 @@ final class InlineCardHost: Identifiable {
     ///     containerDimensions.width としてカードへ渡り、caldav カードがこの幅にレイアウトする。
     ///   - maxHeight: inline の実 maxHeight(可視高 × 0.65・H1)。containerDimensions.maxHeight として
     ///     広告され、size-changed のクランプ上限を兼ねる。
+    /// 戻り値=新規に構築を開始したか(履歴再訪の再 push 判定 HistoryCardRepushDecision が使う。下参照)。
+    @discardableResult
     func buildIfNeeded(
         proxy: AppsServerProxy,
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
         colorScheme: ColorScheme
-    ) {
-        guard buildTask == nil else { return }  // 既に構築開始済み(= host は生存中)なら何もしない。
+    ) -> Bool {
+        guard buildTask == nil else { return false }  // 既に構築開始済み(= host は生存中)なら何もしない。
         // 寸法を保持(onSizeChanged クランプ・inline 復帰通知で使う)。build は非同期なのでここで確定させる。
         self.containerWidth = containerWidth
         self.inlineMaxHeight = maxHeight
@@ -171,6 +173,9 @@ final class InlineCardHost: Identifiable {
             maxHeight: maxHeight,
             colorScheme: colorScheme
         ) }
+        // 初回 build 開始 = true。build 内 sendInitialPayload が toolResult を1度 push するので、履歴再訪の
+        // 再 push はこの初回では走らせない(false のとき=既 build のときだけ再送・二重送信回避)。
+        return true
     }
 
     private func build(
@@ -255,21 +260,6 @@ final class InlineCardHost: Identifiable {
                 )
             self.buildFailed = true
         }
-    }
-
-    /// tool-input(引数)→ tool-result(structuredContent)の順で初期ペイロードを配送する。
-    ///
-    /// 【履歴 revalidation gate 撤去後の姿(2026-07-23・queue 2)】
-    /// 以前はここに「履歴由来なら _meta へ hint を載せて gate を arm し、成功完了までカードを触らせない」
-    /// 経路があった。その gate/hint 機構は caldav 側裁定で撤去した(caldavリポジトリ docs/modeling/15・SWR):
-    /// ホスト固有の `_meta` hint はサードパーティカードを全滅させ・RFC 5861(stale-while-revalidate)に
-    /// 逆行し・ext-apps に足場が無い。鮮度は caldav 側 SWR(structuredContent 内 generatedAt の 60 秒判定)が
-    /// 担い、その発火条件は「host が履歴復元時に保存済み toolResult をカードへ再 push すること」だけ。
-    /// よってライブ・履歴を問わず、保存済み structuredContent を素直に tool-result として送る
-    /// (この再 push こそが SWR の発火条件なので必ず残す・下の履歴経路テストで固定)。
-    func sendInitialPayload(card: CardEmbed, session: AppsBridgeSession) async {
-        await session.sendToolInput(arguments: card.arguments ?? .object([:]))
-        await session.sendToolResult(card.structuredContent ?? .null)
     }
 
     /// inline は実 maxHeight でクランプし、fullscreen 中は高さ追従を止める。

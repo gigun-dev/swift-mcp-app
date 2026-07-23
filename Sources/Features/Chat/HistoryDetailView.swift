@@ -147,7 +147,10 @@ struct HistoryDetailView: View {
                 maxHeight: inlineMaxHeight,
                 // 履歴レコードは不変。復元後の DOM を snapshotHTML へ上書きせず、再訪時は常に
                 // 保存時の tool-input/result を起点にする。
-                onSnapshot: nil
+                onSnapshot: nil,
+                // 履歴経路であることを明示。既に build 済みの host を再表示したとき、保存済み toolResult を
+                // 1回だけ再 push して caldav 側 SWR に revalidate 機会を与える(2026-07-24・鮮度ギャップ修正)。
+                isHistoryRevisit: true
             )
             // 【2026-07-23・queue 2】以前はここに revalidation 待ち/失敗オーバーレイ(操作ゲート)を
             // 重ねていたが撤去した。gate/hint は caldav 側裁定で撤去(caldavリポジトリ docs/modeling/15・SWR)。

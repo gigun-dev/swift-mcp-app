@@ -42,6 +42,10 @@ struct InlineCardView: View {
     /// を閉じ込めて渡し、最終的に ChatViewModel.setCardSnapshot を叩く。既定 nil で T5 の既存呼び出し
     /// (スナップショット不要のプレビュー等)を壊さない。
     var onSnapshot: (@MainActor (String) -> Void)?
+    /// このカードが履歴詳細ビュー(HistoryDetailView)由来か。true のとき、既に build 済みの host を
+    /// 再表示した場合に保存済み toolResult を1回だけ再 push して caldav 側 SWR に revalidate 機会を与える
+    /// (2026-07-24・鮮度ギャップ修正・HistoryCardRepushDecision 参照)。既定 false でライブ会話経路は不変。
+    var isHistoryRevisit: Bool = false
 
     // 高さ(desiredHeight)は AppCardState(ObservableObject)で観測する。@Observable の host とは
     // 別機構だが、既存の高さ状態型を作り替えない方針(ファイル冒頭 InlineCardHost.cardState 参照)。
@@ -56,7 +60,8 @@ struct InlineCardView: View {
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
-        onSnapshot: (@MainActor (String) -> Void)? = nil
+        onSnapshot: (@MainActor (String) -> Void)? = nil,
+        isHistoryRevisit: Bool = false
     ) {
         self.host = host
         self.proxy = proxy
@@ -64,6 +69,7 @@ struct InlineCardView: View {
         self.containerWidth = containerWidth
         self.maxHeight = maxHeight
         self.onSnapshot = onSnapshot
+        self.isHistoryRevisit = isHistoryRevisit
         // @ObservedObject を host の cardState に束ねる(init で _cardState を組む標準パターン)。
         self._cardState = ObservedObject(wrappedValue: host.cardState)
     }
@@ -78,13 +84,23 @@ struct InlineCardView: View {
                 // 取得が走るので、それより前に設定しておく)。host は生存し続けるが closure は
                 // View 再生成のたびに新しくなりうるので、毎回入れ替える(identity は同じなので実害なし)。
                 host.onSnapshot = onSnapshot
-                host.buildIfNeeded(
+                let startedNewBuild = host.buildIfNeeded(
                     proxy: proxy,
                     card: card,
                     containerWidth: containerWidth,
                     maxHeight: maxHeight,
                     colorScheme: colorScheme
                 )
+                // 履歴再訪で既に build 済みの host を再表示したときだけ、保存済み toolResult を再 push して
+                // caldav 側 SWR に revalidate 機会を与える(2026-07-24・鮮度ギャップ修正)。新規 build 時は
+                // build 内 sendInitialPayload が push するので再送しない(二重送信回避)。判定は Kernel の
+                // 純関数へ寄せてテストで固定。「再表示1回=1回」はこの .task が appear 単位で1回起動することで担保。
+                if HistoryCardRepushDecision.shouldRepush(
+                    isHistoryRevisit: isHistoryRevisit,
+                    startedNewBuild: startedNewBuild
+                ) {
+                    await host.republishToolResultForHistoryRevisit(card: card)
+                }
             }
             // #5: ホスト外観の変化をカードへ追送する(ライト⇄ダーク切替・システム設定変更)。build 後の
             // 変更のみが対象で、host 側が同値ガード・session 未生成ガードを持つので初回や build 前は no-op。
