@@ -1153,3 +1153,16 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   無効化後再addで再有効化/再addでname更新)。make verify 完走(275 tests / 29 suites・lint 0・make app OK)。
 - 効果: queue 11 の観測 card.resolve reason=server-url-mismatch が今後の再追加で発火しなくなるはず
   (観測で回帰監視できる)。commit 514b01b。
+
+## 2026-07-24 c27dd10 E2E裏取り(履歴再訪の鮮度再push・serverID変更耐性)
+
+- simulator-operator(UDID 01CB4E3F...)で実操作E2E。開始時caldav未接続→設定「認証して接続」で
+  fixture `changeme` 入力→OAuth完走。todo状態は一切変更せず。
+- 検証1(修正2・履歴再訪の鮮度再push)合格: 履歴再訪でプレースホルダ0回・カード即ライブ再描画。
+  ログ: resources/read→session start awaitingInitialize→tool-input/tool-result を outbox退避(2件)→
+  ui/notifications/initialized で ready遷移・outbox flush(2件を1回)。再pushは1回のみ・多重送出なし。
+- 検証2(修正1・再追加耐性)合格: caldav削除→同URL再追加(新serverID)→同履歴を再訪→プレースホルダに
+  落ちずライブ再描画。serverID変更を跨いで層4(serverURLフォールバック)が奏功。
+- 補足: 本E2Eはqueue 10前ビルド。検証2は「delete→re-addで新serverIDでも層4が救う」を確認。
+  queue 10層3は「deleteせずaddを繰り返してもserverID不変」= さらに上流を断つ補完レイヤ。
+- 証拠: scratchpad/shots/ 21-live.png / 27-reopen-wait.png / 53-reopen2wait.png ほか。
