@@ -1088,3 +1088,13 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   再確認は二重確認のため)。232 tests。設定画面の決定一覧・リセットUIは次slice。
 - 別件: caldav側にdiag-card(1243B・依存ゼロ)を追加しwrangler deploy(b7074f32)。
   claude.ai iOSでの描画可否によりサイズ説/認証説を切り分ける(ユーザー検証待ち)。
+
+## 2026-07-23 R4実機同等E2E完走 + 要再認可UX実装
+
+- Harness A(01CB4E3F)でOAuth同意フロー一発完走(約1分・tools=25)→ R4許可ゲートの
+  3経路をE2E検証: create-todo=ダイアログ表示→1回だけ許可→実行成功、
+  list-todos=readOnly申告により無確認で即実行、delete-todo=destructive警告文つき
+  ダイアログ表示→許可→削除成功(テストデータr4testは後始末済み)。
+- 要再認可UX: ReauthorizationGateDelegate(接続確立後のpresentAuthorizationURLを遮断し
+  needsAuthへ載せ替え)を実装。会話中に突然ブラウザが開くSDK既定挙動を封じた。
+- skill知見追記: xcrun simctl uiにtapは無い(idbを最初から使う)、OAuth同意フローの実測手順。

@@ -176,6 +176,14 @@ public final class ConnectionsManager {
 
     private func performSilentConnect(_ entry: MCPServerEntry, slug: String) async {
         let delegate = SilentOAuthAuthorizationDelegate()
+        // 無言接続でも、接続確立後の refresh 失効起因の再認可要求は「要再認可」へ載せ替える
+        // (design/08 §残課題)。無言接続では初回認可段階の presentAuthorizationURL は内側 delegate が
+        // 即 throw(NeedsInteraction)するのでブラウザは元々開かないが、gate で包むことで
+        // 確立後の refresh 失効も同じ needsAuth 導線に集約でき、対話接続と挙動が揃う。
+        let serverID = entry.id
+        let gate = ReauthorizationGateDelegate(wrapping: delegate) { [weak self] in
+            Task { @MainActor [weak self] in self?.handleReauthorizationRequired(serverID: serverID) }
+        }
         // 無言接続では対話は起きない(presentAuthorizationURL は即 throw)。redirectURI は
         // OAuthConfiguration が要求するので、loopback の妥当な URL を1つ渡す(実際には使われない)。
         let redirectURI = URL(string: "http://127.0.0.1/callback")!
@@ -183,9 +191,12 @@ public final class ConnectionsManager {
             let connection = try await MCPConnection.connect(
                 serverURL: entry.url,
                 redirectURI: redirectURI,
-                authorizationDelegate: delegate,
+                authorizationDelegate: gate,
                 allowInsecureLoopback: MCPHostBuildPolicy.allowInsecureLoopback
             )
+            // 接続確立を gate へ通知。以後 SDK が refresh 失効でフル再認可へフォールスルーしても
+            // ブラウザを開かず、handleReauthorizationRequired 経由で needsAuth へ落ちる。
+            gate.markEstablished()
             let ready = try await makeReady(entry: entry, slug: slug, connection: connection)
             guard !Task.isCancelled else { return }
             states[entry.id] = .ready(ready)
@@ -228,14 +239,24 @@ public final class ConnectionsManager {
         // delegate は接続1回につき1インスタンス(loopback リスナーの生存を1フローに閉じる・
         // ChatHomeViewModel の旧 runConnect と同じ作法)。この async 関数が返るまで delegate は生存する。
         let delegate = LoopbackOAuthAuthorizationDelegate()
+        // 初回認可(このタップ起点フロー)の間だけブラウザ提示を許可し、接続確立後の再認可要求
+        // (= 会話中の refresh token 失効)はブラウザを開かず要再認可へ載せ替える(design/08 §残課題)。
+        // gate で包むことで、SDK が invalid_grant → acquireToken へフォールスルーして
+        // presentAuthorizationURL を呼んでも、確立後は throw されブラウザが会話に割り込まない。
+        let serverID = entry.id
+        let gate = ReauthorizationGateDelegate(wrapping: delegate) { [weak self] in
+            Task { @MainActor [weak self] in self?.handleReauthorizationRequired(serverID: serverID) }
+        }
         do {
             let redirectURI = try delegate.prepareRedirectURI()
             let connection = try await MCPConnection.connect(
                 serverURL: entry.url,
                 redirectURI: redirectURI,
-                authorizationDelegate: delegate,
+                authorizationDelegate: gate,
                 allowInsecureLoopback: MCPHostBuildPolicy.allowInsecureLoopback
             )
+            // 初回認可はここまでで完了。以後の presentAuthorizationURL は refresh 失効起因なので遮断する。
+            gate.markEstablished()
             let ready = try await makeReady(entry: entry, slug: slug, connection: connection)
             guard !Task.isCancelled else { return }
             states[entry.id] = .ready(ready)
@@ -252,6 +273,25 @@ public final class ConnectionsManager {
                 )
         }
         _ = delegate  // 明示保持(この行まで delegate を生存させる意図の可視化)。
+    }
+
+    // MARK: - 対話セッション中の refresh 失効 → 要再認可への載せ替え
+
+    /// 接続確立後に SDK が(refresh token 失効で)再認可(ブラウザ提示)を要求したとき、
+    /// ReauthorizationGateDelegate のコールバックから MainActor 上で呼ばれる。ブラウザは既に
+    /// gate 側で遮断済みなので、ここでは接続状態を needsAuth へ載せ替えるだけ
+    /// (ServerStatusMenu が既存の needsAuth バッジ+「タップで再認証」導線を出す・design/08 原則4)。
+    private func handleReauthorizationRequired(serverID: UUID) {
+        // 既に別要因で needsAuth/failed/切断に落ちている、あるいはユーザーが再接続を始めて
+        // connecting に入っている場合は上書きしない(load: このコールバックは transport の背後スレッドから
+        // 遅れて届きうるため、最新の状態を尊重する)。ready のときだけ「動いていた接続が失効した」
+        // として needsAuth へ倒す。
+        guard case .ready = state(for: serverID) else { return }
+        states[serverID] = .needsAuth
+        connectingIdentities[serverID] = nil
+        logger.notice("対話セッション中の再認可要求 → 要再認証へ載せ替え \(serverID.uuidString, privacy: .public)")
+        // ready 集合が減ったので、空の現行チャットを最新ツールで組み直させる(発話済みは差し替えない)。
+        onReadyConnectionsChanged?()
     }
 
     // MARK: - 切断 / 破棄

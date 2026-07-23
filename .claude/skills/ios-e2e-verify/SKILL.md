@@ -181,3 +181,19 @@ display modeの成功を実presentationより先に返していないかを調�
   「器の側を確認した / 実カードは未確認」と範囲を明示する。
 - 区切りごとに `docs/next-directions.md`(正典・打ち消し線 + `> 日付 更新:` を積層)と
   `docs/log.md`(追記専用)を更新する。**誤って書いた事実は撤回を明記して直す**。
+
+### tap は idb を使う(`xcrun simctl ui` に tap は無い)
+
+`xcrun simctl ui <udid>` のサブコマンドは appearance / increase_contrast / content_size だけで、
+**tap / text は存在しない**(usage を出して終了コード0で成功したように見えるのが罠)。
+座標タップとASCII入力は `idb ui tap --udid <udid> <x> <y>` / `idb ui text --udid <udid> "..."` を使う。
+`simctl ... || idb ...` のフォールバック連結は「simctl が静かに usage を吐いて成功扱い」になる
+場合に idb が呼ばれず空振りするので、最初から idb を書く。
+
+### OAuth 同意フローの実測(2026-07-23・Harness A で一発完走)
+
+「認証して接続」→ ASWebAuthenticationSession で同意ページ(読み込み〜4秒)→ password 欄は
+**自動 focus 済み**なので `idb ui text` で即入力できる → 「許可する」タップ → コールバック復帰 →
+ログ `対話接続 成功 ... tools=N` で完走確認。全体約1分・人手ゼロ。
+スクショは 920px 幅で返る環境もある(元解像度 1206px)。tap のポイント座標へは
+**表示幅/402 で割る**(920px 表示なら ≈2.29)。918px/2.284 固定と思い込まない。

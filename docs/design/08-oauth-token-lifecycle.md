@@ -74,5 +74,23 @@ single-flight は「1接続 = 1 transport(actor)= 1 authorizer」の構造で成
 
 残課題: TTL 動的窓(TTL×10%)は SDK の窓が接続時固定スカラのため適用不可(SDK PR か
 カスタム authorizer ラッパが必要・caldav TTL 3600s では固定300sと一致し実害なし)。
-対話セッション中の refresh token 失効時、SDK はその場でブラウザ再認可を開く UX になる
-(「要再認可」状態への載せ替えは SDK フックが必要・未着手)。SSE 再接続の refresh も未検証。
+SSE 再接続の refresh も未検証。
+
+## 2026-07-23 実装追補: 対話セッション中の refresh 失効を「要再認可」へ載せ替え(残課題1件消化)
+
+旧残課題「対話セッション中の refresh token 失効時、SDK はその場でブラウザ再認可を開く」を実装で解消した。
+原因の再確認: `OAuthAuthorizer.handleChallenge`(swift-sdk 0.12.1)は 401 で refresh を試み、
+refresh 失敗時に `acquireToken` へフォールスルー = `presentAuthorizationURL` を呼ぶ。この delegate は
+接続の全寿命にわたり authorizer/transport に保持されるため、対話接続で使う
+LoopbackOAuthAuthorizationDelegate のままだと tools/call・resources/read の最中に
+ASWebAuthenticationSession が会話へ割り込む(原則4「invalid_grant → 再認可導線を明示表示」違反)。
+
+対処: 内側 delegate を包む `ReauthorizationGateDelegate`(Sources/Services/OAuth/)を新設。
+「確立前(初回認可フロー)= 内側へ委譲しブラウザ提示を許可」「確立後(markEstablished 済み)=
+ブラウザを開かず `ReauthorizationRequired` を throw + コールバック発火」の状態機械に倒す。
+「確立後」の判定は **MCPConnection.connect が成功して戻った直後に markEstablished() を呼ぶ**ことで
+与える(初回認可 code フローは connect の内側で完結し1ラウンドで済むため、connect 戻り = 確立で安全)。
+ConnectionsManager は対話・無言の両接続で gate を使い、コールバックで states[id]=.needsAuth へ載せ替える
+(ServerStatusMenu の既存 needsAuth バッジ+「タップで再認証」導線を再利用・新規 UI は作らない)。
+ユーザーの明示操作(接続画面からの再認可)は新しい接続=新しい gate(established=false)なので従来どおり
+ブラウザが出る。状態遷移は Tests/ServicesTests/ReauthorizationGateDelegateTests.swift で固定。
