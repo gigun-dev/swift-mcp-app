@@ -127,7 +127,12 @@
 6. **caldav残E2Eとagenda**
    - 予定行色、filter、追加・終日保存、action-row、open-link、C3/C4を確認する。
    - fullscreen月grid、日timeline、echo pinの`calendarId`問題を順に扱う。
-7. **ツール許可ゲート(R4・caldav申し送り採択)**
+7. ~~**ツール許可ゲート(R4・caldav申し送り採択)**~~ ✅
+   > **2026-07-23 更新: 実装完了(67a7b3d)。** Kernel純関数(緩和はreadOnly申告のみ)+
+   > UserDefaults Store(serverURL×originalToolName)+ Runnerゲート(Features注入の確認フック・
+   > 並行callキュー)+ 確認ダイアログ。カード発はdenyのみ尊重(直前タップへの再確認は二重確認)。
+   > annotationsはOpenAI wireへ非送出。232 tests。残: 設定画面の決定一覧/リセットUI(次slice)、
+   > 実機での確認ダイアログ触感、caldav実annotationsとのE2E。実機deployは端末再接続待ち。
    - 影響面調査済み: annotationsは現状一切パースしていない。`ToolConversion.swift`でMCP
      `tool.annotations`(readOnlyHint/destructiveHint等)を`ToolDefinition`へ保持する所から始める。
    - 挿入点は`ToolCallRunner.executeValid`の`callTool`直前。カード発は`AppsServerProxy.callTool`側。
