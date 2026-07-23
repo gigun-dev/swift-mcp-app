@@ -35,27 +35,38 @@ extension ChatHomeView {
                     sidebarDragTranslation = 0
                     return
                 }
+                // minimumDistance=12 到達済みなので初回 onChanged で軸をロックする(以後固定)。
+                if sidebarDragAxis == nil {
+                    sidebarDragAxis = SidebarGesturePolicy.lockAxis(
+                        horizontal: Double(value.translation.width),
+                        vertical: Double(value.translation.height)
+                    )
+                }
+                // 縦ロックなら translation を据え置き(0 のまま)、drawer を追従させない。
+                guard sidebarDragAxis == .horizontal else { return }
                 sidebarDragTranslation = CGFloat(SidebarGesturePolicy.liveTranslation(
                     horizontal: Double(value.translation.width),
-                    vertical: Double(value.translation.height),
                     intent: .open
                 ))
             }
             .onEnded { value in
                 guard activeSidebarGesture == .chatPane else { return }
-                let reachedTarget = openGestureAllowed == true && SidebarGesturePolicy.commits(
-                    horizontal: Double(value.translation.width),
-                    vertical: Double(value.translation.height),
-                    predictedHorizontal: Double(value.predictedEndTranslation.width),
-                    revealWidth: Double(revealWidth),
-                    intent: .open
-                )
+                // 横ロックした gesture だけが commit 判定に到達する(縦ロックは追従していない)。
+                let reachedTarget = openGestureAllowed == true
+                    && sidebarDragAxis == .horizontal
+                    && SidebarGesturePolicy.commits(
+                        horizontal: Double(value.translation.width),
+                        predictedHorizontal: Double(value.predictedEndTranslation.width),
+                        revealWidth: Double(revealWidth),
+                        intent: .open
+                    )
                 withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
                     showingSidebar = reachedTarget
                     sidebarDragTranslation = 0
                 }
                 activeSidebarGesture = nil
                 openGestureAllowed = nil
+                sidebarDragAxis = nil
             }
     }
 
@@ -67,9 +78,17 @@ extension ChatHomeView {
                 guard showingSidebar else { return }
                 if activeSidebarGesture == nil { activeSidebarGesture = .sidebarPane }
                 guard activeSidebarGesture == .sidebarPane else { return }
+                // minimumDistance=12 到達済みなので初回 onChanged で軸をロックする(以後固定)。
+                if sidebarDragAxis == nil {
+                    sidebarDragAxis = SidebarGesturePolicy.lockAxis(
+                        horizontal: Double(value.translation.width),
+                        vertical: Double(value.translation.height)
+                    )
+                }
+                // 縦ロックなら List の縦scroll に譲り、main card は据え置く。
+                guard sidebarDragAxis == .horizontal else { return }
                 sidebarDragTranslation = CGFloat(SidebarGesturePolicy.liveTranslation(
                     horizontal: Double(value.translation.width),
-                    vertical: Double(value.translation.height),
                     intent: .close
                 ))
             }
@@ -77,11 +96,12 @@ extension ChatHomeView {
                 guard activeSidebarGesture == .sidebarPane else { return }
                 settleCloseDrag(
                     horizontal: value.translation.width,
-                    vertical: value.translation.height,
                     predictedHorizontal: value.predictedEndTranslation.width,
-                    revealWidth: revealWidth
+                    revealWidth: revealWidth,
+                    axis: sidebarDragAxis
                 )
                 activeSidebarGesture = nil
+                sidebarDragAxis = nil
             }
     }
 
@@ -93,9 +113,20 @@ extension ChatHomeView {
                 guard showingSidebar else { return }
                 if activeSidebarGesture == nil { activeSidebarGesture = .exposedMain }
                 guard activeSidebarGesture == .exposedMain else { return }
+                // minimumDistance=0 なので tap 兼用。tapSlop(8pt)以内はまだ tap かもしれず軸を決めない。
+                // 累積が slop を初めて超えたフレームで一度だけロックする(tap→close の既存挙動を壊さない)。
+                let magnitudeSquared = Double(value.translation.width * value.translation.width
+                    + value.translation.height * value.translation.height)
+                if sidebarDragAxis == nil, magnitudeSquared > exposedMainTapSlop * exposedMainTapSlop {
+                    sidebarDragAxis = SidebarGesturePolicy.lockAxis(
+                        horizontal: Double(value.translation.width),
+                        vertical: Double(value.translation.height)
+                    )
+                }
+                // slop 未満(軸未ロック)や縦ロックは追従させない。tap 判定は onEnded の resolve が担う。
+                guard sidebarDragAxis == .horizontal else { return }
                 sidebarDragTranslation = CGFloat(SidebarGesturePolicy.liveTranslation(
                     horizontal: Double(value.translation.width),
-                    vertical: Double(value.translation.height),
                     intent: .close
                 ))
             }
@@ -105,25 +136,32 @@ extension ChatHomeView {
                     horizontal: Double(value.translation.width),
                     vertical: Double(value.translation.height),
                     predictedHorizontal: Double(value.predictedEndTranslation.width),
-                    revealWidth: Double(revealWidth)
+                    revealWidth: Double(revealWidth),
+                    lockedAxis: sidebarDragAxis,
+                    tapSlop: exposedMainTapSlop
                 )
                 withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
                     showingSidebar = resolution != .close
                     sidebarDragTranslation = 0
                 }
                 activeSidebarGesture = nil
+                sidebarDragAxis = nil
             }
     }
 
+    // exposedMain の tap/drag 境界。onChanged の軸ロック閾値と resolveExposedMain の tapSlop を
+    // 同じ値に揃え、live 追従と onEnded 判定の食い違いを防ぐ(policy 既定と同じ 8pt)。
+    private var exposedMainTapSlop: Double { 8 }
+
     private func settleCloseDrag(
         horizontal: CGFloat,
-        vertical: CGFloat,
         predictedHorizontal: CGFloat,
-        revealWidth: CGFloat
+        revealWidth: CGFloat,
+        axis: SidebarGesturePolicy.Axis?
     ) {
-        let reachedTarget = SidebarGesturePolicy.commits(
+        // 横ロックした close drag だけ commit 判定へ。縦ロックはそのまま開いたまま残す。
+        let reachedTarget = axis == .horizontal && SidebarGesturePolicy.commits(
             horizontal: Double(horizontal),
-            vertical: Double(vertical),
             predictedHorizontal: Double(predictedHorizontal),
             revealWidth: Double(revealWidth),
             intent: .close

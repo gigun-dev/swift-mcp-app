@@ -1024,3 +1024,13 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 履歴カードは即操作可能に。鮮度はcaldav SWR(generatedAt 60秒判定)が担い、発火条件の
   「保存済みtoolResult再push」をhistoryRestorePushesSavedToolResultで固定。
 - artisan(opus)委譲・mainレビュー(経緯コメントの参照先をcaldavリポジトリ表記へ修正)。
+
+## 2026-07-23 drawerゆっくりドラッグのカクつき修正 + 指追従原則の制定
+
+- 根因: SidebarGesturePolicy.liveTranslationが累積translationの縦横比較を毎フレーム実施、
+  ゆっくりドラッグで判定が反転し出力が実値↔0を往復。フリックで露見しない典型シグネチャ。
+- 修正: one-shot軸ロック(lockAxis)へ変更。liveTranslation/commitsから縦横比較を除去し
+  「ロック後は縦を見ない」を型で表明。exposedMainはtapSlop超過フレームで初めてロック。
+  回帰テストaxisLockKeepsTrackingRegardlessOfVertical等を追加(6 tests)。
+- 恒久対策: docs/design/07(指追従の設計原則P1〜P4)と.claude/rules/interaction.mdを制定、
+  CLAUDE.mdへ必読参照を追記。「カクつき(官能)」を「不連続性(単体テスト)」へ還元する方針。

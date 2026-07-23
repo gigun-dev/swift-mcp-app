@@ -37,6 +37,10 @@ struct ChatHomeView: View {
     // open gestureは開始時のframe判定を指が離れるまで固定する。scroll中のpreference更新で
     // gestureの可否が途中反転しないようにする。
     @State var openGestureAllowed: Bool?
+    // 2026-07-23 カクつき修正: gesture 開始直後に1度だけ決める追従軸。UIScrollView の direction lock と
+    // 同じ発想。毎フレーム縦横判定していた頃は拮抗して translation が実値↔0 を往復しカクついた。
+    // 縦ロックの間は translation を更新せず据え置き、onEnded/リセットで nil へ戻す。
+    @State var sidebarDragAxis: SidebarGesturePolicy.Axis?
 
     init() {
         // settings を先に作り、それを home に注入する。@State の init 直接代入は
@@ -261,6 +265,7 @@ struct ChatHomeView: View {
         }
         activeSidebarGesture = nil
         openGestureAllowed = nil
+        sidebarDragAxis = nil
     }
 
     /// サイドバーの .active ハイライト対象。ライブ時は現在セッション、履歴閲覧時は閲覧中セッション。
