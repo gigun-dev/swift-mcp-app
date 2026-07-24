@@ -36,26 +36,30 @@ struct ServerDetailView: View {
     var home: ChatHomeViewModel
     @State private var editing = false
 
+    // ツール許可の読み書き口 + 反映トークン。2026-07-24 インライン化(ユーザーFB)で、旧
+    // ServerToolPermissionsView(中間プッシュ画面)から移設した。@State/let はプロパティ宣言を
+    // 本体に置く必要がある(extension には置けない)ので、一覧・一括・行ロジック本体は
+    // ServerDetailView+Tools.swift の extension に切り出しつつ、状態だけここに保持する。
+    //
+    // store: ToolPermissionStore は UserDefaults 実装で状態を持たない(同じ永続データを見る)ため、
+    // makeReady が proxy に注入するインスタンスと別でも決定は一致する。画面ごとに新規生成でよい。
+    let toolStore = ToolPermissionStore()
+    // 詳細画面(ToolPermissionDetailView)で保存/リセットして pop で戻ったとき、行ラベルを取り直す
+    // ためのトークン。ToolPermissionStore は @Observable でない(UserDefaults 直読み)ので SwiftUI は
+    // 決定変更を自動追跡できない。行の onAppear で進めて body 再評価を強制し storedDecision を読み直す。
+    @State var toolRefreshToken = 0
+
     var body: some View {
         let state = home.connections.state(for: entry.id)
         Form {
             connectionSection(state)
-            // ツール面への単一導線(design/09 S2)。接続前でも開ける(未接続時は権限画面側が
-            // プレースホルダを出す)ので、tools 一覧の有無に関わらず常に置く。
-            //
-            // 2026-07-24 統合(ユーザーFB・役割重複解消): 以前はここに「ツール(N)」の読み取り専用
-            // ビューア(toolsSection/toolRow: name+説明+「app 専用」バッジ)を別途出し、その下に
-            // 「ツールの権限」への導線を並べていた。両者が同じ tools/list を列挙して役割がかぶって
-            // いたため、読み取り専用ビューアを廃止し「ツール」1画面(ServerToolPermissionsView)に
-            // 「何があるか」+「どう許可するか」を統合した。失われた「app 専用」バッジは権限一覧の
-            // 各行(画面2)へ移設した(model-visible でないツールも許可設定自体は残す)。
-            Section {
-                NavigationLink {
-                    ServerToolPermissionsView(entry: entry, home: home)
-                } label: {
-                    Label("ツール", systemImage: "hand.raised")
-                }
-            }
+            // 2026-07-24 階層を1段浅く(ユーザーFB): 以前はここに「ツール」への NavigationLink を置き、
+            // その先(ServerToolPermissionsView)でツール一覧+一括メニューを出していた。claude.ai の
+            // コネクタ詳細と同じく「有効/状態」と同階層でツール一覧が並ぶべき、との指摘を受けて中間
+            // プッシュを廃止し、旧 ServerToolPermissionsView の中身をこの Form に直接インライン化した
+            // (実体は ServerDetailView+Tools.swift の toolPermissionsContent)。ツール個別の詳細
+            // (ToolPermissionDetailView)への push だけは各行に残す。
+            toolPermissionsContent(state)
             Section {
                 Button("名前・URL を編集") { editing = true }
                 Button("このサーバーを削除", role: .destructive) {
