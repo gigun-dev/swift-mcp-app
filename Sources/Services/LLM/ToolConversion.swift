@@ -53,7 +53,12 @@ public func toolDefinitions(from tools: [Tool]) throws -> [ToolDefinition] {
 /// (uiMeta 抽出等)と同じく最も内側で swift-sdk に触れてよい層 = Services に置く。全フィールドが
 /// 空(サーバーが annotations を一切付けていない)なら nil を返す——「未申告」を Kernel 側でも
 /// nil として表現し、性悪説の既定(確認必須)へ自然に倒す(ToolPermissionPolicy 参照)。
-func kernelAnnotations(from annotations: Tool.Annotations) -> ToolAnnotations? {
+///
+/// public 公開理由(2026-07-24 S2): 設定のツール許可画面(Features)が、生 MCP Tool の annotations を
+/// Kernel の `autoAllowsWhenUnset` / `defaultDecision` に食わせて「既定の見え方」を出すため、この
+/// MCP→Kernel 変換を Features からも呼ぶ必要がある。変換ロジック(未申告 → nil 圧縮)を画面側で
+/// 二重実装せず、tool-use ループと**同じ関数**を共有して runtime 挙動と設定表示を一致させる。
+public func kernelAnnotations(from annotations: Tool.Annotations) -> ToolAnnotations? {
     if annotations.isEmpty { return nil }
     return ToolAnnotations(
         title: annotations.title,
