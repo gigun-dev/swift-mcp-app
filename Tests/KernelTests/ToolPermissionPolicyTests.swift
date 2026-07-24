@@ -1,6 +1,8 @@
-// R4 許可ゲートの純関数判定(ToolPermissionPolicy.evaluate)の境界を固定する。
-// What(テスト = 仕様): annotations(untrusted hint)× ユーザー決定 → 確認要否の全分岐。
-// 性悪説の要点: 未申告は必ず確認・readOnly 申告だけが唯一の緩和・deny は annotations 無関係にブロック。
+// R4 許可ゲートの純関数判定(ToolPermissionPolicy)の境界を固定する。
+// What(テスト = 仕様):
+//  - evaluate(decision:) は素の写像(allow→proceed / ask→confirm / deny→deny)。annotations は見ない。
+//  - 緩和(readOnly 自動許可)は defaultDecision(未保存の既定)へ隔離(2026-07-24 refactor・設計の穴修正)。
+// 性悪説の要点: 未保存の既定は原則 ask・readOnly closed trusted だけが .allow・明示決定は hint に優先。
 import Foundation
 import Testing
 @testable import Kernel
@@ -14,68 +16,40 @@ import Testing
     // read-only だが open-world(外部システムに触れる web 系読み取り等)を明示申告したツール。
     private let readOnlyOpenWorld = ToolAnnotations(readOnlyHint: true, openWorldHint: true)
 
-    @Test("deny はいかなる annotations でも deny(readOnly 申告でも・trust に関係なくブロック)")
-    func denyAlwaysBlocks() {
-        #expect(ToolPermissionPolicy.evaluate(annotations: readOnly, decision: .deny, trusted: true) == .deny)
-        #expect(ToolPermissionPolicy.evaluate(annotations: nil, decision: .deny, trusted: true) == .deny)
-        #expect(ToolPermissionPolicy.evaluate(annotations: writeHint, decision: .deny, trusted: true) == .deny)
-        // trust は ask 緩和にしか効かない。untrusted でも deny は deny のまま。
-        #expect(ToolPermissionPolicy.evaluate(annotations: readOnly, decision: .deny, trusted: false) == .deny)
+    // MARK: evaluate は決定を素直に写すだけ(annotations/trusted はもう見ない)
+
+    @Test("evaluate: deny→deny / allow→proceed / ask→confirm の素の写像")
+    func evaluateMapsDecisionOnly() {
+        #expect(ToolPermissionPolicy.evaluate(decision: .deny) == .deny)
+        #expect(ToolPermissionPolicy.evaluate(decision: .allow) == .proceed)
+        #expect(ToolPermissionPolicy.evaluate(decision: .ask) == .confirm)
     }
 
-    @Test("allow は確認なしで proceed(trust に関係なく——ユーザーが常時許可済み)")
-    func allowProceeds() {
-        #expect(ToolPermissionPolicy.evaluate(annotations: nil, decision: .allow, trusted: true) == .proceed)
-        #expect(ToolPermissionPolicy.evaluate(annotations: writeHint, decision: .allow, trusted: true) == .proceed)
-        // trust は ask 緩和にしか効かない。untrusted でも明示 allow は proceed。
-        #expect(ToolPermissionPolicy.evaluate(annotations: nil, decision: .allow, trusted: false) == .proceed)
+    @Test("evaluate: 明示 .ask は annotations に関係なく必ず confirm(設計の穴回帰・明示決定は hint に優先)")
+    func evaluateExplicitAskAlwaysConfirms() {
+        // readOnly closed(自動許可されうる annotations)でも、ユーザーが明示 .ask を選べば確認する。
+        // 以前は evaluate が readOnly を緩和して確認をスキップし、明示選択を握りつぶしていた(修正済み)。
+        #expect(ToolPermissionPolicy.evaluate(decision: .ask) == .confirm)
     }
 
-    @Test("ask + 未申告(nil)は確認必須(性悪説の既定)")
-    func askUnannotatedConfirms() {
-        #expect(ToolPermissionPolicy.evaluate(annotations: nil, decision: .ask, trusted: true) == .confirm)
+    // MARK: defaultDecision — 未保存ツールの既定(緩和が効く唯一の層)
+
+    @Test("defaultDecision: trusted + readOnly closed だけ .allow(自動許可)、それ以外は .ask")
+    func defaultDecisionBoundaries() {
+        // 唯一の自動許可形: trusted + readOnly + openWorldHint==false 明示。
+        #expect(ToolPermissionPolicy.defaultDecision(annotations: readOnlyClosed, trusted: true) == .allow)
+        // openWorldHint==true → 外部システムに触れる読み取りは自動許可しない。
+        #expect(ToolPermissionPolicy.defaultDecision(annotations: readOnlyOpenWorld, trusted: true) == .ask)
+        // openWorldHint 未申告(nil)→ spec 既定 open-world=true とみなして自動許可しない。
+        #expect(ToolPermissionPolicy.defaultDecision(annotations: readOnly, trusted: true) == .ask)
+        // untrusted → readOnly closed でも自動許可しない(信頼が無ければ hint を信じない)。
+        #expect(ToolPermissionPolicy.defaultDecision(annotations: readOnlyClosed, trusted: false) == .ask)
+        // 非 readOnly / 未申告 → 自動許可しない。
+        #expect(ToolPermissionPolicy.defaultDecision(annotations: writeHint, trusted: true) == .ask)
+        #expect(ToolPermissionPolicy.defaultDecision(annotations: nil, trusted: true) == .ask)
     }
 
-    @Test("ask + trusted + readOnly かつ openWorldHint==false だけが唯一の緩和で proceed")
-    func askReadOnlyProceeds() {
-        #expect(ToolPermissionPolicy.evaluate(annotations: readOnlyClosed, decision: .ask, trusted: true) == .proceed)
-    }
-
-    @Test("ask + untrusted は readOnly(closed)でも緩和しない(信頼が無ければ readOnly 申告を信じない)")
-    func askUntrustedConfirms() {
-        #expect(ToolPermissionPolicy.evaluate(annotations: readOnlyClosed, decision: .ask, trusted: false) == .confirm)
-    }
-
-    @Test("ask + readOnly だが openWorldHint 未申告(nil)は緩和しない(spec 既定 open-world=true とみなす)")
-    func askReadOnlyOpenWorldUnsetConfirms() {
-        #expect(ToolPermissionPolicy.evaluate(annotations: readOnly, decision: .ask, trusted: true) == .confirm)
-    }
-
-    @Test("ask + readOnly だが open-world 明示 true は緩和しない(外部システムに触れる読み取りは確認へ)")
-    func askOpenWorldConfirms() {
-        #expect(
-            ToolPermissionPolicy.evaluate(annotations: readOnlyOpenWorld, decision: .ask, trusted: true) == .confirm
-        )
-    }
-
-    @Test("ask + readOnlyHint==false / nil は確認必須(destructive 申告でも同じ confirm)")
-    func askNonReadOnlyConfirms() {
-        #expect(ToolPermissionPolicy.evaluate(annotations: writeHint, decision: .ask, trusted: true) == .confirm)
-        // readOnlyHint を明示 false にしただけの annotations も緩和しない。
-        #expect(
-            ToolPermissionPolicy.evaluate(
-                annotations: ToolAnnotations(readOnlyHint: false), decision: .ask, trusted: true
-            ) == .confirm
-        )
-        // title だけ持つ(readOnlyHint 未申告)も確認必須。
-        #expect(
-            ToolPermissionPolicy.evaluate(
-                annotations: ToolAnnotations(title: "X"), decision: .ask, trusted: true
-            ) == .confirm
-        )
-    }
-
-    @Test("autoAllowsWhenUnset は evaluate の .ask 緩和条件と一致する(設定表示 = runtime 挙動)")
+    @Test("autoAllowsWhenUnset は defaultDecision の緩和条件と一致する(設定表示 = runtime 挙動)")
     func autoAllowsMatchesRuntime() {
         // trusted + readOnly + openWorldHint==false 明示 → 自動許可 true(唯一の緩和形)。
         #expect(ToolPermissionPolicy.autoAllowsWhenUnset(annotations: readOnlyClosed, trusted: true) == true)

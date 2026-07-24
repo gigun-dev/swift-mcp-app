@@ -24,13 +24,19 @@ extension ToolCallRunner {
         let originalName = context.originalToolNamesByTool[wireName] ?? wireName
         let serverURL = context.serverURLsByTool[wireName]
         let annotations = context.annotationsByTool[wireName]
-        let decision = context.permissionStore.decision(serverURL: serverURL, toolName: originalName)
 
+        // 実効決定 = 明示保存 ?? 未保存の既定(annotations 由来)。緩和(readOnly 自動許可)は
+        // defaultDecision の層でだけ効き、明示保存(stored)があれば無条件に尊重する。これで
+        // 「未保存 readOnly closed = 自動許可」を保ちつつ「ユーザーが明示 .ask にしたら必ず確認」が効く
+        // (2026-07-24 refactor・design/09 の設計の穴修正)。
+        let stored = context.permissionStore.storedDecision(serverURL: serverURL, toolName: originalName)
         // trusted: true を渡す理由: 現状 ServerRegistry のサーバーは全てユーザーが明示的に
         // 追加 + OAuth 認証したもの = trusted(design/09 信頼モデル)。将来ディレクトリ発見の
         // 未認証サーバー(claude.ai の「コネクタの検出」的なもの)を扱うようになったら、ここを
         // context 経由の per-server 信頼判定へ差し替える(annotations だけで安全を決めない）。
-        switch ToolPermissionPolicy.evaluate(annotations: annotations, decision: decision, trusted: true) {
+        let effective = stored ?? ToolPermissionPolicy.defaultDecision(annotations: annotations, trusted: true)
+
+        switch ToolPermissionPolicy.evaluate(decision: effective) {
         case .proceed:
             return nil  // 確認不要(allow、または ask だが readOnly 申告あり)。そのまま実行へ。
         case .deny:

@@ -31,12 +31,32 @@ import Testing
         #expect(store.decision(serverURL: server, toolName: "delete-todo") == .deny)
     }
 
-    @Test("ask を保存するとキーが消え、既定へ戻る(肥大化を避ける)")
-    func askClearsKey() {
+    @Test("明示 ask は保存され storedDecision が nil でなく .ask を返す(設計の穴 end-to-end 回帰)")
+    func explicitAskIsPersisted() {
+        // 旧実装は setDecision(.ask) がキーを消し storedDecision→nil→gate が readOnly closed を
+        // defaultDecision で .allow へ昇格させ、明示 .ask が無視されていた(2026-07-24 修正の穴)。
+        // ここでは「明示 ask は未保存(nil)と区別して保存される」ことを固定する。
         let store = ToolPermissionStore(defaults: freshDefaults())
         store.setDecision(.allow, serverURL: server, toolName: "list-todos")
         store.setDecision(.ask, serverURL: server, toolName: "list-todos")
+        #expect(store.storedDecision(serverURL: server, toolName: "list-todos") == .ask)
         #expect(store.decision(serverURL: server, toolName: "list-todos") == .ask)
+    }
+
+    @Test("clearDecision で明示決定が消え、storedDecision が nil(未保存)へ戻る")
+    func clearRestoresUnset() {
+        let store = ToolPermissionStore(defaults: freshDefaults())
+        store.setDecision(.ask, serverURL: server, toolName: "list-todos")
+        #expect(store.storedDecision(serverURL: server, toolName: "list-todos") == .ask)
+        store.clearDecision(serverURL: server, toolName: "list-todos")
+        #expect(store.storedDecision(serverURL: server, toolName: "list-todos") == nil)
+        #expect(store.decision(serverURL: server, toolName: "list-todos") == .ask)  // 既定へ戻る
+    }
+
+    @Test("未保存ツールの storedDecision は nil(明示 ask と区別する)")
+    func unsetReturnsNil() {
+        let store = ToolPermissionStore(defaults: freshDefaults())
+        #expect(store.storedDecision(serverURL: server, toolName: "delete-todo") == nil)
     }
 
     @Test("同名ツールでも serverURL が違えば決定は混ざらない")
