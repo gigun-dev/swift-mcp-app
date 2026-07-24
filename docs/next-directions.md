@@ -52,8 +52,13 @@
 - [x] ~~R4許可ゲート3経路(create=確認/list=即実行/delete=destructive警告)~~ ✅ Harness A実画面+ログ。
 - [x] ~~履歴再訪の鮮度再push・serverID変更耐性~~ ✅ 2026-07-24・c27dd10: 再訪でプレースホルダ0回・
   tool-result 1回flush(多重送出なし)、caldav削除→再追加で新serverIDでもライブ再描画(層4奏功)。
-- [ ] **queue 10 層2のE2E裏取り**: needsAuth→「認証して接続」の再認可が、**腐ったKeychain token**を
-  確実に上書きするか(今回のE2Eは未接続からの新規認可のみ確認。失効token上書きケースは未検証)。
+- [x] ~~**queue 10のE2E裏取り(層3冪等add・層2再認可)**~~ ✅ 2026-07-24・build 514b01b(HEAD 9f17953)・
+  Harness A install: 層3=同一URL/末尾スラッシュ違い再addでエントリ1件のまま・「既存を再利用(冪等add)」
+  ログのみ(新規append notice ゼロ)・再訪カードcard.resolve reason=server-id-match。層2=自然失効の
+  needsAuth→「認証して接続」→ready復帰・serverID保持。todo状態不変更。
+  > **副次観察(要小修正候補):** 冪等再利用時に既存エントリの表示名が入力名で上書きされる
+  > (caldav→caldav-slash)。再追加は通常「認証やり直し」で改名意図が薄い(改名は編集UIあり)ため、
+  > 再利用時はname温存の方が驚きが少ない。次の小slice候補。
 - [ ] delete-todo応答完了後にUIがスピナーのまま固まる事象(2026-07-23に1回・tools/callは完了済み・
   再起動で復旧・再現条件未特定)。要ウォッチ。
 

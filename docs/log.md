@@ -1179,3 +1179,27 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
   caldavカード切り分け)。採用済みharness/ユーザー待ち/完了条件は保持。
 - 計測: 総138行・head 45行・カタログ約93行・更新ブロック1個(閾値150行/8個の下)。session-start.sh の
   基準コメントを第6版現況(カタログ約93行/更新ブロック1個)へ更新。肥大警告は発火しなくなった。
+
+## 2026-07-24 queue 10 E2E裏取り(実機install・層3/層2ともに合格)
+
+- build 514b01b(HEAD 9f17953)を Harness A(01CB4E3F...)へ make run install。skill ios-e2e-verify ロード。
+- 層3(冪等add): 同一URL再add・末尾スラッシュ違いadd いずれもエントリ1件のまま。ログは
+  「既存を再利用(冪等 add)」のみで「サーバー追加」(新規append notice)はウィンドウ内ゼロ。
+  再訪カード card.resolve reason=server-id-match でライブ描画。
+- 層2(再認可): 起動時に自然失効していた needsAuth→「認証して接続」→ready復帰・serverID保持。人為失効なし。
+- 副次観察: 冪等再利用時に表示名が入力名で上書き(caldav→caldav-slash)。再追加は通常「認証やり直し」で
+  改名意図が薄い→再利用時name温存の方が驚き少ない。次の小slice候補(next-directions記録済み)。
+- todo破壊操作なし(list-calendars/get-current-time/list-todosのみ)。
+
+## 2026-07-24 ツール許可UI設計(design/09)+ 既定/自動許可ベスプラ再調査
+
+- モック(scratchpad/permission-mock.html)で方向合意。決定: 設定ナビは詳細プッシュ型(claude.ai iOS系)、
+  行内セグメント切替は不採用(モバイル幅でツール名を圧迫)、行タップ→ボトムシートはアンチパターンで不可。
+  readOnly既定=常に許可・副作用あり=確認、アイコンはlucide、ランタイム確認はdetentセミモーダル。
+- 既定/自動許可ベスプラ再調査(一次情報): MCP公式ブログ「Tool Annotations as Risk Vocabulary」・Codex CLI。
+  結論: 保守的既定は正しい。readOnly自動許可は「信頼サーバーのみ」有効(untrusted の readOnlyHint は
+  actionable でない)。Codexは readOnlyHint==true かつ openWorldHint==false の両方で自動承認。
+  安全の本体は決定的制御に置きannotationsはUXにだけ使う(Hints inform, contracts enforce)。
+- 精緻化: evaluate の緩和条件へ openWorldHint!=true と trusted:Bool を追加。信頼モデルは
+  「ユーザーが追加+OAuth認証したサーバー=trusted」(将来のディレクトリ発見サーバーはtrusted=false)。
+  設計はdesign/09に記録。実装スライスS1(Kernel精緻化+既定表示純関数)→S2(設定画面)/S3(detent確認)。
