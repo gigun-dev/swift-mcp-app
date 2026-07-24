@@ -1203,3 +1203,21 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 精緻化: evaluate の緩和条件へ openWorldHint!=true と trusted:Bool を追加。信頼モデルは
   「ユーザーが追加+OAuth認証したサーバー=trusted」(将来のディレクトリ発見サーバーはtrusted=false)。
   設計はdesign/09に記録。実装スライスS1(Kernel精緻化+既定表示純関数)→S2(設定画面)/S3(detent確認)。
+
+## 2026-07-24 ツール許可UI実装(design/09 S1/S2/S3・queue7残+queue5関連)
+
+- S1(65987c0→c3691ae): 許可判定をベスプラ準拠へ。当初 evaluate 内に置いた緩和を、レビューで見つけた
+  穴(明示 .ask on readOnly が緩和で握りつぶされる)を機に「未保存の既定を決める層(defaultDecision)」へ
+  隔離。evaluate は allow→proceed/ask→confirm/deny→deny の素の写像。緩和条件は
+  trusted && readOnlyHint==true && openWorldHint==false(Codex/spec 厳密側・caldav は openWorldHint:false
+  明示済みで自動許可維持)。store に storedDecision(optional)/clearDecision、setDecision は .ask も永続化
+  (未保存 vs 明示 ask を区別しないと穴再発)。回帰: explicitAskViaRealStoreConfirms。
+- S3(517b63e): ToolConfirmationDialog を confirmationDialog→detent(.medium/.large)セミモーダルへ。
+  折り畳みでツール名+3ボタン、引き出すと引数JSON全文+破壊警告。300字切り詰め廃止。キュー/deny縮退維持。
+- S2(7bb2c52): ServerToolPermissionsView(画面2)/ToolPermissionDetailView(画面3)。詳細プッシュ型
+  (ボトムシート不使用)。状態ラベル/チェックは stored ?? defaultDecision を Kernel純関数で共有し runtime一致。
+  未保存 readOnly は「常に許可(自動)」を薄色表示。3択で即保存(.ask含む)、「既定に戻す」でclearDecision。
+  kernelAnnotations public化。導線は ServerDetailView に NavigationLink 1つ(最小侵襲)。
+- 全スライス make verify green(278 tests/lint 0/make app SUCCEEDED)。残: 実機E2E。
+- ベスプラ一次情報: MCP公式「Tool Annotations as Risk Vocabulary」・Codex CLI(緩和は信頼サーバー+
+  readOnly+closed-worldのみ、明示決定はhintに優先、Hints inform/contracts enforce)。
