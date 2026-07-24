@@ -188,8 +188,11 @@ public final class ServerRegistryStore {
         // 表層の揺れ(末尾スラッシュ・host 大小・既定ポート・fragment)を吸収した canonical キーで
         // 「同じエンドポイントの既存エントリ」を探す。あれば再利用(冪等 add)。
         if let idx = existingIndex(matching: url) {
-            // name: ユーザーが別ラベルで再追加した意図を反映して更新する(同じ URL に別名を付け直す操作)。
-            servers[idx].name = name
+            // name: 温存する(上書きしない)。
+            // 2026-07-24 実機で「caldav」→「caldav-slash」に化けるバグを確認:再追加は
+            // 認証やり直し/dedup が主目的で改名意図が薄いのに、テストコード等が渡す別名で
+            // ユーザーが付けた良い名前を無条件に潰していた。改名は既存の編集 UI
+            // (update(id:name:url:))に一本化されているので、冪等再利用パスでは name に触らない。
             // enabled: 無効化済みサーバーを add フォームから再追加 = 「使う」意図なので有効に戻す。
             servers[idx].enabled = true
             // 【url 文字列は温存する = 上書きしない・設計上の要】

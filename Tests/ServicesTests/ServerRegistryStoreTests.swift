@@ -124,8 +124,11 @@ import Testing
         #expect(reused.enabled)  // 再追加 = 使う意図なので有効に戻る。
     }
 
-    @Test("name を変えて同一 URL を再 add すると既存エントリの name が更新される")
-    func reAddUpdatesName() {
+    // 2026-07-24: 以前は再 add で name を上書きしていたが、実機で「caldav」→「caldav-slash」に
+    // 化けるバグ(テスト名等の別名が良い名前を潰す)を確認したため、name 温存へ反転した。
+    // 改名は既存の編集 UI(update(id:name:url:))に一本化されている。
+    @Test("name を変えて同一 URL を再 add しても既存エントリの name は温存される")
+    func reAddPreservesExistingName() {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -134,8 +137,10 @@ import Testing
         let added = store.add(name: "old-label", url: url)
         let reused = store.add(name: "new-label", url: url)
         #expect(reused.id == added.id)
-        #expect(reused.name == "new-label")
-        #expect(store.servers.first { $0.id == added.id }?.name == "new-label")
+        #expect(reused.name == "old-label")
+        #expect(store.servers.first { $0.id == added.id }?.name == "old-label")
+        // エントリ数不変(シード + 1件のまま)。
+        #expect(store.servers.count == 2)
     }
 
     @Test("setEnabled で有効/無効を切り替え、enabledServers に反映・永続化される")
