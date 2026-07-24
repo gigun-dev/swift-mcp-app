@@ -42,9 +42,12 @@
   日常運用は[`ios-simulator-best-practices.md`](ios-simulator-best-practices.md)を正とする。
 - **Simulator操作は`.claude/agents/simulator-operator.md`(sonnet)へ委譲**(mainでスクショ往復しない)。
   > **2026-07-24 追加: ツール許可UI(design/09)完了 ✅** — per-MCPサーバーのツール許可を設定/確認できる
-  > 機能。設定画面(コネクタ→ツール一覧→詳細の3画面プッシュ型)+ ランタイム確認のdetentセミモーダル化 +
-  > 許可判定のベスプラ準拠(緩和は未保存の既定層のみ・明示決定優先・trusted&&readOnly&&closed-world)。
-  > 実機E2E A/B/C/D全PASS(65987c0/c3691ae/517b63e/7bb2c52/93831d9)。正典 docs/design/09。
+  > 機能。許可判定のベスプラ準拠(緩和は未保存の既定層のみ・明示決定優先・trusted&&readOnly&&closed-world)+
+  > ランタイム確認のdetentセミモーダル化。設定UIはユーザーFBで最終的に「コネクタ詳細にツール一覧を
+  > インライン(有効/状態と同階層)+ MCP単位の一括メニュー(すべて許可/確認/ブロック/既定に戻す)+
+  > 個別ツール詳細のみプッシュ」へ(中間プッシュ廃止・claude.aiと同階層)。実機E2E A/B/C/D全PASS +
+  > iPhone 12 mini install済み・ユーザー確認OK。commit 65987c0〜3cdc073。正典 docs/design/09。
+  > 残: deny ツールのLLM一覧除外(design/09未決・queue5と絡む)。UI方針はmemory記録。
 
 <!-- session-head-end: SessionStartフックはここまでを常時注入する。以下は未完了タスクだけを置く。 -->
 
@@ -65,16 +68,18 @@
   > 再利用時はname温存の方が驚きが少ない。次の小slice候補。
 - [ ] delete-todo応答完了後にUIがスピナーのまま固まる事象(2026-07-23に1回・tools/callは完了済み・
   再起動で復旧・再現条件未特定)。要ウォッチ。
-- [ ] **冪等add時のname上書きを温存へ(小修正)**: 再追加は通常「認証やり直し」で改名意図が薄いのに
-  既存エントリの表示名が入力名で上書きされる(実機で「caldav」→「caldav-slash」化を確認)。再利用時は
-  name温存が驚き少ない(改名は編集UIあり)。queue10副次観察。
+- [x] ~~**冪等add時のname上書きを温存へ(小修正)**~~ ✅ `39c2658`: 再利用時は既存name温存(改名は編集UIに
+  一本化)。テスト reAddPreservesExistingName へ反転。
 - [ ] caldav本番のlist-todosが単発60sタイムアウト(2026-07-24 E2E・Workerコールドスタート等)。権限機能とは
   無関係だが、初回接続直後のツール呼びの遅延として要ウォッチ(頻発ならcaldav側と要相談)。
 
 ## Fableへ渡す実装queue(未完了)
 
-1. **再現可能なnative UI回帰層を追加する**
-   - `MCPHostUITests`と安定したaccessibility identifierを追加する。
+1. **再現可能なnative UI回帰層を追加する** — B0 土台完了 ✅ `44db6f7`(MCPHostUITestsターゲット+
+   MCPHostスキームtest相乗り+`make uitest`(SIMULATOR_UDID必須・ONLY_ACTIVE_ARCH=YES・pre-push非対象)+
+   home.root identifier+スモーク1本 green)。残: **B1**=決定論で回るflow(設定シート開閉/サーバー追加
+   フォームvalidation/サイドバー`MCPHOST_SIDEBAR_OPEN`)、**B2**=今回のツール許可flowを回帰する偽接続
+   ハーネス(ダミーReadyConnection注入・実caldav不要)。identifierは触るflowごとに付与。
    - connection validation、drawer/context menu、reparent spike、履歴復元/SWR発火条件から固定する。
    - live OAuth / caldav本番はpre-push必須にせず、project E2Eへ残す。
 2. **共有harness sourceを中立化する**(`gigun-dev/claude-code`へscopeを移してから)
