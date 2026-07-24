@@ -41,6 +41,10 @@
   試験履歴は[`ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)、
   日常運用は[`ios-simulator-best-practices.md`](ios-simulator-best-practices.md)を正とする。
 - **Simulator操作は`.claude/agents/simulator-operator.md`(sonnet)へ委譲**(mainでスクショ往復しない)。
+  > **2026-07-24 追加: ツール許可UI(design/09)完了 ✅** — per-MCPサーバーのツール許可を設定/確認できる
+  > 機能。設定画面(コネクタ→ツール一覧→詳細の3画面プッシュ型)+ ランタイム確認のdetentセミモーダル化 +
+  > 許可判定のベスプラ準拠(緩和は未保存の既定層のみ・明示決定優先・trusted&&readOnly&&closed-world)。
+  > 実機E2E A/B/C/D全PASS(65987c0/c3691ae/517b63e/7bb2c52/93831d9)。正典 docs/design/09。
 
 <!-- session-head-end: SessionStartフックはここまでを常時注入する。以下は未完了タスクだけを置く。 -->
 
@@ -61,6 +65,11 @@
   > 再利用時はname温存の方が驚きが少ない。次の小slice候補。
 - [ ] delete-todo応答完了後にUIがスピナーのまま固まる事象(2026-07-23に1回・tools/callは完了済み・
   再起動で復旧・再現条件未特定)。要ウォッチ。
+- [ ] **冪等add時のname上書きを温存へ(小修正)**: 再追加は通常「認証やり直し」で改名意図が薄いのに
+  既存エントリの表示名が入力名で上書きされる(実機で「caldav」→「caldav-slash」化を確認)。再利用時は
+  name温存が驚き少ない(改名は編集UIあり)。queue10副次観察。
+- [ ] caldav本番のlist-todosが単発60sタイムアウト(2026-07-24 E2E・Workerコールドスタート等)。権限機能とは
+  無関係だが、初回接続直後のツール呼びの遅延として要ウォッチ(頻発ならcaldav側と要相談)。
 
 ## Fableへ渡す実装queue(未完了)
 
