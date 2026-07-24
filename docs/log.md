@@ -1221,3 +1221,16 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 全スライス make verify green(278 tests/lint 0/make app SUCCEEDED)。残: 実機E2E。
 - ベスプラ一次情報: MCP公式「Tool Annotations as Risk Vocabulary」・Codex CLI(緩和は信頼サーバー+
   readOnly+closed-worldのみ、明示決定はhintに優先、Hints inform/contracts enforce)。
+
+## 2026-07-24 ツール許可UI E2E裏取り(実機install・A/B/C/D 全PASS)
+
+- build 4063ca4 を Harness A(01CB4E3F...)へ make run。skill ios-e2e-verify ロード。todo破壊操作なし(list-todos読みのみ)。
+- A(設定画面): readOnly 10ツール=「常に許可(自動)」、副作用14ツール=「確認する」で表示 PASS。
+- B(明示ask上書き・S1): list-todos(readOnly)を「承認が必要」へ→一覧ラベル「確認する」化・「既定に戻す」出現 PASS。
+- C(detent+ゲート): チャットで list-todos→本来自動のツールに確認シート出現(明示askが効いた)。グラバー付き
+  セミモーダル・上ドラッグでlarge detent展開・引数{"includeCompleted":false}表示・「1回だけ許可」で実行→
+  tasksカードライブ描画 PASS。
+- D(既定に戻す): 「既定に戻す」→「常に許可(自動)」復帰。再送でログ tools/call 素通し(確認シートなし)PASS。
+- 注記(機能外): (1)D最後のlist-todosがcaldavバックエンド60sタイムアウト(err=true ms=60305・Workerコールド
+  スタート等)。ゲートは正しく素通し=権限機能と無関係。(2)コネクタ名が「caldav-slash」表示=queue10の
+  「冪等再利用時name上書き」副次観察が実機に出た。次の小修正候補を裏付け。

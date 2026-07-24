@@ -109,7 +109,8 @@ openWorld/trusted 分岐を共有する(設定表示 = runtime 挙動を Kernel 
 - ~~**S3 (Features)**~~ ✅ `517b63e`: ToolConfirmationDialog を detent セミモーダルへ作り直し(引数 JSON 全文)。
 - ~~**S2 (Features)**~~ ✅ `7bb2c52`: ServerToolPermissionsView / ToolPermissionDetailView 追加、
   ServerDetailView に導線。表示 = stored ?? defaultDecision を Kernel 純関数で共有。
-- 残: 実機 E2E(設定で状態変更 → ランタイム挙動確認)。一括メニュー・deny のツール一覧除外は未着手(下記)。
+- ~~残: 実機 E2E~~ ✅ 4063ca4・Harness A: A/B/C/D 全PASS(設定表示/明示ask上書き/detent展開/既定復帰)。log参照。
+- 未着手: 一括メニュー(すべて許可/確認)、deny のツール一覧除外(下記)。
 
 ## 実装スライス(原案・履歴)
 
