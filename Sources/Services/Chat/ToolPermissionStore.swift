@@ -18,10 +18,28 @@ import Kernel
 /// 回すため。テストは「決め打ちの decision を返し、setDecision の呼び出しを記録する」in-memory 実装に
 /// 差し替える(MCPToolExecuting と同じ流儀)。
 public protocol ToolPermissionResolving: Sendable {
+    /// **ユーザーが明示保存した**決定を返す。未保存なら `nil`(まだ一度も判断していない)。
+    ///
+    /// なぜ optional か(2026-07-24 refactor): 緩和(readOnly 自動許可)を evaluate から
+    /// defaultDecision(未保存の既定を決める層)へ移したため、gate は「stored ?? defaultDecision」で
+    /// 実効決定を組む。stored が nil のときだけ annotations 由来の既定を当て、明示保存があればそれを
+    /// **無条件に尊重**する(明示 .ask を hint 緩和で握りつぶさないため)。
+    func storedDecision(serverURL: URL?, toolName: String) -> ToolPermissionDecision?
     /// 保存済みの決定を返す。未保存なら `.ask`(性悪説の既定・確認側に倒す)。
+    /// storedDecision の薄いラッパ(後方互換; 設定画面等が「明示保存が無ければ ask 相当」で読む用途)。
     func decision(serverURL: URL?, toolName: String) -> ToolPermissionDecision
-    /// 決定を保存する(「常に許可」= `.allow` の永続化に使う)。
+    /// 決定を保存する(3 値すべて明示決定として永続化。ask も含む — 下の実装コメント参照)。
     func setDecision(_ decision: ToolPermissionDecision, serverURL: URL?, toolName: String)
+    /// 明示決定を消して「未保存(= annotations 由来の既定に従う)」へ戻す。設定画面の「既定に戻す」用。
+    func clearDecision(serverURL: URL?, toolName: String)
+}
+
+extension ToolPermissionResolving {
+    /// 既定実装: storedDecision があればそれ、無ければ性悪説の既定 `.ask`。
+    /// (decision を storedDecision の薄いラッパにして正典を二重化しない)。
+    public func decision(serverURL: URL?, toolName: String) -> ToolPermissionDecision {
+        storedDecision(serverURL: serverURL, toolName: toolName) ?? .ask
+    }
 }
 
 /// UserDefaults 実装。actor にしない理由: UserDefaults 自体がスレッドセーフ(Apple ドキュメント保証)
@@ -34,25 +52,32 @@ public final class ToolPermissionStore: ToolPermissionResolving, @unchecked Send
         self.defaults = defaults
     }
 
-    public func decision(serverURL: URL?, toolName: String) -> ToolPermissionDecision {
+    public func storedDecision(serverURL: URL?, toolName: String) -> ToolPermissionDecision? {
         guard let raw = defaults.string(forKey: Self.key(serverURL: serverURL, toolName: toolName)),
               let decision = ToolPermissionDecision(rawValue: raw)
         else {
-            // 未保存 = 一度もユーザーが判断していない → 既定は確認(ask)。
-            return .ask
+            // 未保存 = 一度もユーザーが判断していない → nil(gate 側で defaultDecision を当てる)。
+            // ask はキーを持たない設計(setDecision 参照)なので、ここに ask が保存されることは無い。
+            return nil
         }
         return decision
     }
 
     public func setDecision(_ decision: ToolPermissionDecision, serverURL: URL?, toolName: String) {
-        let key = Self.key(serverURL: serverURL, toolName: toolName)
-        // ask はストアの既定でもあるので、保存する必要はなくキーを消す(肥大化を避ける)。
-        // 「常に許可(allow)」「拒否(deny)」だけを明示的に永続化する。
-        if decision == .ask {
-            defaults.removeObject(forKey: key)
-        } else {
-            defaults.set(decision.rawValue, forKey: key)
-        }
+        // 3 値すべて(allow/ask/deny)を明示決定として永続化する。
+        //
+        // 2026-07-24 refactor 撤回: 旧実装は「ask は既定なのでキーを消す(肥大化回避)」としていたが、
+        // 緩和(readOnly 自動許可)を gate の defaultDecision へ移した後は **「未保存(キー無し)」と
+        // 「明示 ask(キーあり)」を区別しなければならない**。区別しないと storedDecision が nil を返し、
+        // gate が readOnly closed trusted を defaultDecision で .allow に昇格させてしまい、ユーザーが
+        // 設定画面で明示した「承認が必要(.ask)」が無視される(=今回修正した穴が end-to-end で再発)。
+        // 肥大化はユーザーが明示的に触ったツールだけキーが増えるので実害なし(既定へ戻すのは clearDecision)。
+        defaults.set(decision.rawValue, forKey: Self.key(serverURL: serverURL, toolName: toolName))
+    }
+
+    public func clearDecision(serverURL: URL?, toolName: String) {
+        // 明示決定を消す = 未保存へ戻す(storedDecision が nil を返し、gate が annotations 由来の既定を当てる)。
+        defaults.removeObject(forKey: Self.key(serverURL: serverURL, toolName: toolName))
     }
 
     /// キー生成。serverURL 未知(nil)は "unknown" に寄せる(決定は保存できるが、URL の異なる
@@ -71,6 +96,10 @@ public final class ToolPermissionStore: ToolPermissionResolving, @unchecked Send
 /// `ToolPermissionStore`(既定 ask)を注入するので、セキュリティの既定は合成ルートで ask になる。
 public struct AllowAllToolPermissionStore: ToolPermissionResolving {
     public init() {}
-    public func decision(serverURL: URL?, toolName: String) -> ToolPermissionDecision { .allow }
+    // storedDecision で `.allow` を返す = 「全ツールをユーザーが明示的に常時許可した」相当。gate は
+    // stored を無条件に尊重するので、annotations に関係なく即実行になる(緩和層すら通らず常に proceed)。
+    // decision(...) は protocol の既定実装が storedDecision を包むので、こちらも .allow を返す。
+    public func storedDecision(serverURL: URL?, toolName: String) -> ToolPermissionDecision? { .allow }
     public func setDecision(_ decision: ToolPermissionDecision, serverURL: URL?, toolName: String) {}
+    public func clearDecision(serverURL: URL?, toolName: String) {}
 }

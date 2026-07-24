@@ -64,7 +64,8 @@ public struct ToolAnnotations: Codable, Equatable, Sendable {
 public enum ToolPermissionDecision: String, Codable, Equatable, Sendable, CaseIterable {
     /// 常に許可(確認を出さず即実行)。ユーザーが「常に許可」を選んだツールだけがここへ来る。
     case allow
-    /// 毎回確認(既定)。annotations が readOnly を申告していれば確認を省ける(唯一の緩和)。
+    /// 毎回確認。**明示的に .ask を選んだツールは annotations に関係なく必ず確認する**(緩和は
+    /// 未保存ツールの既定を決める defaultDecision でだけ効き、明示 .ask には効かない・2026-07-24 refactor)。
     case ask
     /// 拒否(実行させない)。モデル発でもカード発でもハードブロックする。
     case deny
@@ -72,9 +73,10 @@ public enum ToolPermissionDecision: String, Codable, Equatable, Sendable, CaseIt
 
 /// ゲート判定の結果。Services(ToolCallRunner)がこれを見て「即実行 / 確認を await / 拒否」を分岐する。
 public enum ToolGateOutcome: Equatable, Sendable {
-    /// 確認なしで実行してよい(decision == .allow、または ask だが readOnly 申告あり)。
+    /// 確認なしで実行してよい(実効 decision == .allow。未保存 readOnly の自動許可も defaultDecision で
+    /// .allow になってからここへ来る)。
     case proceed
-    /// ユーザーへ確認を出し、その応答を待ってから実行/中止を決める(decision == .ask かつ非 readOnly)。
+    /// ユーザーへ確認を出し、その応答を待ってから実行/中止を決める(実効 decision == .ask)。
     case confirm
     /// 実行させない(decision == .deny)。
     case deny
@@ -82,45 +84,48 @@ public enum ToolGateOutcome: Equatable, Sendable {
 
 /// per-tool 許可ゲートの中核判定(純関数)。
 public enum ToolPermissionPolicy {
-    /// annotations(untrusted hint)とユーザーの保存済み決定から、確認要否を決める。
+    /// ユーザーの**実効決定**(stored ?? defaultDecision)から、確認要否を素直に写す。
     ///
     /// 分岐(性悪説・上のファイルコメント参照):
-    ///  - `.deny`  → `.deny`(annotations に関係なくハードブロック)。
-    ///  - `.allow` → `.proceed`(ユーザーが明示的に常時許可したので確認しない)。
-    ///  - `.ask`   → **緩和可能なツールだけ** `.proceed`(下の relaxable 参照)。それ以外
-    ///               (未申告・readOnlyHint != true・open-world・untrusted・destructive 申告等すべて)は `.confirm`。
+    ///  - `.deny`  → `.deny`(ハードブロック)。
+    ///  - `.allow` → `.proceed`(確認しない)。
+    ///  - `.ask`   → `.confirm`(確認する)。
     ///
-    /// **なぜ readOnlyHint だけを信頼するか**: readOnly を「偽って false/未申告にする」インセンティブは
-    /// 攻撃者に無い(むしろ確認を増やすだけ)。逆に「破壊的なのに readOnly と偽る」攻撃はありうるが、
-    /// それは「ユーザーが自分でこのツールを ask のまま使っている」時点で、readOnly 申告を信じて確認を
-    /// 省くリスクをユーザーが受容している範囲。destructive を隠す方向の偽装は確認を**省けない**
-    /// (readOnlyHint を true にしない限り confirm のまま)ので、緩和は readOnlyHint==true に限定する。
-    /// destructiveHint は緩和には一切使わない(isLikelyDestructive で警告表示にだけ使う)。
+    /// **なぜ annotations/trusted をここで見ないか(2026-07-24 refactor・設計の穴修正)**:
+    /// 以前は `.ask` 分岐で readOnly 緩和を掛けていた。するとユーザーが設定画面で readOnly ツールを
+    /// 明示的に「承認が必要(.ask)」へ変えても、evaluate が勝手に確認をスキップし、**明示選択が
+    /// 無視される**バグになる(ベスプラ: 明示的なユーザー決定は hint 緩和より優先。claude.ai も任意
+    /// ツールを「承認が必要」にできる)。そこで緩和は「**未保存**ツールの既定 decision を決める」層
+    /// (defaultDecision)へ隔離し、evaluate は決定を素直に写すだけにした。これで
+    /// 「未保存 readOnly closed trusted = 自動許可」を保ちつつ「明示 .ask = 必ず確認」が効く。
     ///
-    /// - Parameter trusted: このツールを持つサーバーを信頼できるか。**デフォルト値は付けない**
-    ///   (セキュリティ判定なので呼び出し側に毎回明示させる)。信頼モデルは「ユーザーが自分で URL を
-    ///   追加し OAuth 認証した = trusted」(design/09 信頼モデル)。untrusted の readOnlyHint は
-    ///   MCP 公式ブログいわく「actionable でない」——盲信せず、根拠のある trust のときだけ緩和する。
-    public static func evaluate(
-        annotations: ToolAnnotations?,
-        decision: ToolPermissionDecision,
-        trusted: Bool
-    ) -> ToolGateOutcome {
+    /// 呼び出し側は `evaluate(decision: stored ?? defaultDecision(annotations:trusted:))` の形で使う。
+    public static func evaluate(decision: ToolPermissionDecision) -> ToolGateOutcome {
         switch decision {
         case .deny:
             return .deny
         case .allow:
             return .proceed
         case .ask:
-            // 唯一の緩和条件は relaxable 一本に集約する(下の autoAllowsWhenUnset と式を共有し、
-            // 判定の正典を二重化しない)。満たさなければ性悪説の既定どおり confirm。
-            return relaxable(annotations: annotations, trusted: trusted) ? .proceed : .confirm
+            return .confirm
         }
+    }
+
+    /// **未保存**(ストアに decision が無い)ツールに当てる既定 decision。annotations + trust から導く。
+    ///
+    /// 緩和(readOnly 自動許可)が効くのはこの層だけ: 自動許可条件を満たせば `.allow`(確認なし)、
+    /// さもなくば性悪説の既定 `.ask`(確認する)。**ユーザーが明示保存した decision があれば呼び出し側で
+    /// それを優先する**ので、この関数は「まだ一度も判断していないツールの初期値」だけを決める。
+    ///
+    /// 設定画面の既定表示(「常に許可(自動)」/「確認する」)もこの関数と autoAllowsWhenUnset を
+    /// 共有して runtime 挙動に一致させる(判定の正典を二重化しない)。
+    public static func defaultDecision(annotations: ToolAnnotations?, trusted: Bool) -> ToolPermissionDecision {
+        autoAllowsWhenUnset(annotations: annotations, trusted: trusted) ? .allow : .ask
     }
 
     /// 未保存(decision 未設定)のツールが「確認なしで自動実行される」か。設定画面の既定表示
     /// (「常に許可(自動)」か「確認する」か)を runtime 挙動と一致させるための純関数。
-    /// evaluate の `.ask` 緩和条件と同じ式を共有する(判定の正典を二重化しない)。
+    /// defaultDecision の緩和条件と同じ式を共有する(判定の正典を二重化しない)。
     ///
     /// ※ ここで true になる「自動許可」は annotations 由来なので、サーバーが annotations を変えれば
     /// 変わりうる。ユーザーが明示保存した `.allow` とは表示上区別する(design/09 既定表示の写像)。
@@ -128,7 +133,8 @@ public enum ToolPermissionPolicy {
         relaxable(annotations: annotations, trusted: trusted)
     }
 
-    /// `.ask` の確認を省ける(= 緩和可能な)条件。evaluate と autoAllowsWhenUnset の唯一の共有元。
+    /// 未保存ツールを自動許可できる(= 緩和可能な)条件。defaultDecision と autoAllowsWhenUnset の
+    /// 唯一の共有元(緩和はもう evaluate では効かず、未保存の既定を決める層にだけ効く)。
     ///
     /// 3 条件すべてを満たすときだけ true(design/09「既定/自動許可のベスプラ」節・一次情報):
     ///  1. `trusted`: サーバーを信頼している。MCP 公式ブログ「untrusted server の readOnlyHint は
