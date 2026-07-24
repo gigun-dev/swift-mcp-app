@@ -40,6 +40,16 @@ struct ServerDetailView: View {
         let state = home.connections.state(for: entry.id)
         Form {
             connectionSection(state)
+            // ツール許可の設定(design/09 S2)への導線。接続前でも開ける(未接続時は権限画面側が
+            // プレースホルダを出す)ので、tools 一覧の有無に関わらず常に置く。既存の tools ビューア
+            // (下の toolsSection)は「何があるか」の閲覧、こちらは「どう許可するか」の設定で役割が別。
+            Section {
+                NavigationLink {
+                    ServerToolPermissionsView(entry: entry, home: home)
+                } label: {
+                    Label("ツールの権限", systemImage: "hand.raised")
+                }
+            }
             if case .ready(let ready) = state {
                 toolsSection(ready)
             }
