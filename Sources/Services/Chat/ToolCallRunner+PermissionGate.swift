@@ -26,7 +26,11 @@ extension ToolCallRunner {
         let annotations = context.annotationsByTool[wireName]
         let decision = context.permissionStore.decision(serverURL: serverURL, toolName: originalName)
 
-        switch ToolPermissionPolicy.evaluate(annotations: annotations, decision: decision) {
+        // trusted: true を渡す理由: 現状 ServerRegistry のサーバーは全てユーザーが明示的に
+        // 追加 + OAuth 認証したもの = trusted(design/09 信頼モデル)。将来ディレクトリ発見の
+        // 未認証サーバー(claude.ai の「コネクタの検出」的なもの)を扱うようになったら、ここを
+        // context 経由の per-server 信頼判定へ差し替える(annotations だけで安全を決めない）。
+        switch ToolPermissionPolicy.evaluate(annotations: annotations, decision: decision, trusted: true) {
         case .proceed:
             return nil  // 確認不要(allow、または ask だが readOnly 申告あり)。そのまま実行へ。
         case .deny:

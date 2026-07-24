@@ -87,17 +87,24 @@ public enum ToolPermissionPolicy {
     /// 分岐(性悪説・上のファイルコメント参照):
     ///  - `.deny`  → `.deny`(annotations に関係なくハードブロック)。
     ///  - `.allow` → `.proceed`(ユーザーが明示的に常時許可したので確認しない)。
-    ///  - `.ask`   → readOnlyHint == true のツールだけ `.proceed`(唯一の緩和)。それ以外
-    ///               (未申告・readOnlyHint == false/nil・destructive 申告あり等すべて)は `.confirm`。
+    ///  - `.ask`   → **緩和可能なツールだけ** `.proceed`(下の relaxable 参照)。それ以外
+    ///               (未申告・readOnlyHint != true・open-world・untrusted・destructive 申告等すべて)は `.confirm`。
     ///
     /// **なぜ readOnlyHint だけを信頼するか**: readOnly を「偽って false/未申告にする」インセンティブは
     /// 攻撃者に無い(むしろ確認を増やすだけ)。逆に「破壊的なのに readOnly と偽る」攻撃はありうるが、
     /// それは「ユーザーが自分でこのツールを ask のまま使っている」時点で、readOnly 申告を信じて確認を
     /// 省くリスクをユーザーが受容している範囲。destructive を隠す方向の偽装は確認を**省けない**
     /// (readOnlyHint を true にしない限り confirm のまま)ので、緩和は readOnlyHint==true に限定する。
+    /// destructiveHint は緩和には一切使わない(isLikelyDestructive で警告表示にだけ使う)。
+    ///
+    /// - Parameter trusted: このツールを持つサーバーを信頼できるか。**デフォルト値は付けない**
+    ///   (セキュリティ判定なので呼び出し側に毎回明示させる)。信頼モデルは「ユーザーが自分で URL を
+    ///   追加し OAuth 認証した = trusted」(design/09 信頼モデル)。untrusted の readOnlyHint は
+    ///   MCP 公式ブログいわく「actionable でない」——盲信せず、根拠のある trust のときだけ緩和する。
     public static func evaluate(
         annotations: ToolAnnotations?,
-        decision: ToolPermissionDecision
+        decision: ToolPermissionDecision,
+        trusted: Bool
     ) -> ToolGateOutcome {
         switch decision {
         case .deny:
@@ -105,9 +112,43 @@ public enum ToolPermissionPolicy {
         case .allow:
             return .proceed
         case .ask:
-            // 唯一の緩和: readOnly を明示申告したツールだけ確認を省く。未申告(nil)は省かない。
-            return annotations?.readOnlyHint == true ? .proceed : .confirm
+            // 唯一の緩和条件は relaxable 一本に集約する(下の autoAllowsWhenUnset と式を共有し、
+            // 判定の正典を二重化しない)。満たさなければ性悪説の既定どおり confirm。
+            return relaxable(annotations: annotations, trusted: trusted) ? .proceed : .confirm
         }
+    }
+
+    /// 未保存(decision 未設定)のツールが「確認なしで自動実行される」か。設定画面の既定表示
+    /// (「常に許可(自動)」か「確認する」か)を runtime 挙動と一致させるための純関数。
+    /// evaluate の `.ask` 緩和条件と同じ式を共有する(判定の正典を二重化しない)。
+    ///
+    /// ※ ここで true になる「自動許可」は annotations 由来なので、サーバーが annotations を変えれば
+    /// 変わりうる。ユーザーが明示保存した `.allow` とは表示上区別する(design/09 既定表示の写像)。
+    public static func autoAllowsWhenUnset(annotations: ToolAnnotations?, trusted: Bool) -> Bool {
+        relaxable(annotations: annotations, trusted: trusted)
+    }
+
+    /// `.ask` の確認を省ける(= 緩和可能な)条件。evaluate と autoAllowsWhenUnset の唯一の共有元。
+    ///
+    /// 3 条件すべてを満たすときだけ true(design/09「既定/自動許可のベスプラ」節・一次情報):
+    ///  1. `trusted`: サーバーを信頼している。MCP 公式ブログ「untrusted server の readOnlyHint は
+    ///     actionable でない —— 確認を省く判断はその hint を信じる場合にしか意味を成さない」。
+    ///  2. `readOnlyHint == true`: read-only を明示申告。nil/false は緩和しない(性悪説の既定へ倒す)。
+    ///  3. `openWorldHint == false`: open-world(外部システムに触れる)でないことを**明示申告**。
+    ///     Codex CLI は「readOnlyHint==true かつ openWorldHint==false で自動承認」。spec の
+    ///     openWorldHint 既定は true(性悪説)なので、nil/未申告は open-world とみなして緩和しない
+    ///     (== false のときだけ緩い側へ倒す)。
+    ///     ※ readOnlyHint は「== true」でしか、openWorldHint は「== false」でしか緩和を許さない——
+    ///     どちらも「安全側の**明示申告**があるときだけ緩い側」で対称。annotation 衛生の良い
+    ///     サーバー(caldav は全ツールに openWorldHint:false を明示)は自動許可のまま、hint を
+    ///     書かない未知サーバーは confirm 側へ倒れて安全(良い annotation を報いる・spec/Codex 準拠)。
+    ///
+    /// 原則「Hints inform decisions; contracts enforce them」——annotations は UX(確認の省略)にだけ
+    /// 使い、安全の本体はここではなく決定的制御(将来のサンドボックス/ネットワーク)に置く。
+    private static func relaxable(annotations: ToolAnnotations?, trusted: Bool) -> Bool {
+        trusted
+            && annotations?.readOnlyHint == true
+            && annotations?.openWorldHint == false
     }
 }
 

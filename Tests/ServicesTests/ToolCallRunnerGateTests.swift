@@ -113,13 +113,15 @@ private final class RecordingPermissionStore: ToolPermissionResolving, @unchecke
         #expect(store.recorded.isEmpty)
     }
 
-    @Test("ask + readOnly 申告のツールは確認を飛ばして実行する(唯一の緩和)")
+    @Test("ask + readOnly かつ openWorldHint==false 申告のツールは確認を飛ばして実行する(唯一の緩和)")
     func askReadOnlySkipsConfirm() async {
         let executor = StubToolExecutor(results: ["tool": .string("ok")])
         let store = RecordingPermissionStore(fixed: .ask)
         let runner = makeRunner(
             executor: executor,
-            annotations: ["tool": ToolAnnotations(readOnlyHint: true)],
+            // 緩和の唯一の形: readOnly かつ open-world でないことを明示申告(caldav の全ツールがこれ)。
+            // openWorldHint 未申告(nil)だと spec 既定 open-world=true とみなされ confirm 側へ倒れる(S1 厳密化)。
+            annotations: ["tool": ToolAnnotations(readOnlyHint: true, openWorldHint: false)],
             store: store
         )
         var confirmCalled = false
