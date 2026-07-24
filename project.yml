@@ -68,3 +68,39 @@ targets:
           # XcodeGen の素の target は DEBUG 条件を自動付与しない。これが無いと plist だけ緩み、
           # MCPHostBuildPolicy は Release 相当 false のままという片側設定になる。
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG"
+    # 自動生成される MCPHost スキームの Test アクションに UITest ターゲットを載せる。
+    # こうすると `xcodebuild test -scheme MCPHost` で UITest が走る(専用スキームを別に作らず、
+    # アプリと同じスキームの test 段へ相乗りするのが XcodeGen の素直な形)。build/run 段は不変。
+    scheme:
+      testTargets:
+        - MCPHostUITests
+
+  # native UI 回帰層(Fable queue 1・B0)。XCUIAutomation は XCTest ベースで、SwiftUI の
+  # View 構築・ナビゲーション・起動経路という SPM テストの外側を守る。
+  #
+  # 【なぜ別ターゲット / 別 sources(UITests/)か】ルートの Package.swift(Kernel/Services の
+  # swift-testing)とは実行系が別(XCUITest は host app を起動して外側から操作する)。SPM の Tests/ と
+  # 混ぜず UITests/ に隔離し、`make check`(SPM)と `make uitest`(Xcode)を独立させる。
+  # 【TEST_TARGET_NAME】UI テスト対象のアプリを指す(XCUIApplication がこのアプリを起動する)。
+  # 【署名】シミュレータ実行なので Automatic + 個人 Team で足りる(実機 provisioning は要求しない)。
+  MCPHostUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: UITests
+    dependencies:
+      - target: MCPHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.gigun.mcphost.uitests
+        # PRODUCT_NAME を明示しないと生成物名が空になり、.xctest バンドルが "-Runner.app/PlugIns/.xctest"
+        # (先頭ダッシュ=空名)として衝突する("Multiple commands produce ... .xctest")。アプリターゲットが
+        # PRODUCT_NAME: MCPHost を明示しているのと同様に、UITest ターゲットにも明示する。
+        PRODUCT_NAME: MCPHostUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
+        TEST_TARGET_NAME: MCPHost
+        DEVELOPMENT_TEAM: KK42DL23GH
+        CODE_SIGN_STYLE: Automatic
