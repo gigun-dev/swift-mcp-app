@@ -98,11 +98,96 @@ struct ServerToolPermissionsView: View {
                 }
             }
         } header: {
-            Text("ツールの権限")
+            // 見出し + 一括メニュー(design/09 画面2「一括メニュー」・ユーザーFB 2026-07-24)。
+            // remote MCP をコネクタ単位でまとめて許可/確認/ブロック/既定へ戻す UI が無かったので追加。
+            bulkHeader(tools: sorted)
         } footer: {
             Text("「(自動)」はツールの申告(read-only 等)から導いた既定です。"
                 + "行を開くと常に許可 / 承認が必要 / ブロックを選べます。")
         }
+    }
+
+    // MARK: - 一括メニュー(コネクタ単位でまとめて変更・claude.ai の「カスタム ▾」相当)
+
+    /// セクション見出し。左に「ツールの権限」、右に現在の集約状態を冠した一括メニュー。
+    /// 一括適用は .ready(= tools/list がある)ときだけ意味を持つので、この関数は toolsSection
+    /// (.ready 分岐)からのみ呼ぶ(未接続時はそもそもツール行が出ない)。
+    private func bulkHeader(tools: [Tool]) -> some View {
+        HStack {
+            Text("ツールの権限")
+            Spacer()
+            Menu {
+                bulkMenuItems(tools: tools)
+            } label: {
+                // ラベルに現在の集約状態を出す(全ツール同一ならその文言・混在なら「カスタム」)。
+                // claude.ai の「カスタム ▾」に倣い、今どの一括状態にあるかを一目で示す。
+                Label(aggregateLabel(tools: tools), systemImage: "chevron.down")
+                    .font(.footnote)
+                    .labelStyle(.titleAndIcon)
+            }
+            // textCase(nil): Form のセクション見出しは既定で大文字化されるが、日本語ラベルと
+            // メニュー文言に不要なので素の表記を保つ。
+            .textCase(nil)
+        }
+    }
+
+    /// 一括メニューの選択肢。各項目は connection.tools を回して既存 store API を呼ぶだけ
+    /// (Kernel/Services の新規 API は不要・タスク指示)。適用後は refreshToken を進めて一覧を再評価
+    /// させ、各行ラベルを即更新する(storedDecision を読み直す・既存の反映方式に一括適用も接続)。
+    @ViewBuilder
+    private func bulkMenuItems(tools: [Tool]) -> some View {
+        // 「すべてのツールを常に許可」= 全ツールに .allow を明示保存(確認を出さず即実行)。
+        Button {
+            applyBulk(tools: tools) { store.setDecision(.allow, serverURL: entry.url, toolName: $0) }
+        } label: {
+            Label("すべてのツールを常に許可", systemImage: "checkmark.circle")
+        }
+        // 「すべてのツールを確認」= 全ツールに明示 .ask を保存。readOnly の自動許可も明示 ask で
+        // 上書きされ、確認に回る(evaluate は明示決定を無条件に尊重・ToolPermissionPolicy 参照)。
+        Button {
+            applyBulk(tools: tools) { store.setDecision(.ask, serverURL: entry.url, toolName: $0) }
+        } label: {
+            Label("すべてのツールを確認する", systemImage: "hand.raised")
+        }
+        // 「すべてのツールをブロック」= 全ツールに .deny を保存(モデル発でもカード発でもハードブロック)。
+        Button(role: .destructive) {
+            applyBulk(tools: tools) { store.setDecision(.deny, serverURL: entry.url, toolName: $0) }
+        } label: {
+            Label("すべてのツールをブロック", systemImage: "nosign")
+        }
+        Divider()
+        // 「既定に戻す(自動)」= 全ツールの明示決定を消して未保存へ戻す。以後は annotations 由来の
+        // 既定(readOnly closed trusted なら自動許可・それ以外は確認)に従う。
+        Button {
+            applyBulk(tools: tools) { store.clearDecision(serverURL: entry.url, toolName: $0) }
+        } label: {
+            Label("既定に戻す(自動)", systemImage: "arrow.uturn.backward")
+        }
+    }
+
+    /// 一括適用の共通処理。全ツールに `apply`(生ツール名を渡す)を実行し、最後に refreshToken を
+    /// 進めて一覧を再評価させる。決定キーは常に生ツール名(tool.name = originalToolName)。
+    private func applyBulk(tools: [Tool], _ apply: (String) -> Void) {
+        for tool in tools { apply(tool.name) }
+        refreshToken &+= 1
+    }
+
+    /// 現在の集約状態の文言。各ツールの実効決定(stored ?? defaultDecision(annotations, trusted:true))を
+    /// 集計し、全ツール同一ならその文言、混在(または空)なら「カスタム」。runtime ゲートと同じ
+    /// 「stored ?? defaultDecision」式で実効決定を組むので、表示と実挙動がズレない(ファイル冒頭の写像)。
+    private func aggregateLabel(tools: [Tool]) -> String {
+        _ = refreshToken  // 依存注入(一括適用後の再評価トリガ・statusLabel と同じ理由)。
+        let decisions = Set(tools.map { effectiveDecision(for: $0) })
+        guard decisions.count == 1, let only = decisions.first else { return "カスタム" }
+        return label(for: only)
+    }
+
+    /// 実効決定(stored ?? defaultDecision)。集約状態の算出に使う純ロジック。
+    private func effectiveDecision(for tool: Tool) -> ToolPermissionDecision {
+        if let stored = store.storedDecision(serverURL: entry.url, toolName: tool.name) { return stored }
+        let annotations = kernelAnnotations(from: tool.annotations)
+        // trusted:true 固定(ファイル冒頭の根拠・runtime ゲートと同じ注入)。
+        return ToolPermissionPolicy.defaultDecision(annotations: annotations, trusted: true)
     }
 
     @ViewBuilder
@@ -121,11 +206,18 @@ struct ServerToolPermissionsView: View {
     // MARK: - 1行(ツール名 + 状態ラベル + chevron は NavigationLink が付与)
 
     private func toolRow(_ tool: Tool) -> some View {
-        HStack(spacing: 8) {
+        // 「app 専用」バッジ: model-visible でない(LLM のツール一覧に載らない)ツールを示す。
+        // 2026-07-24 移設(ユーザーFB): ServerDetailView の読み取り専用ビューアが出していたこの
+        // バッジを、ビューア廃止に伴い権限一覧のこの行へ移した。app 専用ツールは LLM からは隠れて
+        // いるが、カード発の tools/call で呼ばれうるため許可設定自体は残す(表示も残す)。
+        // metadata 変換失敗時は理由なく app 専用扱いしないよう model-visible 側へ倒す(ビューアと同じ判断)。
+        let modelVisible = (try? isToolModelVisible(tool)) ?? true
+        return HStack(spacing: 8) {
             Text(displayName(for: tool))
                 .font(.callout)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+            if !modelVisible { ServerStateBadge(text: "app 専用", color: .purple) }
             Spacer(minLength: 8)
             statusLabel(for: tool)
         }
