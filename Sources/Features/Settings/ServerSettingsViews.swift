@@ -40,18 +40,21 @@ struct ServerDetailView: View {
         let state = home.connections.state(for: entry.id)
         Form {
             connectionSection(state)
-            // ツール許可の設定(design/09 S2)への導線。接続前でも開ける(未接続時は権限画面側が
-            // プレースホルダを出す)ので、tools 一覧の有無に関わらず常に置く。既存の tools ビューア
-            // (下の toolsSection)は「何があるか」の閲覧、こちらは「どう許可するか」の設定で役割が別。
+            // ツール面への単一導線(design/09 S2)。接続前でも開ける(未接続時は権限画面側が
+            // プレースホルダを出す)ので、tools 一覧の有無に関わらず常に置く。
+            //
+            // 2026-07-24 統合(ユーザーFB・役割重複解消): 以前はここに「ツール(N)」の読み取り専用
+            // ビューア(toolsSection/toolRow: name+説明+「app 専用」バッジ)を別途出し、その下に
+            // 「ツールの権限」への導線を並べていた。両者が同じ tools/list を列挙して役割がかぶって
+            // いたため、読み取り専用ビューアを廃止し「ツール」1画面(ServerToolPermissionsView)に
+            // 「何があるか」+「どう許可するか」を統合した。失われた「app 専用」バッジは権限一覧の
+            // 各行(画面2)へ移設した(model-visible でないツールも許可設定自体は残す)。
             Section {
                 NavigationLink {
                     ServerToolPermissionsView(entry: entry, home: home)
                 } label: {
-                    Label("ツールの権限", systemImage: "hand.raised")
+                    Label("ツール", systemImage: "hand.raised")
                 }
-            }
-            if case .ready(let ready) = state {
-                toolsSection(ready)
             }
             Section {
                 Button("名前・URL を編集") { editing = true }
@@ -96,33 +99,8 @@ struct ServerDetailView: View {
         }
     }
 
-    private func toolsSection(_ ready: ReadyConnection) -> some View {
-        Section {
-            ForEach(Array(ready.tools.enumerated()), id: \.offset) { _, tool in
-                toolRow(tool)
-            }
-        } header: {
-            Text("ツール(\(ready.tools.count))")
-        }
-    }
-
     private var currentEntry: MCPServerEntry? {
         registry.servers.first(where: { $0.id == entry.id })
-    }
-
-    @ViewBuilder
-    private func toolRow(_ tool: Tool) -> some View {
-        // metadata 変換失敗時は、理由なく app 専用扱いしないよう model-visible 側へ倒す。
-        let modelVisible = (try? isToolModelVisible(tool)) ?? true
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(tool.name).font(.callout.monospaced())
-                if !modelVisible { ServerStateBadge(text: "app 専用", color: .purple) }
-            }
-            if let description = tool.description, !description.isEmpty {
-                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-            }
-        }
     }
 }
 
