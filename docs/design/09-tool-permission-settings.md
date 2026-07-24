@@ -101,7 +101,17 @@ openWorld/trusted 分岐を共有する(設定表示 = runtime 挙動を Kernel 
 - 並行 tool call のキュー処理は現行踏襲(先頭1件を提示・応答で次へ)。外側 dismiss = deny も踏襲。
 - `interactiveDismissDisabled` は付けない(スワイプ下げ = deny で宙吊り回避の現行挙動を保つ)。
 
-## 実装スライス(案)
+## 実装状況(2026-07-24 完了)
+
+- ~~**S1 (Kernel)**~~ ✅ `65987c0`→`c3691ae`: 緩和を defaultDecision(未保存の既定層)へ隔離、evaluate は
+  素の写像へ。`autoAllowsWhenUnset = trusted && readOnlyHint==true && openWorldHint==false`。store に
+  storedDecision(optional)/clearDecision を追加、setDecision は .ask も永続化(明示 ask を尊重)。
+- ~~**S3 (Features)**~~ ✅ `517b63e`: ToolConfirmationDialog を detent セミモーダルへ作り直し(引数 JSON 全文)。
+- ~~**S2 (Features)**~~ ✅ `7bb2c52`: ServerToolPermissionsView / ToolPermissionDetailView 追加、
+  ServerDetailView に導線。表示 = stored ?? defaultDecision を Kernel 純関数で共有。
+- 残: 実機 E2E(設定で状態変更 → ランタイム挙動確認)。一括メニュー・deny のツール一覧除外は未着手(下記)。
+
+## 実装スライス(原案・履歴)
 
 - **S1 (Kernel)**: `evaluate` に `openWorldHint != true` ガードと `trusted: Bool` を追加(緩和条件の精緻化・
   ベスプラ節)+ 未保存時の既定表示状態を返す純関数(`defaultDisplayDecision(annotations:trusted:)` 等)。
