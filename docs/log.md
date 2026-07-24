@@ -1234,3 +1234,18 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 注記(機能外): (1)D最後のlist-todosがcaldavバックエンド60sタイムアウト(err=true ms=60305・Workerコールド
   スタート等)。ゲートは正しく素通し=権限機能と無関係。(2)コネクタ名が「caldav-slash」表示=queue10の
   「冪等再利用時name上書き」副次観察が実機に出た。次の小修正候補を裏付け。
+
+## 2026-07-24 ツール許可UI 改善イテレーション(ユーザーFB)+ B0 UITest基盤
+
+- B0(44db6f7): native UI回帰層の土台。XcodeGen MCPHostUITestsターゲット+MCPHostスキームtest相乗り+
+  make uitest(SIMULATOR_UDID必須・ONLY_ACTIVE_ARCH=YES・pre-push非対象)+ home.root identifier+
+  スモーク1本。詰まり3点(空PRODUCT_NAMEでバンドル名衝突/新規derivedDataPathでSPM未解決/
+  Apple Siliconのx86_64リンク失敗)を解消しHarness Aで make uitest green。
+- S2b(8ebb159): ツール面の一本化(読み取り専用ビューア廃止し権限画面へ統合・app専用バッジは行へ移設)+
+  MCP単位の一括メニュー(すべて許可/確認/ブロック/既定に戻す・集約状態表示「カスタム」)。
+- 階層フラット化(3cdc073): 中間の「ツール」プッシュ画面を廃止し、ServerDetailViewにツール一覧+一括を
+  インライン(有効/状態と同階層・claude.aiと同じ)。ServerToolPermissionsView削除→extension
+  ServerDetailView(ServerDetailView+Tools.swift)へ移植。個別ツール詳細のプッシュのみ残す。挙動不変。
+- 実機install(iPhone 12 mini・devicectl)。ユーザー確認「よさそう」。
+- UI方針(今後の指針): 設定ナビは階層を深くしない・兄弟設定(有効/状態)と同階層にインライン・
+  行タップ→ボトムシートはアンチパターン・claude.aiのコネクタ権限UIを参照点にする。
