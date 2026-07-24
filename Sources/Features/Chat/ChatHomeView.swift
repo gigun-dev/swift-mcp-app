@@ -227,6 +227,13 @@ struct ChatHomeView: View {
                 Image(systemName: "line.3.horizontal")
             }
             .accessibilityLabel("チャット履歴")
+            // UITest スモークのアンカー(B0・native UI 回帰層)。この ☰ ボタンは通常起動の
+            // ChatHomeView で state(.ready/.failed)に関わらずツールバーに常在するため、
+            // 「ルート画面が LLM キー無しでも起動できたか」を最小コストで掴める安定した目印になる。
+            // identifier 文字列は UITests/SmokeUITests.swift と一対一で対応させる(ズレたら即 fail)。
+            // accessibilityLabel(日本語・ローカライズで揺れる)ではなく identifier で掴むのは、
+            // テストを表示文言から独立させ、文言変更で回帰テストが割れないようにするため。
+            .accessibilityIdentifier("home.root")
         }
         // 中央: 接続先 + モデル名(履歴閲覧中は下の routedContent 側で navigationTitle が勝つが、
         // ライブ時はこの principal を出す。履歴詳細は自前の navigationTitle を持つ)。

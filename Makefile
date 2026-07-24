@@ -117,6 +117,32 @@ app: gen
 # SwiftUIを含むiOSアプリターゲット全体もgeneric Simulator向けにコンパイルする。
 verify: check app
 
+# native UI 回帰(XCUIAutomation)を回す(Fable queue 1・B0)。
+#
+# 【なぜ verify に入れないか】UITest はシミュレータ起動を伴い遅く・環境要因で flaky。pre-push の
+# make verify(check + app)には入れず、明示的に叩く project E2E 扱いにする(恒久回帰だが gate ではない)。
+# 【なぜ UDID 必須か】UITest は generic destination では走らず、起動済みの実 Simulator が要る。複数
+# Simulator 検証で誤配送しないよう、make run と同じく UDID を明示させる(名前解決に頼らない)。
+# 【署名 YES】run と同じ理由 —— host app が Simulator 標準の ad-hoc 署名で起動できるようにする。
+.PHONY: uitest
+uitest: gen
+	@set -e; \
+	if [ -z "$(SIMULATOR_UDID)" ]; then \
+		echo "!! uitest は SIMULATOR_UDID の明示が必要です: make uitest SIMULATOR_UDID=<udid>" >&2; \
+		exit 1; \
+	fi; \
+	if ! xcrun simctl list devices available | grep -F "($(SIMULATOR_UDID))" >/dev/null; then \
+		echo "!! availableなSimulator UDID '$(SIMULATOR_UDID)' が見つかりません" >&2; exit 1; \
+	fi; \
+	xcrun simctl boot "$(SIMULATOR_UDID)" 2>/dev/null || true; \
+	xcodebuild test \
+		-project MCPHost.xcodeproj \
+		-scheme MCPHost \
+		-destination "platform=iOS Simulator,id=$(SIMULATOR_UDID)" \
+		-only-testing:MCPHostUITests \
+		ONLY_ACTIVE_ARCH=YES \
+		CODE_SIGNING_ALLOWED=YES
+
 # シミュレータへ install + launch まで一気にやる(検証ループ用)。
 #
 # 【なぜ作ったか】BYOK の API キーを毎回シミュレータの設定画面に手で貼るのが苦痛で、
