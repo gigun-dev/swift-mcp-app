@@ -40,6 +40,10 @@
   [`codex-plugin-and-ios-agent-audit.md`](codex-plugin-and-ios-agent-audit.md)、
   試験履歴は[`ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)、
   日常運用は[`ios-simulator-best-practices.md`](ios-simulator-best-practices.md)を正とする。
+  > **2026-08-02 更新:** best-practices は**索引だけの文書へ縮小**(操作手順は共有スキル
+  > `ios-simulator` と project skill `ios-e2e-verify` が原典。重複6本・37.6k tokens が実走行を
+  > 失敗させたため)。Codex 非依存化の判断記録は
+  > [archive へ移設](archive/ios-agent-harness-codex-independence-2026-07-23.md)。
 - **Simulator操作は`.claude/agents/simulator-operator.md`(sonnet)へ委譲**(mainでスクショ往復しない)。
   > **2026-07-24 追加: ツール許可UI(design/09)完了 ✅** — per-MCPサーバーのツール許可を設定/確認できる
   > 機能。許可判定のベスプラ準拠(緩和は未保存の既定層のみ・明示決定優先・trusted&&readOnly&&closed-world)+
