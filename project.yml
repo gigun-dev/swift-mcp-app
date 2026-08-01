@@ -16,6 +16,16 @@ options:
   # Xcode の自動生成する Info.plist をやめ、targets 以下の設定だけで完結させる方が
   # XcodeGen の差分がシンプルになる(GENERATE_INFOPLIST_FILE を使う)。
   bundleIdPrefix: dev.gigun
+  # Icon Composer の `.icon`(iOS 26 の Liquid Glass アイコン)は、拡張子こそ付いているが
+  # 実体は `icon.json` + `Assets/` を含むディレクトリ(macOS のパッケージ)。XcodeGen は
+  # 既定でディレクトリを「中身を展開して個別ファイルとして登録する」ため、そのままだと
+  # icon.json と各レイヤー SVG がバラバラの resource として Copy Bundle Resources に入り、
+  # Xcode 側は .icon パッケージを認識できずアイコンが反映されない(XcodeGen issue #1556)。
+  # fileTypes で「icon 拡張子は単一ファイルとして扱う」と宣言してこれを防ぐ。
+  # 2026-08-01 時点の XcodeGen はこれを既定にしていないため明示が要る(将来既定化されたら不要)。
+  fileTypes:
+    "icon":
+      file: true
 
 packages:
   MCPHostKernel:
@@ -46,6 +56,24 @@ targets:
         # 「アプリの縦幅が狭い」として実際に発症した(2026-07-15)。生成 Info.plist に
         # UILaunchScreen(空 dict)を入れる INFOPLIST_KEY で宣言だけ行う。
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # アプリアイコン。Xcode が新規プロジェクトに自動で入れる設定だが、XcodeGen の
+        # 素の target には付かないため明示する(これが無いと Assets.xcassets を同梱しても
+        # actool がどの appiconset を採用するか分からず、アイコンが空のままビルドが通る)。
+        # 実体は Sources/Features/Resources/Assets.xcassets/AppIcon.appiconset/ ——
+        # Xcode の GUI で Asset Catalog を「追加」すると参照が .xcodeproj にしか残らず
+        # 次の `xcodegen generate` で消えるため、カタログはリポジトリ側のファイルとして持ち、
+        # sources: Sources/Features 配下に置くことで毎回の生成に自動で載せている。
+        # iOS 17+ かつ Xcode 15 以降は 1024x1024 単一画像(single-size)で全サイズを賄えるので、
+        # 旧来の 20pt/29pt/... の多サイズ列挙はしない(App Store 提出用も同じ 1024 が使われる)。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # アプリ全体のアクセント色。UI 側は Color.accentColor を各所で使っているが、
+        # これまで AccentColor の colorset が無く iOS 既定の青がそのまま出ていた。
+        # アイコン(indigo 基調)と配色を揃えるために colorset を追加し、ここで名前を指す。
+        # APPICON_NAME と同じく、Xcode の新規プロジェクトには自動で入るが XcodeGen では明示が要る。
+        # Light は #4f46e5(indigo-600・発表スライドのアクセント色と同一)、
+        # Dark は #818cf8(indigo-400)。暗い背景に indigo-600 を置くと沈んで押せなく見えるため、
+        # 明度を上げた側を使う(colorset 側で appearance 分岐している)。
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
