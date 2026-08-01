@@ -107,6 +107,29 @@ struct ChatBodyView: View {
     var body: some View {
         VStack(spacing: 0) {
             messages
+                // メッセージ領域をタップしたらキーボードを閉じる(タップ外しでの dismiss・ユーザー指摘)。
+                // contentShape で余白タップも拾うが、simultaneousGesture にしてカード/ボタンのタップは妨げない。
+                //
+                // 【2026-08-01 修正・実機で再現と解消を確認済み】この modifier は元々 VStack 全体
+                // (= ChatComposerView を含む)に付いていた。コメントは当時から「メッセージ領域を」と
+                // 書いてあり、実装だけが広すぎた。
+                // 症状(ユーザー FB): 入力欄でカーソルを長押し(ペースト/選択メニューを出す操作)すると
+                // キーボードが閉じてしまう。simultaneousGesture は UITextField 側のジェスチャと
+                // 同時認識されるため、長押しの終了時に TapGesture.onEnded が発火し
+                // inputFocused=false が走っていた。閉じる対象をメッセージ領域だけに狭めて解決する。
+                // (キーボードを閉じる経路は他に scrollDismissesKeyboard(.interactively) と送信時があり、
+                //  そちらは入力欄の内側の操作とは干渉しないのでそのまま残す)
+                //
+                // 【検証方法の記録】この不具合は **XCUITest では再現できない**。
+                // press(forDuration:) で長押しを送っても、テキストを入れた状態で長押ししても、
+                // 修正前のビルドで green のままだった(合成タッチイベントでは iOS のテキスト選択
+                // インタラクションが実機と同じには動かないためと思われる)。
+                // 最終的に「修正前のビルドを実機へ入れて再現 → 修正版で解消」を人手で確認して確定させた。
+                // したがってこの挙動には自動回帰が無い。同種の modifier を外側に付け直すと
+                // 静かに再発するので、範囲を広げるときはこのコメントを思い出すこと。
+                .simultaneousGesture(
+                    TapGesture().onEnded { inputFocused = false }
+                )
             Divider()
             ChatComposerView(
                 chatVM: chatVM,
@@ -117,11 +140,6 @@ struct ChatBodyView: View {
         }
         // 画面表示直後に generator を prepare しておく(最初の発火遅延を減らす)。
         .task { haptics.prepareAll() }
-        // メッセージ領域をタップしたらキーボードを閉じる(タップ外しでの dismiss・ユーザー指摘)。
-        // contentShape で余白タップも拾うが、simultaneousGesture にしてカード/ボタンのタップは妨げない。
-        .simultaneousGesture(
-            TapGesture().onEnded { inputFocused = false }
-        )
         // fullscreen カードの器(P4-DM・設計 04 §5 決定2・2026-07-17 更新: sheet→fullScreenCover)。
         // item に activeHost をラップした Binding を渡し、⤡ による dismiss(item→nil)で
         // coordinator.dismiss()(= host.restoreInline の順序復帰)を呼ぶ。sheet(.large)は「上余白 dead 領域・

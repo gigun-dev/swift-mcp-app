@@ -27,6 +27,10 @@ struct ChatComposerView: View {
                 TextField("メッセージを入力…", text: $draft, axis: .vertical)
                     .lineLimit(1 ... 4)
                     .focused($inputFocused)  // キーボード dismiss を制御するため focus を束ねる。
+                    // UITest から掴むための識別子(既存の "home.root" と同じ命名規則)。
+                    // 2026-08-01: 入力欄の長押し(ペースト/選択)でキーボードが落ちる不具合の
+                    // 回帰テスト(SmokeUITests.testLongPressInComposerKeepsKeyboard)で使う。
+                    .accessibilityIdentifier("chat.composer.input")
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(RoundedRectangle(cornerRadius: 18).fill(Color(.secondarySystemBackground)))
