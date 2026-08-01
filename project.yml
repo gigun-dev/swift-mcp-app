@@ -96,6 +96,14 @@ targets:
           # XcodeGen の素の target は DEBUG 条件を自動付与しない。これが無いと plist だけ緩み、
           # MCPHostBuildPolicy は Release 相当 false のままという片側設定になる。
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG"
+          # 2026-08-01: `make run`(destination を特定 Simulator の id で指定)が
+          # 「unable to resolve module dependency: 'Kernel'」で落ちていた。原因は arch の食い違いで、
+          # ローカル SwiftPM パッケージ(MCPHostKernel)は destination に従って arm64 だけを作るのに、
+          # アプリ target 側は x86_64 も作ろうとして Kernel/Services を見つけられなかった。
+          # Xcode の既定プロジェクトは Debug に ONLY_ACTIVE_ARCH=YES を入れているが、XcodeGen の
+          # 素の target には付かないため明示する。`make app`(generic destination)は active arch が
+          # 決まらないので従来どおり全 arch を作る = 影響を受けない。
+          ONLY_ACTIVE_ARCH: YES
     # 自動生成される MCPHost スキームの Test アクションに UITest ターゲットを載せる。
     # こうすると `xcodebuild test -scheme MCPHost` で UITest が走る(専用スキームを別に作らず、
     # アプリと同じスキームの test 段へ相乗りするのが XcodeGen の素直な形)。build/run 段は不変。
