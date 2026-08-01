@@ -84,8 +84,19 @@
    - live OAuth / caldav本番はpre-push必須にせず、project E2Eへ残す。
 2. **共有harness sourceを中立化する**(`gigun-dev/claude-code`へscopeを移してから)
    - generic `ios-simulator`を明示UDID、bounded poll、実行時scaleへ直す。
-   - 引数なし`idb connect`を現行CLIに合わせ、idb / companionのversion、古いsocket、
-     Xcode 26.4互換性を隔離環境で検証する。現在の`idb list-targets`は標準fallbackとして未ready。
+   - ~~引数なし`idb connect`を現行CLIに合わせ~~ ✅ **2026-07-31 修正済み**。
+     `idb connect <UDID>`(UDID明示)が正で、引数なしはアタッチされず
+     `idb list-targets`が`No Companion Connected`のまま無反応になる、と実地確認。
+     SKILL.mdへ訂正ブロックとして記載。**generic `ios-simulator`は「要修繕」から
+     「実地で通した経路」へ格上げしてよい**(iPhone 17 / iOS 26.4 で通し検証)。
+   - **同時に踏んだ罠3件をSKILL.mdの「★ハマりどころ」へ追記済み**(2026-07-31):
+     ①**日本語ロケールで`idb ui text`のASCII入力がローマ字→かな変換で壊れる**
+     (`"caldav.gigun-dev.workers.dev"`→`"cあlだv。ぎぐんーでv。…"`。エラーにならないので気づけない)。
+     回避は`idb ui key <UDID> 57`(Caps Lock=英語入力トグル・ロックなので後続フィールドにも持続)。
+     ハードウェアキーボード接続中はソフトキーボードが出ないので🌐地球儀キー経路は使えない。
+     ②スクショ出力先は`$HOME`配下(`/tmp`はsandboxが弾き"volume is read only")。
+     ③`idb ui describe-all`はJSONLではなく入れ子JSON配列(1行1要素で読むと落ちる。再帰walker必須)。
+   - 残: idb / companionのversion差、古いsocket、Xcode 26.4互換性の隔離環境検証。
    - `ios-device-build`の`~/.claude/...`ハードコードを実行中skillからの相対pathへ直す。
    - 触るpluginから`.codex-plugin/plugin.json`とroot `.mcp.json`を追加し、隔離installで検証する。
    - H-01 / K-01 / O-01を`build-ios-apps`なしの隔離環境で再実行し、Codexなしでもdelivery可能と固定する。
@@ -129,7 +140,11 @@
    （runtime UI操作とlint / pre-push gateの代替には使わない）
 3. source-controlled XCUIAutomation — 安定したnative UI回帰
 4. **固定版**XcodeBuildMCP CLI / 最小workflow — client非依存の再現可能な探索E2E
-5. `ios-simulator`（simctl + idb）— 修繕後に使う明示UDID、accessibility-firstの汎用fallback
+5. `ios-simulator`（simctl + idb）— **user scopeの共有skillが原典**。明示UDID、
+   accessibility-firstの汎用fallback。**2026-07-31に`idb connect <UDID>`修正+ハマりどころ3件
+   追記で実地通し済み**なので「修繕後に使う」ではなく**今使える**。
+   実体は`gigun-dev/claude-code/plugins/ios-skills/skills/ios-simulator/SKILL.md`。
+   **Simulator CLI操作の汎用知識はここへ書く**(project docsに重複させない)。
 6. OpenAI公式`build-ios-apps` — Codex Desktopで探索を始めやすくするoptional adapter
 7. project `ios-e2e-verify` — OAuth、caldav、WKWebView、JS状態、unified log
 8. simulator-operator subagent(sonnet)— 画面操作の委譲先(mainはスクショで汚さない)
