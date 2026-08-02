@@ -1,0 +1,122 @@
+<!-- MCPHost アプリアイコンの生成元。ここから AppIcon.icon の各レイヤー PNG を書き出す。
+
+     【なぜ SVG をコミットするか】
+     .icon は icon.json + PNG で、**幾何は PNG に焼き込まれている**。つまり成果物だけを
+     持っていても「カードを少し動かす」「回転を変える」ができず、作り直すしかない。
+     実際、初版は生成元を残しておらず、セッションのトランスクリプトを検索して
+     復元する羽目になった。PNG はビルド生成物なので、これが真の source。
+
+     【再生成の手順】
+       swift <ios-app-icon>/scripts/render_svg.swift AppIcon.svg out/ --size 1024
+       # out/ に 00-bg / 01-halo / 02-card-small / 03-card / 04-fullscreen が出る
+       # icon.json の layers は「先頭が最前面」なので **逆順** に並べる
+       # 背景とハローは "glass": false(ぼかした層をガラス板として扱わせると
+       #   システムが縁に鏡面反射を付け、硬い輪郭が出る)
+
+     【幾何は初版から一切変えていない】
+       01-fullscreen  cx452 cy468 w620 h486 r128 angle -6
+       02-card        cx652 cy664 w356 h268 r70  angle  13
+       03-card-small  cx790 cy806 w210 h158 r42  angle  30
+     autofit は掛けない。掛けるとカード群が安全域いっぱい(1.076倍)へ広がって中央へ寄り、
+     白い大カードが縁に迫って 80pt で重なりが読めなくなる。**余白そのものが構図**であり、
+     「安全域を最大限使う」動作とは相性が悪い。
+
+     【色は spec の値そのまま】#ffffff / #fbbf24 / #6366f1。グラデーションは元の色を
+     中間の段に置き、上を明るく下を沈めただけ。色相・彩度は変えていない。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- 背景: 単一色相のまま明度を落とす縦グラデ + 端を沈める放射のかぶせ。
+         純正(ショートカット)を実測すると背景は #502896→#2d1b66 の縦グラデだった。
+         ベタ塗りだとアイコン全体が印刷物のように平たく見える。 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#4640ab"/>
+      <stop offset=".55" stop-color="#332f83"/>
+      <stop offset="1"   stop-color="#221e5a"/>
+    </linearGradient>
+    <radialGradient id="vig" cx="34%" cy="24%" r="94%">
+      <stop offset="0"   stop-color="#6f68dd" stop-opacity=".40"/>
+      <stop offset=".62" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1"   stop-color="#000000" stop-opacity=".34"/>
+    </radialGradient>
+
+    <!-- 面ごとの多段グラデーション。光源は左上で統一。 -->
+    <linearGradient id="gFull" x1=".12" y1="0" x2=".88" y2="1">
+      <stop offset="0"   stop-color="#ffffff"/>
+      <stop offset=".42" stop-color="#f7f6ff"/>
+      <stop offset="1"   stop-color="#cbc9ef"/>
+    </linearGradient>
+    <linearGradient id="gCard" x1=".1" y1="0" x2=".92" y2="1">
+      <stop offset="0"   stop-color="#ffdc7d"/>
+      <stop offset=".45" stop-color="#fbbf24"/>
+      <stop offset="1"   stop-color="#d18e12"/>
+    </linearGradient>
+    <linearGradient id="gSmall" x1=".1" y1="0" x2=".92" y2="1">
+      <stop offset="0"   stop-color="#98a0ff"/>
+      <stop offset=".45" stop-color="#6366f1"/>
+      <stop offset="1"   stop-color="#3f42c4"/>
+    </linearGradient>
+
+    <!-- リムライト(縁の光)。上辺〜左上で白く、下へ抜ける。
+         ガラスに見える最大の要因で、これが無いと塗り絵に見える。 -->
+    <linearGradient id="rim" x1=".1" y1="0" x2=".8" y2="1">
+      <stop offset="0"   stop-color="#ffffff" stop-opacity=".92"/>
+      <stop offset=".36" stop-color="#ffffff" stop-opacity=".26"/>
+      <stop offset="1"   stop-color="#ffffff" stop-opacity=".04"/>
+    </linearGradient>
+
+    <!-- 環境影は純黒でなく背景色を帯びた濃色にする(同じ光源の下の1シーンに見える)。 -->
+    <filter id="amb"  x="-45%" y="-45%" width="190%" height="190%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+    <filter id="halo" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="62"/>
+    </filter>
+  </defs>
+
+  <g data-layer="00-bg">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#vig)"/>
+  </g>
+
+  <g data-layer="01-halo" opacity=".45">
+    <ellipse cx="470" cy="500" rx="330" ry="280" fill="#8a83ff" filter="url(#halo)"/>
+  </g>
+
+  <!-- 以下、奥から手前。各カードは 影 → 本体 → 縁の光 の3回描く。 -->
+  <g data-layer="02-card-small">
+    <g transform="translate(5,15)" opacity=".5">
+      <rect x="685" y="727" width="210" height="158" rx="42" ry="42"
+            transform="rotate(30 790 806)" fill="#150f3c" filter="url(#amb)"/>
+    </g>
+    <rect x="685" y="727" width="210" height="158" rx="42" ry="42"
+          transform="rotate(30 790 806)" fill="url(#gSmall)" fill-opacity="0.97"/>
+    <rect x="685" y="727" width="210" height="158" rx="42" ry="42"
+          transform="rotate(30 790 806)" fill="none" stroke="url(#rim)" stroke-width="6"/>
+  </g>
+
+  <g data-layer="03-card">
+    <g transform="translate(5,15)" opacity=".5">
+      <rect x="474" y="530" width="356" height="268" rx="70" ry="70"
+            transform="rotate(13 652 664)" fill="#150f3c" filter="url(#amb)"/>
+    </g>
+    <rect x="474" y="530" width="356" height="268" rx="70" ry="70"
+          transform="rotate(13 652 664)" fill="url(#gCard)" fill-opacity="0.95"/>
+    <rect x="474" y="530" width="356" height="268" rx="70" ry="70"
+          transform="rotate(13 652 664)" fill="none" stroke="url(#rim)" stroke-width="6"/>
+  </g>
+
+  <!-- 一番手前だけ透かす。前の板越しに後ろの板が見えることがガラスの読みを作る。
+       0.86 まで下げると透けが主張しすぎて「全画面のUI」という意味が濁り、
+       0.94 では効果が見えない。0.90 が両立する値。 -->
+  <g data-layer="04-fullscreen">
+    <g transform="translate(5,15)" opacity=".5">
+      <rect x="142" y="225" width="620" height="486" rx="128" ry="128"
+            transform="rotate(-6 452 468)" fill="#150f3c" filter="url(#amb)"/>
+    </g>
+    <rect x="142" y="225" width="620" height="486" rx="128" ry="128"
+          transform="rotate(-6 452 468)" fill="url(#gFull)" fill-opacity="0.90"/>
+    <rect x="142" y="225" width="620" height="486" rx="128" ry="128"
+          transform="rotate(-6 452 468)" fill="none" stroke="url(#rim)" stroke-width="6"/>
+  </g>
+</svg>
