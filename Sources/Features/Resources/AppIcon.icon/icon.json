@@ -1,39 +1,49 @@
 {
-  "fill" : {
-    "solid" : "srgb:0.19216,0.18039,0.50588,1.00000"
+  "fill": {
+    "solid": "srgb:0.19216,0.18039,0.50588,1.00000"
   },
-  "groups" : [
+  "groups": [
     {
-      "name" : "Cards",
-      "specular" : true,
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+      "name": "Cards",
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
       },
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
       },
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "01-fullscreen.png",
-          "name" : "Full screen",
-          "glass" : true
+          "image-name": "04-fullscreen.png",
+          "name": "04-fullscreen",
+          "glass": true
         },
         {
-          "image-name" : "02-card.png",
-          "name" : "Card",
-          "glass" : true
+          "image-name": "03-card.png",
+          "name": "03-card",
+          "glass": true
         },
         {
-          "image-name" : "03-card-small.png",
-          "name" : "Card (small)",
-          "glass" : true
+          "image-name": "02-card-small.png",
+          "name": "02-card-small",
+          "glass": true
+        },
+        {
+          "image-name": "01-halo.png",
+          "name": "01-halo",
+          "glass": false
+        },
+        {
+          "image-name": "00-bg.png",
+          "name": "00-bg",
+          "glass": false
         }
       ]
     }
   ],
-  "supported-platforms" : {
-    "squares" : "shared"
+  "supported-platforms": {
+    "squares": "shared"
   }
 }

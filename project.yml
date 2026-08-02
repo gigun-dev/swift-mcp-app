@@ -38,6 +38,11 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/Features
+        excludes:
+          # アイコンの生成元。ビルド成果物ではないのでアプリに同梱しない
+          # (置き場は .icon の隣にしたい ── 成果物だけ残すと幾何を後から動かせないため。
+          #  再生成手順は AppIcon.svg 冒頭のコメント)。
+          - "Resources/AppIcon.svg"
     dependencies:
       # Kernel は Features から直接使わない可能性もあるが、TodosViewModel /
       # EventsViewModel 相当の描画ロジックを Features が Kernel の型で受け取る
