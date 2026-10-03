@@ -101,9 +101,8 @@ Sources/
   判定は one-shot(軸ロック)・追従出力は連続・判定は Kernel 純関数+連続性テスト・
   ライブ追従に withAnimation を混ぜない。正典は docs/design/07。
 
-## 現在地・次の作業(セッション引き継ぎ)
+## タスクと設計判断
 
-- 正典は **`docs/next-directions.md`** — SessionStart フック(`.claude/settings.json`)が
-  頭(`session-head-end` マーカーまで)を自動注入する。作業の区切りごとに必ず更新
-  (完了は打ち消し線+✅、変化は `> 日付 更新:` を積層。計画は消さない)。
-- 時系列の生記録は **`docs/log.md`** に追記(追記専用アーカイブ)。
+Tasks live in todo.txt; use the todo skills.
+Decisions live in docs/adr/; use the adr skill.
+旧 `docs/next-directions.md` と `docs/log.md` は参照記録。本文の更新指示は適用しない。

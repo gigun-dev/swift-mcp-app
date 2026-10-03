@@ -1,0 +1,6 @@
+2026-09-21 MCP結果のLLM再入力をテキストへ縮約してChatとResponsesのターン別レイテンシを3秒目標で検証する +chat +performance see:docs/adr/0002-openai-responses-provider-mode.md id:0001
+2026-09-21 JEVでnoneまたはMCPツールを事前選択する汎用ルーターをautoと比較し、精度・追加遅延・低信頼時フォールバック閾値を決める +chat +performance see:docs/adr/0002-openai-responses-provider-mode.md id:0002
+2026-09-21 ChatCompletionRequest中心のLLMClient契約をprovider中立なconversation item/tool callへ分離し、Responses function bridgeを既定、Chat Completionsを互換fallbackにする +chat +architecture see:docs/adr/0002-openai-responses-provider-mode.md id:0003 @next
+2026-10-03 繰り返す接続断を個別操作に頼らず調べられるよう復旧したOTelで既存の失敗記録を照合しNSError分類・失敗段階・経過時間の不足を埋めて傾向を観察する +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0004
+2026-10-03 配送済みiPhone17の本人による任意実利用確認と予定・todo取得の機能OTel照合を行う（実機自動UI試験やロック解除維持は不要） +oauth +verification @device see:docs/benchmarks/2026-10-03-oauth-reconnect-refresh.md id:0011
+2026-10-03 旧NDに残る未完項目を現行todoと実装へ照合し重複・古い完了・Swift外の課題を分類して取りこぼしをなくす +governance @unattended see:docs/next-directions.md id:0012
