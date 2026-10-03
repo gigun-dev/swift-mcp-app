@@ -19,6 +19,23 @@ private func roundTrip<T: Codable & Equatable>(_ value: T) throws -> T {
 
 // MARK: - ChatCompletionRequest / ChatMessage / ToolDefinition
 
+@Test("strict無しlegacy functionはdecodeでき、再encodeでは非strictを明示しannotationsは内部に保つ")
+func legacyToolFunctionKeepsSchemaAndEncodesNonStrict() throws {
+    let legacy = #"{"name":"lookup","parameters":{"type":"object","properties":{"optional":{"type":"string"}}}}"#
+    var function = try decode(ToolDefinition.Function.self, legacy)
+    let schema = function.parameters
+    let annotations = ToolAnnotations(readOnlyHint: true, openWorldHint: false)
+    function.annotations = annotations
+    let wire = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(function))
+    #expect(wire["strict"] == .bool(false))
+    #expect(wire["parameters"] == schema)
+    #expect(wire["annotations"] == nil)
+    #expect(function.annotations == annotations)
+    let decoded = try roundTrip(function)
+    #expect(decoded.parameters == schema)
+    #expect(decoded.annotations == nil)
+}
+
 @Test("ChatCompletionRequest は tools・stream_options 込みで round-trip する")
 func chatCompletionRequestRoundTrip() throws {
     let request = ChatCompletionRequest(
@@ -36,6 +53,7 @@ func chatCompletionRequestRoundTrip() throws {
         ],
         stream: true,
         temperature: 0.7,
+        reasoningEffort: "high",
         streamOptions: .init(includeUsage: true)
     )
     #expect(try roundTrip(request) == request)
@@ -53,6 +71,12 @@ func chatCompletionRequestWireKeys() throws {
     let json = try #require(String(data: data, encoding: .utf8))
     #expect(json.contains("\"stream_options\""))
     #expect(json.contains("\"include_usage\""))
+    #expect(!json.contains("\"reasoning_effort\""))
+
+    var withReasoning = request
+    withReasoning.reasoningEffort = "medium"
+    let reasoningJSON = try #require(String(data: JSONEncoder().encode(withReasoning), encoding: .utf8))
+    #expect(reasoningJSON.contains("\"reasoning_effort\":\"medium\""))
 }
 
 @Test("ChatMessage: assistant が tool_calls のみのとき content は null で round-trip する")

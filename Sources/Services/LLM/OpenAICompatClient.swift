@@ -9,11 +9,41 @@
 // ToolCallAccumulator(T1)に委ねる。SSE パーサ内で tool_calls 連結を再実装しない。
 import Foundation
 import Kernel
+import OSLog
+
+struct LLMRequestPayloadMetrics: Equatable {
+    let messageCount: Int
+    let systemPromptUTF8Bytes: Int
+    let systemMessagesJSONBytes: Int
+    let conversationMessagesJSONBytes: Int
+    let messagesJSONBytes: Int
+    let toolCount: Int
+    let toolsJSONBytes: Int
+    let toolSchemasJSONBytes: Int
+    let estimatedToolSchemaTokens: Int
+    let requestJSONBytes: Int
+}
+
+/// OpenAI互換 `GET /v1/models` の標準的な共通部分。
+public struct OpenAICompatibleModel: Decodable, Identifiable, Sendable, Equatable {
+    public let id: String
+    public let ownedBy: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case ownedBy = "owned_by"
+    }
+}
+
+private struct OpenAICompatibleModelList: Decodable {
+    let data: [OpenAICompatibleModel]
+}
 
 private struct SSECompletionAccumulator {
     var toolCalls = ToolCallAccumulator()
     var finishReason: FinishReason?
     var usage: Usage?
+    var emittedToolOutputStarted = false
 
     mutating func handle(
         payload: String,
@@ -26,7 +56,13 @@ private struct SSECompletionAccumulator {
             if let content = choice.delta.content, !content.isEmpty {
                 continuation.yield(.textDelta(content))
             }
-            if let calls = choice.delta.toolCalls { toolCalls.accumulate(calls) }
+            if let calls = choice.delta.toolCalls {
+                if !calls.isEmpty, !emittedToolOutputStarted {
+                    continuation.yield(.outputStarted)
+                    emittedToolOutputStarted = true
+                }
+                toolCalls.accumulate(calls)
+            }
             if let reason = choice.finishReason { finishReason = reason }
         }
         return false
@@ -39,21 +75,57 @@ private struct SSECompletionAccumulator {
 /// ストリーム実行中の可変状態(パーサ・アキュムレータ)は stream(_:) 内のローカルに閉じる。
 /// 共有可変状態が無いので値型で並行安全にできる(actor の直列化オーバーヘッドも要らない)。
 public struct OpenAICompatClient: LLMClient {
+    private static let requestLogger = Logger(subsystem: "dev.gigun.mcphost", category: "llm-request-size")
     private let baseURL: URL
     private let apiKey: String
     private let urlSession: URLSession
 
     /// - Parameters:
-    ///   - baseURL: chat/completions のエンドポイント URL(例:
-    ///     `https://api.openai.com/v1/chat/completions`)。パスまで含めた完全 URL を渡す
-    ///     (プロバイダによって /v1 の有無が違うため、ここで組み立てず呼び出し側=BYOK 設定に委ねる)。
+    ///   - baseURL: OpenAI互換の `/v1` base URL、または chat/completions の完全URL。
+    ///     `/v1` と `/v1/` は通信時に `/v1/chat/completions` へ正規化する。それ以外の
+    ///     独自パスは、プロバイダ互換性を壊さないよう入力どおり利用する。
     ///   - apiKey: `Authorization: Bearer <key>` に載せる API キー。
     ///   - urlSession: 注入可能(テストで差し替え)。既定 nil のときは明示タイムアウト付きの
     ///     専用セッションを組む(下 defaultSession)。テストは自前のスタブ session を渡すので影響なし。
     public init(baseURL: URL, apiKey: String, urlSession: URLSession? = nil) {
-        self.baseURL = baseURL
+        self.baseURL = Self.chatCompletionsURL(from: baseURL)
         self.apiKey = apiKey
         self.urlSession = urlSession ?? Self.defaultSession()
+    }
+
+    /// OpenAI SDK と同じ `/v1` base URL 表記を、このクライアントがPOSTする完全URLへ変換する。
+    public static func chatCompletionsURL(from baseURL: URL) -> URL {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        let path = components?.percentEncodedPath ?? baseURL.path
+        let trimmedPath = path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+        guard trimmedPath.hasSuffix("/v1") else { return baseURL }
+        components?.percentEncodedPath = trimmedPath + "/chat/completions"
+        return components?.url ?? baseURL
+    }
+
+    /// chat/completions URL または `/v1` base URLから、標準のmodels URLを求める。
+    public static func modelsURL(from baseURL: URL) -> URL {
+        let chatURL = chatCompletionsURL(from: baseURL)
+        var components = URLComponents(url: chatURL, resolvingAgainstBaseURL: false)
+        let suffix = "/chat/completions"
+        let path = components?.percentEncodedPath ?? chatURL.path
+        guard path.hasSuffix(suffix) else { return baseURL.appendingPathComponent("models") }
+        components?.percentEncodedPath = String(path.dropLast(suffix.count)) + "/models"
+        return components?.url ?? baseURL.appendingPathComponent("models")
+    }
+
+    /// OpenAI互換のモデル一覧を取得する。未知のプロバイダ拡張フィールドは無視する。
+    public func listModels() async throws -> [OpenAICompatibleModel] {
+        var request = URLRequest(url: Self.modelsURL(from: baseURL))
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await urlSession.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
+            let body = String(bytes: data, encoding: .utf8) ?? ""
+            throw LLMClientError.httpError(statusCode: http.statusCode, body: body)
+        }
+        return try JSONDecoder().decode(OpenAICompatibleModelList.self, from: data).data
     }
 
     /// 明示タイムアウト付きの既定セッション(実機 FB 2026-07-17「送信後ずっと無音」への恒久対処)。
@@ -136,12 +208,16 @@ public struct OpenAICompatClient: LLMClient {
                     let retryErrorBody = try await Self.collectBody(retryBytes)
                     throw LLMClientError.httpError(statusCode: retryHTTP.statusCode, body: retryErrorBody)
                 }
+                // 初回400を含むfallback全体をrequest時間として残しつつ、成功したSSEのheaders到着点を
+                // consumerへ渡す。失敗responseをresponseStarted扱いするとモデル待ち時間を短く誤認する。
+                continuation.yield(.responseStarted)
                 try await consumeSSE(retryBytes, into: continuation)
                 return
             }
             throw LLMClientError.httpError(statusCode: http.statusCode, body: errorBody)
         }
 
+        continuation.yield(.responseStarted)
         try await consumeSSE(bytes, into: continuation)
     }
 
@@ -200,11 +276,15 @@ public struct OpenAICompatClient: LLMClient {
         }
         // ストリームが空行/[DONE] で締めずに切れたときの取りこぼし対策(保険・SSELineParser.flush)。
         if !done, let tail = parser.flush() {
-            _ = try completion.handle(payload: tail, continuation: continuation)
+            done = try completion.handle(payload: tail, continuation: continuation)
         }
 
-        // finish_reason が最後まで来ないケース(中断・プロバイダ実装揺れ)は .other で可視化する
-        // (握りつぶして .stop に寄せると「正常終了」に見えてしまうため)。
+        // HTTP EOFだけでは生成完了を証明できない。不完全tool引数を確定して実行せず、
+        // 表示済みdeltaは残したまま既存のstream失敗経路へ渡す。finish_reasonのみ/DONEのみで
+        // 終端する互換providerは許容し、DONEのみの場合の既存.other理由は保つ。
+        guard done || completion.finishReason != nil else {
+            throw LLMClientError.responseError("Chat stream ended before finish_reason or [DONE]")
+        }
         continuation.yield(.completed(
             completion.finishReason ?? .other("no_finish_reason"),
             completion.toolCalls.finalize(),
@@ -222,8 +302,42 @@ public struct OpenAICompatClient: LLMClient {
         // SSE を要求する(互換プロバイダによっては Accept を見る)。
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(body)
+        let encodedBody = try JSONEncoder().encode(body)
+        request.httpBody = encodedBody
+        let payloadMetrics = try Self.payloadMetrics(for: body, encodedBody: encodedBody)
+        // 本文・tool名・schema自体は出さず、膨張の診断に必要な件数とbyte数だけを残す。
+        Self.requestLogger.notice(
+            "messages.count=\(payloadMetrics.messageCount, privacy: .public) system_prompt.utf8_bytes=\(payloadMetrics.systemPromptUTF8Bytes, privacy: .public) system_messages.json_bytes=\(payloadMetrics.systemMessagesJSONBytes, privacy: .public) conversation_messages.json_bytes=\(payloadMetrics.conversationMessagesJSONBytes, privacy: .public) messages.json_bytes=\(payloadMetrics.messagesJSONBytes, privacy: .public) tools.count=\(payloadMetrics.toolCount, privacy: .public) tools.json_bytes=\(payloadMetrics.toolsJSONBytes, privacy: .public) tool_schemas.json_bytes=\(payloadMetrics.toolSchemasJSONBytes, privacy: .public) tool_schemas.estimated_tokens=\(payloadMetrics.estimatedToolSchemaTokens, privacy: .public) request.json_bytes=\(payloadMetrics.requestJSONBytes, privacy: .public)"
+        )
         return request
+    }
+
+    static func payloadMetrics(
+        for body: ChatCompletionRequest,
+        encodedBody: Data
+    ) throws -> LLMRequestPayloadMetrics {
+        let encoder = JSONEncoder()
+        let systemMessages = body.messages.filter { $0.role == .system }
+        let conversationMessages = body.messages.filter { $0.role != .system }
+        let toolsJSONBytes = try body.tools.map { try encoder.encode($0).count } ?? 0
+        let toolSchemasJSONBytes = try body.tools.map {
+            try encoder.encode($0.map(\.function.parameters)).count
+        } ?? 0
+        return LLMRequestPayloadMetrics(
+            messageCount: body.messages.count,
+            systemPromptUTF8Bytes: systemMessages.compactMap(\.content)
+                .reduce(0) { $0 + $1.utf8.count },
+            systemMessagesJSONBytes: try systemMessages.isEmpty ? 0 : encoder.encode(systemMessages).count,
+            conversationMessagesJSONBytes: try conversationMessages.isEmpty
+                ? 0 : encoder.encode(conversationMessages).count,
+            messagesJSONBytes: try encoder.encode(body.messages).count,
+            toolCount: body.tools?.count ?? 0,
+            toolsJSONBytes: toolsJSONBytes,
+            toolSchemasJSONBytes: toolSchemasJSONBytes,
+            // tokenizer非依存の診断値。JSONでは4 UTF-8 bytes/tokenを粗い目安として切り上げる。
+            estimatedToolSchemaTokens: (toolSchemasJSONBytes + 3) / 4,
+            requestJSONBytes: encodedBody.count
+        )
     }
 
     /// エラー応答のボディ(通常 JSON の error オブジェクト)を文字列に集約する。
@@ -243,11 +357,14 @@ public struct OpenAICompatClient: LLMClient {
 public enum LLMClientError: Error, CustomStringConvertible {
     /// HTTP 非 2xx。ボディ(プロバイダの error JSON)を含めて検証・デバッグを助ける。
     case httpError(statusCode: Int, body: String)
+    case responseError(String)
 
     public var description: String {
         switch self {
         case let .httpError(statusCode, body):
             return "LLM エンドポイントが HTTP \(statusCode) を返した: \(body)"
+        case .responseError(let message):
+            return "LLM response stream error: \(message)"
         }
     }
 }

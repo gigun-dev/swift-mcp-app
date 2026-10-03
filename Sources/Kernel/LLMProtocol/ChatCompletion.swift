@@ -42,6 +42,7 @@ public struct ChatCompletionRequest: Codable, Equatable, Sendable {
     public var tools: [ToolDefinition]?
     public var stream: Bool
     public var temperature: Double?
+    public var reasoningEffort: String?
     public var streamOptions: StreamOptions?
 
     public init(
@@ -50,6 +51,7 @@ public struct ChatCompletionRequest: Codable, Equatable, Sendable {
         tools: [ToolDefinition]? = nil,
         stream: Bool,
         temperature: Double? = nil,
+        reasoningEffort: String? = nil,
         streamOptions: StreamOptions? = nil
     ) {
         self.model = model
@@ -57,11 +59,13 @@ public struct ChatCompletionRequest: Codable, Equatable, Sendable {
         self.tools = tools
         self.stream = stream
         self.temperature = temperature
+        self.reasoningEffort = reasoningEffort
         self.streamOptions = streamOptions
     }
 
     enum CodingKeys: String, CodingKey {
         case model, messages, tools, stream, temperature
+        case reasoningEffort = "reasoning_effort"
         case streamOptions = "stream_options"
     }
 }
@@ -166,6 +170,10 @@ public struct ToolDefinition: Codable, Equatable, Sendable {
             try container.encode(name, forKey: .name)
             try container.encodeIfPresent(description, forKey: .description)
             try container.encode(parameters, forKey: .parameters)
+            // MCPのinputSchemaは任意引数を含む非strict契約のまま渡す。省略時のprovider既定に
+            // 委ねず標準fieldをfalseと明示し、Responsesのfunction adapterとも揃える。
+            // schemaをstrict用にrequired/nullへ書き換えたり、vendor固有分岐を挟んだりしない。
+            try container.encode(false, forKey: .strict)
             // annotations は意図的にエンコードしない(上のプロパティコメント参照)。
         }
     }
@@ -174,7 +182,7 @@ public struct ToolDefinition: Codable, Equatable, Sendable {
 /// `ToolDefinition.Function` の手書き Codable キー(annotations を wire から除外するため file scope に置く。
 /// Function 内へネストすると nesting 違反になる・Function 側コメント参照)。
 private enum ToolFunctionCodingKeys: String, CodingKey {
-    case name, description, parameters
+    case name, description, parameters, strict
 }
 
 /// 完成した tool_call(非ストリーミング応答、またはストリーミングを ToolCallAccumulator で
@@ -207,21 +215,44 @@ public struct ToolCall: Codable, Equatable, Sendable {
 /// トークン使用量。`totalTokens` は OpenAI 互換プロバイダによっては省略されることがある
 /// ため optional にしておく(未知プロバイダの互換性を過信しない・§6 の「不明なら非表示」方針と
 /// 同じ姿勢)。prompt/completion は仕様上ほぼ必ず載るので non-optional。
+/// OpenAI公式が返すprompt token内訳。互換providerでは省略されるためUsage側でoptionalにする。
+/// cachedTokensが分かれば、巨大tool schemaが単に大きいのか、毎回prefillし直されているのかを
+/// 切り分けられる。未知のdetails fieldはCodableが従来どおり無視する。
+public struct PromptTokensDetails: Codable, Equatable, Sendable {
+    public var cachedTokens: Int?
+
+    public init(cachedTokens: Int? = nil) {
+        self.cachedTokens = cachedTokens
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case cachedTokens = "cached_tokens"
+    }
+}
+
 public struct Usage: Codable, Equatable, Sendable {
     public var promptTokens: Int
     public var completionTokens: Int
     public var totalTokens: Int?
+    public var promptTokensDetails: PromptTokensDetails?
 
-    public init(promptTokens: Int, completionTokens: Int, totalTokens: Int? = nil) {
+    public init(
+        promptTokens: Int,
+        completionTokens: Int,
+        totalTokens: Int? = nil,
+        promptTokensDetails: PromptTokensDetails? = nil
+    ) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.totalTokens = totalTokens
+        self.promptTokensDetails = promptTokensDetails
     }
 
     enum CodingKeys: String, CodingKey {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case totalTokens = "total_tokens"
+        case promptTokensDetails = "prompt_tokens_details"
     }
 }
 
