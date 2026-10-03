@@ -8,4 +8,4 @@
 2026-10-03 過去に報告されたdelete-todo応答後のspinner固着を現行版で確認し再現したら解消する +cards @unattended see:docs/design/03-tool-io-and-card-freshness.md id:0016
 2026-10-03 複数サーバー混在とツール無効化後の次チャットで設定どおりの呼び出しが行われるか検証する +chat @unattended see:docs/design/06-composer-tool-picker.md id:0017
 2026-10-03 通常利用で接続断が発生した際に新しい失敗属性を実トレースと照合し段階・時間・モデル別の傾向を確認する（新版の予定取得2 turn保存成功、自然失敗は未観測） +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0018
-2026-10-03 SafariのOTA配布ページから配送済みad-hoc IPAを上書きインストールし起動と認証保持を本人が確認する（archive・export・対象UDID・HTTPSページは確認済み） +distribution @user see:docs/benchmarks/2026-10-03-ota-distribution.md id:0019
+2026-10-03 Tailscaleを切ったiPhoneでBark通知からSafariの固定配布ページへ進み、ログイン・上書きインストール・起動・既存認証保持を本人が確認する（サーバー側の署名配信とBark受付は確認済み） +distribution @user see:docs/benchmarks/2026-10-03-ota-distribution.md id:0019
