@@ -64,7 +64,7 @@ ext-apps のホスト SDK も TypeScript のみ — 「ホスト側を Swift で
   ズレたら caldav 側 docs を先に直す。
 - **UI はモックで合意してから実装**: SwiftUI プレビュー or HTML モックで方向を
   ユーザーと合意 → 実装(caldav の todos v3 / agenda で確立した進め方)。
-- **実装は subagent に委譲、main は設計・レビュー**(ユーザーのグローバル方針)。
+- **実装は subagent、main は設計・レビュー・統合を担当し、依頼されたコミット・push まで完了する。**
 - 検証は実機/シミュレータ + caldav 本番の D1 生 ICS 裏取り(caldav 側の検証メモ参照)。
   **シミュレータでの E2E 検証手順とハマりどころは skill `ios-e2e-verify`**
   (`.claude/skills/ios-e2e-verify/SKILL.md`)に切り出した — 環境変数の渡し方
