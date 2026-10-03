@@ -23,6 +23,8 @@ struct ChatHomeView: View {
     @State private var registry: ServerRegistryStore
     @State private var home: ChatHomeViewModel
     @State private var showingSettings = false
+    @State private var showingModelSelection = false
+    @State private var modelPrices: [String: ModelPrice] = [:]
     // 履歴サイドバーの開閉(committed 状態)。実際の見せ方は「メイン画面を右へスライドして
     // 下層のサイドバーを露出する」方式(body 参照)。
     @State var showingSidebar = false
@@ -113,6 +115,7 @@ struct ChatHomeView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar { toolbarContent }
                 }
+                .chatTopToastHost()
                 // 2026-07-23 座標空間を offset の外側へ移動(第2根因・drawer 残振動の修正):
                 // coordinateSpace はこの NavigationStack(=.offset(x:) で毎フレーム動くビュー)には
                 // 付けない。DragGesture の translation/startLocation をここで測ると、offset 適用 →
@@ -187,6 +190,15 @@ struct ChatHomeView: View {
         .sheet(isPresented: $showingSettings) {
             SettingsSheet(store: settings, registry: registry, home: home)
         }
+        .sheet(isPresented: $showingModelSelection) {
+            LLMSelectionSheet(
+                store: settings,
+                prices: modelPrices,
+                onSelectionChanged: { home.applyInferenceSelection() }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         // 履歴読み込み失敗(タスク指示・握りつぶさない)。VM が historyLoadError に載せたら見せる。
         .alert(
             "履歴を開けませんでした",
@@ -209,6 +221,11 @@ struct ChatHomeView: View {
             if ProcessInfo.processInfo.environment["MCPHOST_SIDEBAR_OPEN"] == "1" {
                 showingSidebar = true
             }
+        }
+        .task {
+            LLMReasoningEffort.normalize(settings)
+            home.applyInferenceSelection()
+            await loadModelPrices()
         }
     }
 
@@ -321,7 +338,11 @@ struct ChatHomeView: View {
             // 作り直させる(旧チャットのカード台帳を持ち越さない)。
             ChatBodyView(
                 chatVM: chatVM,
-                cardProxyResolver: { home.cardProxy(forToolName: $0) }
+                cardProxyResolver: { home.cardProxy(forToolName: $0) },
+                telemetry: home.telemetry,
+                modelName: settings.model,
+                reasoningEffort: settings.reasoningEffort,
+                onShowModelSelection: { showingModelSelection = true }
             )
             .id(chatVM.currentSession.id)
             // R4 実行前確認(HITL)。確認が要るツールが積まれたら action sheet を出す。
@@ -355,6 +376,15 @@ struct ChatHomeView: View {
         ServerStatusMenu(settings: settings, registry: registry, home: home) {
             showingSettings = true
         }
+    }
+
+    @MainActor
+    private func loadModelPrices() async {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let store = PricingStore(baseDirectory: base.appendingPathComponent("pricing", isDirectory: true))
+        await store.load()
+        modelPrices = store.snapshot()
     }
 }
 

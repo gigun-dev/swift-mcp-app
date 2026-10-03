@@ -27,6 +27,8 @@ final class ChatHapticsController {
 
     // 送信時は「操作が確定した」という軽い合図なので `.light` 1発(タスク指示どおり)。
     private let sendImpact = UIImpactFeedbackGenerator(style: .light)
+    /// 評価の切替は連続値の選択変更に近いため、impactより控えめなselection feedbackを使う。
+    private let selectionFeedback = UISelectionFeedbackGenerator()
 
     // ツールステップの完了/失敗は「結果の通知」なので Notification 系(success/error)を使う。
     // success/error 兼用で1個の generator を使い回す(UINotificationFeedbackGenerator は
@@ -48,6 +50,7 @@ final class ChatHapticsController {
     func prepareAll() {
         streamingImpact.prepare()
         sendImpact.prepare()
+        selectionFeedback.prepare()
         toolNotification.prepare()
     }
 
@@ -64,6 +67,18 @@ final class ChatHapticsController {
     func sent() {
         sendImpact.prepare()
         sendImpact.impactOccurred()
+    }
+
+    /// コピー完了。視覚のcheckmarkと同じフレームで軽い確定感を返す。
+    func copied() {
+        sendImpact.prepare()
+        sendImpact.impactOccurred()
+    }
+
+    /// thumbs up/downの選択・解除・切替。
+    func ratingChanged() {
+        selectionFeedback.prepare()
+        selectionFeedback.selectionChanged()
     }
 
     /// カード内のユーザー操作(done/undo チェック・追加・削除等)で呼ぶ(ユーザー要望 2026-07-17)。

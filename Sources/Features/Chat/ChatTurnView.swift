@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import Kernel
 import Services
 
@@ -7,6 +8,7 @@ struct ChatTurnView: View {
     let turn: ChatTurn
     let turnIndex: Int
     let chatVM: ChatViewModel
+    let telemetry: any TelemetryPort
     let cardProxyResolver: (String) -> AppsServerProxy?
     let visibleHeight: CGFloat
     let columnWidth: CGFloat
@@ -15,17 +17,30 @@ struct ChatTurnView: View {
     let fullscreenCoordinator: FullscreenCoordinator
     let cardZoom: Namespace.ID
     let haptics: ChatHapticsController
+    let onEditUserTurn: (Int, String) -> Void
+
+    @State private var copyConfirmationID: UUID?
+    @State private var regenerateRequested = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // MARK: - 1ターン
 
     @ViewBuilder
-    var body: some View {
+    var body: some View { turnBody }
+
+    @ViewBuilder
+    private var turnBody: some View {
         switch turn.role {
         case .user:
             // ユーザー吹き出し: 右寄せ・青。
             HStack {
                 Spacer(minLength: 40)
-                bubble(turn.text, isUser: true)
+                SelectableUserBubble(
+                    text: turn.text,
+                    canEdit: !chatVM.isRunning,
+                    onCopy: { copyWithFeedback(turn.text) },
+                    onEdit: { onEditUserTurn(turnIndex, turn.text) }
+                )
             }
         case .assistant:
             // assistant: ツールステップ列 → 本文吹き出し → インラインカード列(設計 §4)。
@@ -53,9 +68,20 @@ struct ChatTurnView: View {
                     thinkingIndicator
                 }
                 if !turn.text.isEmpty {
-                    HStack {
-                        bubble(turn.text, isUser: false)
-                        Spacer(minLength: 40)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            bubble(turn.text, isUser: false)
+                                .frame(maxWidth: 300, alignment: .leading)
+                            Spacer(minLength: 40)
+                        }
+                        if let performance = turn.performance {
+                            ChatPerformanceView(metrics: performance)
+                                .padding(.leading, 4)
+                        }
+                        if !chatVM.isRunning || turnIndex != chatVM.turns.count - 1 {
+                            assistantActions
+                                .padding(.leading, 2)
+                        }
                     }
                 }
                 // ツール結果の ui:// カード(あれば)。proxy と実測幅が揃っているときだけ描画する。
@@ -114,6 +140,7 @@ struct ChatTurnView: View {
                             card: card,
                             containerWidth: columnWidth,
                             maxHeight: inlineMaxHeight,  // 可視高 × 0.65(P4-DM 決定1・H1)。
+                            telemetry: telemetry,
                             // スナップショット到達で永続モデルへ書き戻す(T6・設計 §5)。identity は
                             // (turnIndex, cardIndex)。turns/cards は追記のみなのでこの index は安定
                             // (ChatViewModel.setCardSnapshot 側でも範囲外を安全に無視する)。
@@ -139,13 +166,6 @@ struct ChatTurnView: View {
                         .reportsMCPAppGestureFrame()
                         }  // if let proxy = cardProxyResolver(...)
                     }
-                }
-                // 再生成(retry・ユーザー要望 2026-07-17)。末尾 assistant ターンにだけ出す(ChatGPT 式)。
-                // エラー時(chatVM.errorMessage 非 nil)もこの分岐を通る——エラーで打ち切られたターンも
-                // 「末尾の assistant ターン」であることに変わりなく、同じボタンがそのまま
-                // 「エラーからの再試行」導線を兼ねる(専用のエラー UI を別に作らずに済む)。
-                if !chatVM.isRunning && turnIndex == chatVM.turns.count - 1 {
-                    retryButton
                 }
             }
             // ツールステップの完了/失敗ハプティクス(ChatHaptics.swift・ユーザー要望 2026-07-17)。
@@ -178,41 +198,76 @@ struct ChatTurnView: View {
             .accessibilityLabel("応答を生成中")
     }
 
-    /// 再生成ボタン(retry・ユーザー要望 2026-07-17)。ChatGPT 式に控えめな丸矢印1個のみ
-    /// (「送信」ボタンのような主張はしない・タスク指示)。タップ領域は 28×28 を contentShape で確保する
-    /// (アイコン自体は .caption サイズで小さいため、指のタップ精度に対して見た目より広い当たり判定が必要)。
-    private var retryButton: some View {
-        Button {
-            haptics.sent()  // 送信と同じ軽い合図(タスク指示・「もう一度投げる」操作として自然)。
-            // 【なぜ teardownAll(全カード畳み)にしたか(タスク指示で裁量とされた点・ボツ案を残す)】
-            // retry は「最後の user ターン以降」を丸ごと巻き戻す(ChatViewModel.retryLastTurn)。
-            // このとき削除される turns に紐づく CardEmbed も消える。registry のキーは
-            // 2026-07-18 の混線バグ修正で resourceUri を含めたため(上の host(for:) 呼び出し
-            // コメント参照)、同じ index に別ツールが来ても host 取り違えは起きなくなったが、
-            // それでも teardownAll を維持するのは「巻き戻された過去カードの WKWebView/
-            // AppsBridgeSession を retry のたびに律儀に生かし続ける理由が無い」ため
-            // (低頻度操作・作り直しコストは小さい)。もしピンポイント削除
-            // (該当 turnIndex 以降のキーだけ teardown)にとどめる場合でも、今は key に
-            // resourceUri が要るため単純な turnIndex プレフィックス走査では済まない
-            // (「host(for:) が index 一致だけで取り違える」という旧来の懸念自体は解消済み)。
-            // ピンポイント削除も不可能ではない(registry に「turnIndex プレフィックスで選択削除」
-            // API を足せばよい)が、retry は低頻度操作であり、巻き戻されない過去ターンのカードも
-            // host(for:) がオンデマンドで作り直す(InlineCardHost.swift の InlineCardRegistry.host(for:)
-            // は get-or-create なので、teardownAll 後に dict が空になっても次の描画で新しい
-            // InlineCardHost が生成され buildIfNeeded が再構築する)ため、実害は「過去カードの
-            // WKWebView が一瞬作り直しになる(往復状態が飛ぶ)」程度に留まる。キー走査 API を
-            // 足す複雑さより、全畳みの単純さ・安全さを優先した(ボツ案として残す)。
-            cardRegistry.teardownAll()
-            chatVM.submitRetry()
-        } label: {
-            Image(systemName: "arrow.clockwise")
+    private var assistantActions: some View {
+        HStack(spacing: 2) {
+            actionButton(
+                copyConfirmationID == nil ? "doc.on.doc" : "checkmark",
+                label: copyConfirmationID == nil ? "回答をコピー" : "コピー済み"
+            ) {
+                copyWithFeedback(turn.text)
+            }
+            actionButton(
+                turn.feedback == .positive ? "hand.thumbsup.fill" : "hand.thumbsup",
+                label: "良い回答"
+            ) {
+                chatVM.toggleFeedback(.positive, assistantTurnAt: turnIndex)
+                haptics.ratingChanged()
+            }
+            actionButton(
+                turn.feedback == .negative ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                label: "良くない回答"
+            ) {
+                chatVM.toggleFeedback(.negative, assistantTurnAt: turnIndex)
+                haptics.ratingChanged()
+            }
+            actionButton(
+                regenerateRequested ? "ellipsis" : "arrow.clockwise",
+                label: regenerateRequested ? "再生成を開始" : "応答を再生成"
+            ) {
+                regenerateRequested = true
+                haptics.sent()
+                cardRegistry.teardownAll()
+                chatVM.submitRegeneration(fromAssistantTurnAt: turnIndex)
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    private func actionButton(_ systemName: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
                 .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
+                .frame(width: 30, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("応答を再生成")
+        .accessibilityLabel(label)
+    }
+
+    private func copy(_ text: String) {
+        UIPasteboard.general.string = text
+    }
+
+    private func copyWithFeedback(_ text: String) {
+        copy(text)
+        let confirmationID = UUID()
+        if reduceMotion {
+            copyConfirmationID = confirmationID
+        } else {
+            withAnimation(.easeOut(duration: 0.12)) { copyConfirmationID = confirmationID }
+        }
+        haptics.copied()
+        ChatTopToast.show("コピーしました")
+        UIAccessibility.post(notification: .announcement, argument: "コピーしました")
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.2))
+            guard copyConfirmationID == confirmationID else { return }
+            if reduceMotion {
+                copyConfirmationID = nil
+            } else {
+                withAnimation(.easeOut(duration: 0.12)) { copyConfirmationID = nil }
+            }
+        }
     }
 
     private func bubble(_ text: String, isUser: Bool) -> some View {
@@ -225,8 +280,6 @@ struct ChatTurnView: View {
                 RoundedRectangle(cornerRadius: 18)
                     .fill(isUser ? Color.accentColor : Color(.secondarySystemBackground))
             )
-            .frame(maxWidth: 300, alignment: isUser ? .trailing : .leading)
-            .textSelection(.enabled)  // 長い応答をコピーできるように(デバッグ・実用両面で有用)。
     }
 
     // MARK: - ツールステップ行(モックの .tool-step)
