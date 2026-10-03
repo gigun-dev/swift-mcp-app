@@ -63,7 +63,27 @@ public final class PricingStore {
 
     /// 既知モデルの単価。未知は nil(§6「未知モデルは "—"」の判定はここが起点)。
     public func price(for model: String) -> ModelPrice? {
-        prices[model]
+        prices[model] ?? Self.pricingAlias(for: model).flatMap { prices[$0] }
+    }
+
+    /// 設定画面など、複数モデルを切り替えて参照するUI向けの読み取り専用スナップショット。
+    public func snapshot() -> [String: ModelPrice] {
+        var result = prices
+        for alias in ["gpt-reserve", "gpt-5.6", "gpt-5.3-spark"] {
+            if let price = price(for: alias) { result[alias] = price }
+        }
+        return result
+    }
+
+    /// Codexログで使われる短縮名をLiteLLMの正規モデルIDへ寄せる。
+    /// ccusageと同じ明示的な別名だけを扱い、誤課金につながる曖昧な部分一致はしない。
+    private static func pricingAlias(for model: String) -> String? {
+        switch model {
+        case "gpt-reserve": "gpt-5.6-luna"
+        case "gpt-5.6": "gpt-5.6-sol"
+        case "gpt-5.3-spark": "gpt-5.3-codex-spark"
+        default: nil
+        }
     }
 
     // MARK: - ロード方針(タスク指示どおり)

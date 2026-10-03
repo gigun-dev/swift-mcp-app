@@ -41,6 +41,8 @@ public final class ChatHomeViewModel {
 
     /// BYOK 設定(SettingsSheet と共有)。
     public let settings: LLMSettingsStore
+    /// OTLP 設定。現在の設定画面が扱うLangfuse資格情報はstore内でKeychainに保存される。
+    let telemetrySettings: TelemetrySettingsStore
     /// MCP サーバー登録簿(SettingsSheet と共有)。
     public let registry: ServerRegistryStore
     /// 複数サーバー同時接続の状態機械(SettingsSheet / ChatHomeView がサーバー一覧の状態表示に読む)。
@@ -50,8 +52,10 @@ public final class ChatHomeViewModel {
 
     /// クライアント観測ポート(queue 11・2026-07-24)。合成ルートで OSLog 実装を注入し、履歴カード解決の
     /// outcome/reason を card.resolve イベントで吐く(実機のみ再現するプレースホルダ落ちバグの根因掴み)。
-    /// テスト/プレビューは NullTelemetry(注入省略時の既定・無害)。将来 OTLP 実装へ差し替え可能。
-    let telemetry: TelemetryPort = OSLogTelemetry()
+    /// OSLogと設定済みOTLPを同じ参照のまま動的に切り替えるrouter。テスト/プレビューは各VM側で
+    /// NullTelemetryを注入できるため、外部送信へ依存しない。
+    let telemetryRouter = TelemetryRouter()
+    var telemetry: any TelemetryPort { telemetryRouter }
 
     /// per-launch のセッション相関 ID(queue 11)。アプリ起動〜このホスト生存の単位で1つ採番し、card.resolve の
     /// session フィールドに stamp する。**生成箇所をここ1つに集約**しておくのが肝: 将来 caldav と
@@ -78,6 +82,8 @@ public final class ChatHomeViewModel {
     public init(settings: LLMSettingsStore, registry: ServerRegistryStore) {
         self.settings = settings
         self.registry = registry
+        self.telemetrySettings = TelemetrySettingsStore()
+        telemetryRouter.configure(telemetrySettings.configuration)
 
         // 接続の ready 集合が変わったら、空チャットなら黙って最新ツールで組み直す(上のクラスコメント)。
         connections.onReadyConnectionsChanged = { [weak self] in
@@ -171,34 +177,36 @@ public final class ChatHomeViewModel {
         )
     }
 
-    /// ChatContext から新しい空セッションの ChatViewModel を組んで state を .ready にする。
+    // swiftlint:disable function_body_length
+    /// ChatContext から新規または保存済みセッションの ChatViewModel を組んで state を .ready にする。
     /// LLM base URL 不正のときだけ .failed。currentSlugProxies も更新する(カード由来解決用)。
-    private func rebuildChat(using context: ChatContext) {
+    private func rebuildChat(using context: ChatContext, restoring session: ChatSession? = nil) {
         guard let baseURL = URL(string: settings.baseURL) else {
             state = .failed("LLM の base URL が不正です: \(settings.baseURL)")
             return
         }
-        let llm = OpenAICompatClient(baseURL: baseURL, apiKey: settings.apiKey)
-        let sessionId = UUID().uuidString
-        let store = chatStore
-        let sessionLogger = logger
+        let llm = Self.makeLLMClient(baseURL: baseURL, apiKey: settings.apiKey, apiStyle: settings.apiStyle)
+        let sessionId = session?.id.uuidString ?? UUID().uuidString
+        let store = chatStore, sessionLogger = logger
         let annotationsByTool = Self.annotationsMap(from: context.toolDefs)
         var chatVM: ChatViewModel!
         chatVM = ChatViewModel(
             llm: llm,
             toolExecutor: context.executor,
             tools: context.toolDefs,
-            model: settings.model,
+            model: settings.model, reasoningEffort: settings.reasoningEffort.isEmpty ? nil : settings.reasoningEffort,
             systemPrompt: Self.systemPrompt,
             uiResourceURIs: context.uiResourceURIs,
             serverNames: context.serverNames,
             originalToolNames: context.originalToolNames,
             serverIDs: context.serverIDs,
             serverURLsByTool: context.serverURLsByTool,
-            traceSink: OSLogTraceSink(),
+            traceSink: telemetryRouter,
+            telemetry: telemetryRouter,
             sessionId: sessionId,
-            serverURL: context.serverURL,
-            serverURLs: context.serverURLs.isEmpty ? nil : context.serverURLs,
+            serverURL: session?.serverURL ?? context.serverURL,
+            serverURLs: session?.serverURLs ?? (context.serverURLs.isEmpty ? nil : context.serverURLs),
+            restoredSession: session,
             annotationsByTool: annotationsByTool,
             permissionStore: toolPermissionStore,
             onTurnSettled: {
@@ -227,6 +235,7 @@ public final class ChatHomeViewModel {
         displayMode = .live
         applyPricingToCurrentChatVM()
     }
+    // swiftlint:enable function_body_length
 
     /// R4: wire tool 名 → annotations マップを LLM 定義から畳む(ToolConversion が載せた annotations)。
     /// annotations を持つツールだけ入れる(未申告は Runner 側で nil 扱い = 性悪説の既定・確認必須)。
@@ -275,6 +284,24 @@ public final class ChatHomeViewModel {
         logger.notice("新規チャットを開始(接続再利用・tools/list 再取得・新 sessionId)")
     }
 
+    /// 設定画面または composer の選択シートで変えたモデルを、履歴を捨てず次の送信へ反映する。
+    public func applyInferenceSelection() {
+        LLMReasoningEffort.normalize(settings)
+        settings.save()
+        guard case .ready(let chatVM) = state else { return }
+        let effort = settings.reasoningEffort.isEmpty ? nil : settings.reasoningEffort
+        if chatVM.updateInference(model: settings.model, reasoningEffort: effort) {
+            applyPricingToCurrentChatVM()
+        }
+    }
+
+    /// 設定画面で確定した資格情報を保存し、現在の router をその場で再構成する。
+    /// ChatViewModel は router 自体を保持するため、新規チャットを作らなくても次のイベントから反映される。
+    func saveTelemetrySettings() {
+        telemetrySettings.save()
+        telemetryRouter.configure(telemetrySettings.configuration)
+    }
+
     // MARK: - サーバーの有効/無効・接続(SettingsSheet / サーバーメニューから)
 
     /// SettingsSheet のトグル。ON で無言接続、OFF で切断。登録簿へも反映(永続化)。
@@ -304,14 +331,18 @@ public final class ChatHomeViewModel {
         connections.connectEnabled(registry.servers)
     }
 
-    // MARK: - 履歴閲覧(M1 から不変)
+    // MARK: - 履歴の継続
 
     public func openHistory(id: UUID) {
         do {
             let session = try chatStore.load(id: id)
             historyLoadError = nil
-            displayMode = .viewingHistory(session)
-            logger.notice("履歴を開いた id=\(id.uuidString, privacy: .public) turns=\(session.turns.count)")
+            if case .ready(let oldChatVM) = state {
+                oldChatVM.cancelActiveSend()
+            }
+            rebuildChat(using: buildContext(), restoring: session)
+            displayMode = .live
+            logger.notice("履歴を継続 id=\(id.uuidString, privacy: .public) turns=\(session.turns.count)")
         } catch {
             logger
                 .error(

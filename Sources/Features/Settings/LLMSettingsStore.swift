@@ -1,151 +1,350 @@
-// BYOK(Bring Your Own Key)の LLM 接続設定を保存/読込する小さな専用ストア(T4-A)。
-//
-// 秘密度で保存先を分ける(タスク指示):
-//  - API キー = **Keychain**(kSecClassGenericPassword)。KeychainTokenStorage の SecItem 流儀を
-//    踏襲する(upsert = SecItemUpdate → errSecItemNotFound で SecItemAdd。afterFirstUnlock +
-//    thisDeviceOnly)。OAuth トークン用ストアとは service を分ける(こちらは
-//    "dev.gigun.mcphost.llm")— 用途が違うキーを同じ service に混ぜない。
-//  - base URL / モデル = **UserDefaults**(秘密ではない・@AppStorage で View から直接束縛できる)。
-//
-// なぜ CLAUDE.md ビジョン1(LLM 呼び出しを1箇所に抽象)と整合するか: この設定が
-// OpenAICompatClient(baseURL/apiKey)+ ChatViewModel(model)の生成に必要な3値をすべて
-// 供給する。将来 LLM プロキシ(Workers)へ差し替えるときも、ここが吐く3値の出所が
-// 変わるだけで Features/Chat の配線は動かない。
-//
-// env オーバーライド(MCPHOST_LLM_KEY / _BASEURL / _MODEL): MCPHOST_AUTOCONNECT と同じ流儀で、
-// エージェント(Claude Code)が simctl launch --setenv だけで実 LLM 往復を人手のキー入力なしに
-// 検証できるようにする。**env があれば Keychain/UserDefaults より優先**して初期値に採る。
-// リリースビルドに env は渡らないので無害(気になれば #if DEBUG で囲む余地を残す)。
+// BYOKのOpenAI互換接続を管理する。接続の公開設定はUserDefaults、APIキーはKeychainへ分離する。
+// 旧版は全接続で固定account "api-key" を共有していたが、複数接続では別プロバイダへキーを
+// 誤送信し得るため、標準プリセットはURL単位、カスタムは永続UUID単位のaccountへ保存する。
 import Foundation
 import Observation
 import OSLog
-import Security
+import Services
 
-/// BYOK の LLM 設定(base URL・モデル・API キー)を一元管理する @Observable ストア。
-///
-/// @MainActor: SettingsSheet / ChatHomeViewModel(いずれも MainActor)から触るだけで、
-/// バックグラウンドからは触らない。Keychain 呼び出しは同期 API だが一瞬なので MainActor で許容。
+public enum LLMConnectionSaveError: LocalizedError, Equatable {
+    case invalidURL
+    case missingAPIKey
+    case duplicateURL
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidURL: "httpまたはhttpsの有効な接続先URLを入力してください。"
+        case .missingAPIKey: "カスタム接続を保存するにはAPIキーが必要です。"
+        case .duplicateURL: "同じURLのカスタム接続がすでに保存されています。"
+        }
+    }
+}
+
 @MainActor
 @Observable
 public final class LLMSettingsStore {
-    // MARK: - 既定値(タスク指示)
-
-    /// OpenAI 公式の chat/completions エンドポイント(完全 URL・OpenAICompatClient の baseURL 仕様どおり)。
-    public static let defaultBaseURL = "https://api.openai.com/v1/chat/completions"
-    /// 既定モデル(ユーザー指定・無料枠が大きい軽量モデル)。設計 §6 のコスト第一級方針に沿う。
+    public static let defaultBaseURL = "https://api.openai.com/v1"
     public static let defaultModel = "gpt-5.4-mini"
-
-    // MARK: - UserDefaults キー(base URL・モデル。秘密でない)
 
     private static let baseURLKey = "llm.baseURL"
     private static let modelKey = "llm.model"
+    private static let endpointModelsKey = "llm.modelsByEndpoint"
+    private static let reasoningEffortKey = "llm.reasoningEffort"
+    private static let apiStyleKey = "llm.apiStyle"
+    private static let endpointAPIStylesKey = "llm.apiStylesByEndpoint"
+    private static let endpointReasoningEffortsKey = "llm.reasoningEffortsByEndpoint"
+    private static let endpointCatalogsKey = "llm.modelCatalogsByEndpoint"
+    private static let selectedCustomProviderKey = "llm.selectedCustomProvider.v2"
+    private static let keychainMigrationKey = "llm.keychainAccountsMigrated.v2"
+    private static let legacyKeychainAccount = "api-key"
 
-    // MARK: - Keychain(API キー)
+    /// 固定プリセットはレジストリへ書き込まない。UIのLLMPresetと同じURL集合を、旧カスタム設定を
+    /// 移行するときの境界としてだけ持つ。プリセット自体の表示順・名称はSettingsSheetが正。
+    private static let standardEndpoints = [
+        "https://api.openai.com/v1",
+        "https://openrouter.ai/api/v1",
+        "https://api.groq.com/openai/v1",
+        "https://api.together.xyz/v1",
+        "http://localhost:11434/v1"
+    ]
 
-    // OAuth トークン用(dev.gigun.mcphost.oauth-token)とは別 service。BYOK の LLM キー専用。
-    private static let keychainService = "dev.gigun.mcphost.llm"
-    // このアプリでは LLM キーは1本(1プロバイダ)なので account は固定文字列でよい。
-    // 将来プロバイダごとに分けたくなったら account を baseURL 等に変える余地を残す。
-    private static let keychainAccount = "api-key"
-
-    // MARK: - 公開状態(SettingsSheet が双方向束縛・ChatHomeViewModel が読む)
-
-    /// chat/completions の完全 URL。プリセット chips で差し替わる。
     public var baseURL: String
-    /// モデル ID(リクエストの model フィールド)。
     public var model: String
-    /// API キー(SecureField で編集)。**メモリ上の編集値**であり、save() で初めて Keychain に書く。
+    public var reasoningEffort: String
+    public var apiStyle: LLMAPIStyle
     public var apiKey: String
+    public private(set) var availableModels: [String]
+    public private(set) var savedCustomProviders: [LLMProviderProfile]
+    public private(set) var selectedCustomProviderID: UUID?
+    public private(set) var isAddingCustomProvider = false
 
+    private let defaults: UserDefaults
+    private let providerRegistry: LLMProviderRegistry
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "llm-settings")
 
-    public init() {
-        let env = ProcessInfo.processInfo.environment
-        let defaults = UserDefaults.standard
+    public init(defaults: UserDefaults = .standard) {
+        let environment = ProcessInfo.processInfo.environment
+        self.defaults = defaults
+        self.providerRegistry = LLMProviderRegistry(defaults: defaults)
 
-        // base URL: env > UserDefaults > 既定。
-        self.baseURL = env["MCPHOST_LLM_BASEURL"]
+        let storedBaseURL = environment["MCPHOST_LLM_BASEURL"]
             ?? defaults.string(forKey: Self.baseURLKey)
             ?? Self.defaultBaseURL
-        // モデル: env > UserDefaults > 既定。
-        self.model = env["MCPHOST_LLM_MODEL"]
+        let initialBaseURL = LLMProviderRegistry.normalizedBaseURL(storedBaseURL)
+        let initialModel = environment["MCPHOST_LLM_MODEL"]
             ?? defaults.string(forKey: Self.modelKey)
             ?? Self.defaultModel
-        // API キー: env > Keychain > 空。env は init 内でローカルに読むだけで、
-        // Keychain 読み出しは静的メソッド(まだ self が完成していないので分離)。
-        self.apiKey = env["MCPHOST_LLM_KEY"]
-            ?? Self.loadKeyFromKeychain()
-            ?? ""
+        let initialEffort = defaults.string(forKey: Self.reasoningEffortKey) ?? ""
+        let initialAPIStyle = defaults.string(forKey: Self.apiStyleKey)
+            .flatMap(LLMAPIStyle.init(rawValue:)) ?? LLMAPIStyle.defaultStyle(for: initialBaseURL)
+        let initialCatalog = Self.catalog(for: initialBaseURL, defaults: defaults)
+
+        let legacyState = LegacyLLMConnectionState(
+            baseURL: initialBaseURL,
+            model: initialModel,
+            reasoningEffort: initialEffort,
+            catalog: initialCatalog
+        )
+        let (profiles, selectedID) = Self.resolveProfiles(
+            registry: providerRegistry,
+            defaults: defaults,
+            legacy: legacyState,
+            environmentOverridesBaseURL: environment["MCPHOST_LLM_BASEURL"] != nil
+        )
+
+        let selectedProfile = selectedID.flatMap { id in profiles.first(where: { $0.id == id }) }
+        self.savedCustomProviders = profiles
+        self.selectedCustomProviderID = selectedProfile?.id
+        self.baseURL = selectedProfile?.baseURL ?? initialBaseURL
+        self.model = selectedProfile?.selectedModel ?? initialModel
+        self.reasoningEffort = selectedProfile?.reasoningEffort ?? initialEffort
+        self.apiStyle = selectedProfile?.apiStyle ?? initialAPIStyle
+        self.availableModels = selectedProfile?.availableModels ?? initialCatalog
+
+        let account = selectedProfile.map { Self.customAccount(id: $0.id) }
+            ?? Self.presetAccount(baseURL: initialBaseURL)
+        let endpointKey = LLMAPIKeyKeychain.load(account: account)
+            ?? Self.migrateLegacyPresetKeyIfNeeded(from: storedBaseURL, to: initialBaseURL)
+        let needsKeyMigration = !defaults.bool(forKey: Self.keychainMigrationKey)
+        let legacyKey = needsKeyMigration ? LLMAPIKeyKeychain.load(account: Self.legacyKeychainAccount) : nil
+        self.apiKey = environment["MCPHOST_LLM_KEY"] ?? endpointKey ?? legacyKey ?? ""
+        migrateLegacyKeyIfNeeded(
+            endpointKey: endpointKey,
+            legacyKey: legacyKey,
+            account: account,
+            environmentOverridesKey: environment["MCPHOST_LLM_KEY"] != nil
+        )
     }
 
-    // MARK: - 保存
-
-    /// 現在のメモリ値(baseURL/model/apiKey)を永続化する。SettingsSheet の「保存」で呼ぶ。
-    /// base URL・モデルは UserDefaults、API キーは Keychain。
-    public func save() {
-        let defaults = UserDefaults.standard
-        defaults.set(baseURL, forKey: Self.baseURLKey)
-        defaults.set(model, forKey: Self.modelKey)
-        saveKeyToKeychain(apiKey)
-    }
-
-    /// キー未設定か(接続前ゲート判定に使う)。空白のみも未設定扱い。
     public var hasAPIKey: Bool {
         !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    // MARK: - Keychain 実装(KeychainTokenStorage の SecItem 流儀を踏襲)
+    public var selectedPresetBaseURL: String? {
+        guard selectedCustomProviderID == nil, !isAddingCustomProvider else { return nil }
+        return Self.standardEndpoints.first { Self.identity($0) == Self.identity(baseURL) }
+    }
 
-    private func saveKeyToKeychain(_ key: String) {
-        let query = Self.keychainBaseQuery()
-        // 空キー(ユーザーがクリアした)は削除に寄せる — 空文字を保存して load で "" が返るより、
-        // 「項目が無い = 未設定」の方が hasAPIKey の判定が素直。
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            SecItemDelete(query as CFDictionary)
-            return
+    /// composerからモデルだけを変える経路を含む既存API。接続入力が不正ならmetadataを壊さない。
+    public func save() {
+        do {
+            try saveCurrentConnection()
+        } catch {
+            logger.notice("LLM接続設定を保存せず維持: \(error.localizedDescription, privacy: .public)")
         }
+    }
 
-        let data = Data(trimmed.utf8)
-        // upsert: SecItemUpdate → errSecItemNotFound なら SecItemAdd(KeychainTokenStorage と同型)。
-        let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
-        if updateStatus == errSecItemNotFound {
-            var addQuery = query
-            addQuery[kSecValueData] = data
-            // OAuth トークンと同じアクセス属性: 端末アンロック後のみ・iCloud 同期対象外。
-            addQuery[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-            if addStatus != errSecSuccess {
-                // シミュレータ無署名ビルドでは SecItemAdd が entitlement で失敗しうる
-                // (KeychainTokenStorage のコメント参照)。致命ではない — メモリ上の apiKey で
-                // そのセッションの接続は成立する。手がかりとしてログに残す。
-                logger.notice("LLM キーの Keychain 保存失敗(status \(addStatus)): メモリ値で続行")
+    /// 現在の接続を保存する。カスタムは有効URLとキーが揃った時点で初めて一覧へ追加する。
+    public func saveCurrentConnection() throws {
+        guard Self.validEndpoint(baseURL) else { throw LLMConnectionSaveError.invalidURL }
+        let cleanedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isAddingCustomProvider || selectedCustomProviderID != nil || !Self.isStandardEndpoint(baseURL) {
+            guard hasAPIKey else { throw LLMConnectionSaveError.missingAPIKey }
+            let duplicatesAnotherProfile = savedCustomProviders.contains {
+                $0.id != selectedCustomProviderID && Self.identity($0.baseURL) == Self.identity(baseURL)
             }
-        } else if updateStatus != errSecSuccess {
-            logger.notice("LLM キーの Keychain 更新失敗(status \(updateStatus)): メモリ値で続行")
+            guard !duplicatesAnotherProfile else { throw LLMConnectionSaveError.duplicateURL }
+            let requestedID = selectedCustomProviderID ?? UUID()
+            let stored = providerRegistry.upsert(LLMProviderProfile(
+                id: requestedID,
+                baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                availableModels: availableModels,
+                selectedModel: cleanedModel.isEmpty ? Self.defaultModel : cleanedModel,
+                reasoningEffort: reasoningEffort,
+                apiStyle: apiStyle
+            ))
+            selectedCustomProviderID = stored.id
+            isAddingCustomProvider = false
+            savedCustomProviders = providerRegistry.load()
+            baseURL = stored.baseURL
+            model = stored.selectedModel
+            apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(stored.id.uuidString, forKey: Self.selectedCustomProviderKey)
+            LLMAPIKeyKeychain.save(apiKey, account: Self.customAccount(id: stored.id))
+        } else {
+            selectedCustomProviderID = nil
+            defaults.removeObject(forKey: Self.selectedCustomProviderKey)
+            LLMAPIKeyKeychain.save(apiKey, account: Self.presetAccount(baseURL: baseURL))
+            rememberPresetSelection()
+        }
+        persistLegacyCurrentValues()
+    }
+
+    public func selectPreset(_ endpoint: String) {
+        selectedCustomProviderID = nil
+        isAddingCustomProvider = false
+        baseURL = LLMProviderRegistry.normalizedBaseURL(endpoint)
+        let endpointID = Self.identity(endpoint)
+        let legacyEndpointID = Self.identity(Self.legacyFullEndpoint(endpoint))
+        let models = defaults.dictionary(forKey: Self.endpointModelsKey) as? [String: String] ?? [:]
+        let efforts = defaults.dictionary(forKey: Self.endpointReasoningEffortsKey) as? [String: String] ?? [:]
+        let apiStyles = defaults.dictionary(forKey: Self.endpointAPIStylesKey) as? [String: String] ?? [:]
+        model = models[endpointID] ?? models[legacyEndpointID] ?? Self.defaultModel
+        reasoningEffort = efforts[endpointID] ?? efforts[legacyEndpointID] ?? ""
+        apiStyle = apiStyles[endpointID].flatMap(LLMAPIStyle.init(rawValue:))
+            ?? apiStyles[legacyEndpointID].flatMap(LLMAPIStyle.init(rawValue:))
+            ?? LLMAPIStyle.defaultStyle(for: endpoint)
+        availableModels = Self.catalog(for: endpoint, defaults: defaults)
+        apiKey = LLMAPIKeyKeychain.load(account: Self.presetAccount(baseURL: endpoint))
+            ?? Self.migrateLegacyPresetKeyIfNeeded(from: Self.legacyFullEndpoint(endpoint), to: endpoint)
+            ?? ""
+    }
+
+    public func selectCustomProvider(id: UUID) {
+        guard let profile = savedCustomProviders.first(where: { $0.id == id }) else { return }
+        selectedCustomProviderID = id
+        isAddingCustomProvider = false
+        baseURL = profile.baseURL
+        model = profile.selectedModel
+        reasoningEffort = profile.reasoningEffort
+        apiStyle = profile.apiStyle
+        availableModels = profile.availableModels
+        apiKey = LLMAPIKeyKeychain.load(account: Self.customAccount(id: id)) ?? ""
+    }
+
+    public func beginAddingCustomProvider() {
+        selectedCustomProviderID = nil
+        isAddingCustomProvider = true
+        baseURL = ""
+        model = Self.defaultModel
+        reasoningEffort = ""
+        apiStyle = .chatCompletions
+        availableModels = []
+        apiKey = ""
+    }
+
+    public func deleteCustomProvider(id: UUID) {
+        providerRegistry.remove(id: id)
+        LLMAPIKeyKeychain.delete(account: Self.customAccount(id: id))
+        savedCustomProviders = providerRegistry.load()
+        guard selectedCustomProviderID == id else { return }
+        defaults.removeObject(forKey: Self.selectedCustomProviderKey)
+        selectPreset(Self.defaultBaseURL)
+        persistLegacyCurrentValues()
+    }
+
+    public func updateAvailableModels(_ modelIDs: [String]) {
+        availableModels = Array(Set(modelIDs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty })).sorted()
+    }
+
+    /// 新レジストリが無い旧ユーザーでは、標準プリセット以外の単一URLをカスタム接続へ昇格する。
+    /// APIキーが一時的に読めなくてもURL・モデルを失わないよう、metadata移行は先に完了させる。
+    private static func resolveProfiles(
+        registry: LLMProviderRegistry,
+        defaults: UserDefaults,
+        legacy: LegacyLLMConnectionState,
+        environmentOverridesBaseURL: Bool
+    ) -> ([LLMProviderProfile], UUID?) {
+        var profiles = registry.load()
+        var selectedID = defaults.string(forKey: selectedCustomProviderKey).flatMap(UUID.init(uuidString:))
+        if environmentOverridesBaseURL
+            || selectedID.flatMap({ id in profiles.first(where: { $0.id == id }) }) == nil {
+            selectedID = nil
+        }
+        if !environmentOverridesBaseURL,
+           !isStandardEndpoint(legacy.baseURL),
+           profiles.allSatisfy({ identity($0.baseURL) != identity(legacy.baseURL) }) {
+            let migrated = registry.migrateLegacyCustom(
+                baseURL: legacy.baseURL,
+                availableModels: legacy.catalog,
+                selectedModel: legacy.model,
+                reasoningEffort: legacy.reasoningEffort
+            )
+            profiles = registry.load()
+            selectedID = migrated.id
+            defaults.set(migrated.id.uuidString, forKey: selectedCustomProviderKey)
+        }
+        if !environmentOverridesBaseURL, selectedID == nil {
+            selectedID = profiles.first(where: { identity($0.baseURL) == identity(legacy.baseURL) })?.id
+        }
+        return (profiles, selectedID)
+    }
+
+    /// 旧キーはコピー成功後も削除しない。Keychain書込み不能な無署名Simulatorでは移行済みにせず、
+    /// 次回起動でも旧接続を利用できるようにする。移行済み以後は旧キーを別接続へ流用しない。
+    private func migrateLegacyKeyIfNeeded(
+        endpointKey: String?,
+        legacyKey: String?,
+        account: String,
+        environmentOverridesKey: Bool
+    ) {
+        guard !environmentOverridesKey, !defaults.bool(forKey: Self.keychainMigrationKey) else { return }
+        if endpointKey != nil || legacyKey == nil {
+            defaults.set(true, forKey: Self.keychainMigrationKey)
+        } else if let legacyKey, LLMAPIKeyKeychain.save(legacyKey, account: account) {
+            defaults.set(true, forKey: Self.keychainMigrationKey)
         }
     }
 
-    /// Keychain から LLM キーを読む。init から呼ぶため static(self 未完成時に触れる)。
-    private static func loadKeyFromKeychain() -> String? {
-        var query = keychainBaseQuery()
-        query[kSecReturnData] = true
-        query[kSecMatchLimit] = kSecMatchLimitOne
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        // Keychain値が壊れていても置換文字で復元し、空判定まで安全に進める。
-        // swiftlint:disable:next optional_data_string_conversion
-        let key = String(decoding: data, as: UTF8.self)
-        return key.isEmpty ? nil : key
+    private static func validEndpoint(_ value: String) -> Bool {
+        guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return false }
+        return url.host != nil
     }
 
-    private static func keychainBaseQuery() -> [CFString: Any] {
-        [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainService,
-            kSecAttrAccount: keychainAccount
-        ]
+    private static func isStandardEndpoint(_ value: String) -> Bool {
+        standardEndpoints.contains { identity($0) == identity(value) }
     }
+
+    private static func identity(_ value: String) -> String {
+        LLMProviderRegistry.endpointIdentity(value)
+    }
+
+    private static func catalog(for endpoint: String, defaults: UserDefaults) -> [String] {
+        let catalogs = defaults.dictionary(forKey: endpointCatalogsKey) ?? [:]
+        return catalogs[identity(endpoint)] as? [String] ?? []
+    }
+
+    private static func presetAccount(baseURL: String) -> String {
+        "preset:\(identity(baseURL))"
+    }
+
+    private static func customAccount(id: UUID) -> String {
+        "custom:\(id.uuidString.lowercased())"
+    }
+}
+
+private extension LLMSettingsStore {
+    static func legacyFullEndpoint(_ baseURL: String) -> String {
+        LLMProviderRegistry.normalizedBaseURL(baseURL) + "/chat/completions"
+    }
+
+    static func migrateLegacyPresetKeyIfNeeded(from oldURL: String, to newURL: String) -> String? {
+        let oldAccount = "preset:\(oldURL.trimmingCharacters(in: .whitespacesAndNewlines))"
+        let newAccount = presetAccount(baseURL: newURL)
+        guard oldAccount != newAccount, let key = LLMAPIKeyKeychain.load(account: oldAccount) else { return nil }
+        LLMAPIKeyKeychain.save(key, account: newAccount)
+        return key
+    }
+
+    func persistLegacyCurrentValues() {
+        defaults.set(baseURL, forKey: Self.baseURLKey)
+        defaults.set(model, forKey: Self.modelKey)
+        defaults.set(reasoningEffort, forKey: Self.reasoningEffortKey)
+        defaults.set(apiStyle.rawValue, forKey: Self.apiStyleKey)
+    }
+
+    func rememberPresetSelection() {
+        let endpoint = Self.identity(baseURL)
+        var models = defaults.dictionary(forKey: Self.endpointModelsKey) as? [String: String] ?? [:]
+        models[endpoint] = model
+        defaults.set(models, forKey: Self.endpointModelsKey)
+        var efforts = defaults.dictionary(forKey: Self.endpointReasoningEffortsKey) as? [String: String] ?? [:]
+        efforts[endpoint] = reasoningEffort
+        defaults.set(efforts, forKey: Self.endpointReasoningEffortsKey)
+        var apiStyles = defaults.dictionary(forKey: Self.endpointAPIStylesKey) as? [String: String] ?? [:]
+        apiStyles[endpoint] = apiStyle.rawValue
+        defaults.set(apiStyles, forKey: Self.endpointAPIStylesKey)
+        var catalogs = defaults.dictionary(forKey: Self.endpointCatalogsKey) ?? [:]
+        catalogs[endpoint] = availableModels
+        defaults.set(catalogs, forKey: Self.endpointCatalogsKey)
+    }
+}
+
+private struct LegacyLLMConnectionState {
+    let baseURL: String
+    let model: String
+    let reasoningEffort: String
+    let catalog: [String]
 }

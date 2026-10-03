@@ -96,7 +96,8 @@ struct PricingStoreTests {
         {
           "fetchedAt": "\(ISO8601DateFormatter().string(from: Date()))",
           "prices": {
-            "gpt-4o-mini": {"inputCostPerToken": 1.5e-07, "outputCostPerToken": 6e-07}
+            "gpt-4o-mini": {"inputCostPerToken": 1.5e-07, "outputCostPerToken": 6e-07},
+            "gpt-5.6-sol": {"inputCostPerToken": 4e-06, "outputCostPerToken": 2e-05}
           }
         }
         """
@@ -106,6 +107,8 @@ struct PricingStoreTests {
         await store.load()  // ネットワークが無い CI/テスト環境でも、TTL 内キャッシュがあれば fetch せず読むはず。
 
         #expect(store.price(for: "gpt-4o-mini") == ModelPrice(inputCostPerToken: 1.5e-07, outputCostPerToken: 6e-07))
+        #expect(store.price(for: "gpt-5.6") == ModelPrice(inputCostPerToken: 4e-06, outputCostPerToken: 2e-05))
+        #expect(store.snapshot()["gpt-5.6"] == store.price(for: "gpt-5.6-sol"))
     }
 
     private static func makeTempDirectory() throws -> URL {
