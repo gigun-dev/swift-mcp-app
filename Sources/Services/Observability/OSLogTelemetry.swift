@@ -5,8 +5,8 @@
 //
 // TraceSink(OSLogTraceSink)と同じ subsystem `dev.gigun.mcphost` に揃え、category はイベント名にする
 // (`log show --predicate 'subsystem == "dev.gigun.mcphost" && category == "card.resolve"'` で絞れる)。
-// 将来 OTLP エクスポータ実装(OTelTelemetry 等)を足すだけでフル OpenTelemetry へ移行できる —— ポートが
-// Kernel 側の純抽象なので、この OSLog 実装はいつでも差し替え/併設できる。
+// ADR 0001でOTLP実装を追加した後も、TelemetryRouterがこのOSLog実装とOTLPを併設する。ポートが
+// Kernel側の純抽象なので、ローカル診断は外部送信設定の有無に左右されない。
 import Foundation
 import Kernel
 import OSLog

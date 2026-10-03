@@ -157,6 +157,9 @@ actor StubToolExecutor: MCPToolExecuting {
         // usage は2ターンぶん累計。
         #expect(viewModel.cumulativeUsage == usage(50, 11))
         #expect(viewModel.lastUsage == usage(30, 8))
+        #expect(viewModel.turns.last?.performance?.completionTokens == 11)
+        #expect(viewModel.turns.last?.performance?.requestCount == 2)
+        #expect(viewModel.turns.last?.performance?.timeToFirstTokenMilliseconds != nil)
         // 2周目のリクエストには role:tool メッセージが含まれる(wire に積まれた証拠)。
         let secondReq = llm.receivedRequests[1]
         #expect(secondReq.messages.contains {
@@ -265,6 +268,7 @@ actor StubToolExecutor: MCPToolExecuting {
         let steps = viewModel.turns.first(where: { !$0.toolSteps.isEmpty })?.toolSteps ?? []
         #expect(steps.count == 1)
         #expect(steps[0].state == .failed)
+        #expect(steps[0].durationMs != nil)
         // 2周目リクエストの role:tool にエラー文言が載っている。
         let toolMsg = llm.receivedRequests[1].messages.first { $0.role == .tool }
         #expect(toolMsg?.content?.contains("エラー") == true)

@@ -183,6 +183,9 @@ guard let arguments else { return [:] }
 
 ## 3. 論点3: 観測・トレース基盤の置き場と継ぎ目
 
+> **2026-09-20 更新:** client側OpenTelemetryを入れない決定は
+> [ADR 0001](../adr/0001-client-otel-langfuse.md) が置き換えた。以下は当時の背景として残す。
+
 ### 決定: 観測は swift-mcp-app の責務。今は ChatStore + OSLog、外部トレース(Langfuse/OTel)は LLM プロキシ段階でサーバー側に置く。今やるのは「TraceSink 1 seam」の設計のみ
 
 **責務の線引き**(明文化):

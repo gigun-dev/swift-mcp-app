@@ -26,12 +26,15 @@ struct ToolCallRunner: Sendable {
         let failed: Bool
         let result: JSONValue?
         let arguments: JSONValue?
+        /// callTool を実際に呼び出した場合だけ入る実測時間。実行前の拒否・引数不正は nil。
+        let durationMs: Int?
     }
 
     // ToolCallRunner+PermissionGate.swift からも参照するため internal(nested type の可視性)。
     struct ExecutionContext: Sendable {
         let executor: any MCPToolExecuting
         let traceSink: (any TraceSink)?
+        let telemetry: any TelemetryPort
         let turnId: String
         // R4 許可ゲート: static な execute から参照するため、Runner のインスタンス状態
         // (annotations・serverURL・表示名マップ・store)をここへ束ねて運ぶ。
@@ -57,6 +60,7 @@ struct ToolCallRunner: Sendable {
     private let serverIDs: [String: UUID]
     private let serverURLs: [String: URL]
     private let traceSink: (any TraceSink)?
+    private let telemetry: any TelemetryPort
     /// R4 許可ゲートの判定材料: wire tool 名 → annotations(untrusted hint)。ToolConversion で
     /// ToolDefinition に載せた annotations を ChatViewModel が wire 名キーで畳んで渡す。空 = 未申告扱い。
     private let annotationsByTool: [String: ToolAnnotations]
@@ -71,6 +75,7 @@ struct ToolCallRunner: Sendable {
         serverIDs: [String: UUID],
         serverURLs: [String: URL],
         traceSink: (any TraceSink)?,
+        telemetry: any TelemetryPort = NullTelemetry(),
         annotationsByTool: [String: ToolAnnotations] = [:],
         permissionStore: any ToolPermissionResolving = AllowAllToolPermissionStore()
     ) {
@@ -81,6 +86,7 @@ struct ToolCallRunner: Sendable {
         self.serverIDs = serverIDs
         self.serverURLs = serverURLs
         self.traceSink = traceSink
+        self.telemetry = telemetry
         self.annotationsByTool = annotationsByTool
         self.permissionStore = permissionStore
     }
@@ -125,6 +131,7 @@ struct ToolCallRunner: Sendable {
         let context = ExecutionContext(
             executor: executor,
             traceSink: traceSink,
+            telemetry: telemetry,
             turnId: turnId,
             permissionStore: permissionStore,
             annotationsByTool: annotationsByTool,
@@ -159,7 +166,10 @@ extension ToolCallRunner {
         var steps = runningSteps(for: calls)
         for result in results {
             steps[result.index].state = result.failed ? .failed : .done
-            steps[result.index].resultJSON = result.content
+            // 画面の詳細表示・履歴には tools/call の完全な結果を残す。result.content は
+            // 次の LLM 呼び出し向けに縮約されることがあるため、ここへ流用しない。
+            steps[result.index].resultJSON = Self.encodedResult(result.result) ?? result.content
+            steps[result.index].durationMs = result.durationMs
         }
         return steps
     }
@@ -224,6 +234,29 @@ extension ToolCallRunner {
         return .value(value)
     }
 
+    /// MCP Apps の structuredContent / _meta はカード描画には必要だが、次の LLM 呼び出しへ
+    /// 丸ごと戻す必要はない。CallToolResult.content の text block だけをモデル向け結果にする。
+    /// エラー、text block 不在、未知形状では完全な JSON にフォールバックし、情報を失わない。
+    static func llmContent(for result: JSONValue, fallbackJSON: String) -> String {
+        guard result["isError"]?.boolValue != true,
+              let blocks = result["content"]?.arrayValue
+        else { return fallbackJSON }
+
+        let text = blocks.compactMap { block -> String? in
+            guard block["type"]?.stringValue == "text" else { return nil }
+            let value = block["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty ? nil : value
+        }.joined(separator: "\n\n")
+        return text.isEmpty ? fallbackJSON : text
+    }
+
+    private static func encodedResult(_ result: JSONValue?) -> String? {
+        guard let result,
+              let data = try? JSONEncoder().encode(result)
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     private static func execute(
         call: ToolCall,
         index: Int,
@@ -238,7 +271,8 @@ extension ToolCallRunner {
                 content: message,
                 failed: true,
                 result: nil,
-                arguments: nil
+                arguments: nil,
+                durationMs: nil
             )
         case .value(let arguments):
             return await executeValid(
@@ -250,6 +284,7 @@ extension ToolCallRunner {
         }
     }
 
+    // swiftlint:disable:next function_body_length
     private static func executeValid(
         call: ToolCall,
         index: Int,
@@ -272,24 +307,36 @@ extension ToolCallRunner {
         do {
             let result = try await context.executor.callTool(name: call.function.name, arguments: arguments)
             let data = (try? JSONEncoder().encode(result)) ?? Data("null".utf8)
-            emitFinished(
+            let output = String(bytes: data, encoding: .utf8) ?? "null"
+            let modelContent = llmContent(for: result, fallbackJSON: output)
+            // transport成功でもMCPの論理エラーは失敗表示にする。完全結果とmodelContentは
+            // 保持し、モデルが不正引数を訂正できる次周のtool結果を失わせない。
+            let isError = result["isError"]?.boolValue == true
+            context.telemetry.event("mcp.tool.output", fields: [
+                "turn_id": context.turnId, "call_id": call.id, "output": output
+            ], level: isError ? .error : .info)
+            let durationMs = finishExecution(
                 context,
                 call: call,
                 startedAt: startedAt,
-                isError: result["isError"]?.boolValue == true,
+                isError: isError,
                 resultBytes: data.count
             )
             return Execution(
                 index: index,
                 toolCallId: call.id,
                 toolName: call.function.name,
-                content: String(data: data, encoding: .utf8) ?? "null",
-                failed: false,
+                content: modelContent,
+                failed: isError,
                 result: result,
-                arguments: arguments
+                arguments: arguments,
+                durationMs: durationMs
             )
         } catch {
-            emitFinished(
+            context.telemetry.event("mcp.tool.output", fields: [
+                "turn_id": context.turnId, "call_id": call.id, "output": "ツール実行エラー: \(error)"
+            ], level: .error)
+            let durationMs = finishExecution(
                 context,
                 call: call,
                 startedAt: startedAt,
@@ -303,24 +350,37 @@ extension ToolCallRunner {
                 content: "ツール実行エラー: \(error)",
                 failed: true,
                 result: nil,
-                arguments: arguments
+                arguments: arguments,
+                durationMs: durationMs
             )
         }
     }
 
-    private static func emitFinished(
+    private static func finishExecution(
         _ context: ExecutionContext,
         call: ToolCall,
         startedAt: Date,
         isError: Bool,
         resultBytes: Int
+    ) -> Int {
+        let durationMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))
+        emitFinished(context, call: call, isError: isError, resultBytes: resultBytes, durationMs: durationMs)
+        return durationMs
+    }
+
+    private static func emitFinished(
+        _ context: ExecutionContext,
+        call: ToolCall,
+        isError: Bool,
+        resultBytes: Int,
+        durationMs: Int
     ) {
         context.traceSink?.emit(.toolCallFinished(
             turnId: context.turnId,
             callId: call.id,
             isError: isError,
             resultBytes: resultBytes,
-            durationMs: Int(Date().timeIntervalSince(startedAt) * 1000)
+            durationMs: durationMs
         ))
     }
 }

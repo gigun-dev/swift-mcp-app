@@ -27,6 +27,10 @@ let package = Package(
         // (~/ghq/github.com/modelcontextprotocol/swift-sdk)で確認した最新タグ
         // (2026-07-15 時点)。`from:` にしているのでパッチ更新は自動追従する。
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk", from: "0.12.1"),
+        // OpenTelemetry は tracing だけを利用する。HTTP exporter の stable 2.5.2 と、
+        // その公開 API/SDK を提供する core 2.5.1 を exact 固定し、意図しない wire 変更を避ける。
+        .package(url: "https://github.com/open-telemetry/opentelemetry-swift-core", exact: "2.5.1"),
+        .package(url: "https://github.com/open-telemetry/opentelemetry-swift", exact: "2.5.2"),
     ],
     targets: [
         // Kernel: MCP DTO の Codable・日付/繰り返し整形・セクショニングを置く純関数層。
@@ -48,6 +52,9 @@ let package = Package(
                 // (実際に "mcp-swift-sdk" を指定すると `swift build` が
                 // "unknown package 'mcp-swift-sdk'" で失敗することを確認済み)。
                 .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "OpenTelemetryApi", package: "opentelemetry-swift-core"),
+                .product(name: "OpenTelemetrySdk", package: "opentelemetry-swift-core"),
+                .product(name: "OpenTelemetryProtocolExporterHTTP", package: "opentelemetry-swift"),
             ]
         ),
         .testTarget(name: "ServicesTests", dependencies: ["Services"]),

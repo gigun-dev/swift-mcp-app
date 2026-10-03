@@ -56,12 +56,14 @@ extension ChatViewModelTests {
 
         // toolCallFinished の resultBytes は空でない(結果 JSON のバイト数)・isError は false。
         let events = sink.eventsSnapshot
-        guard case .toolCallFinished(_, _, let isError, let resultBytes, _) = events[3] else {
+        guard case .toolCallFinished(_, _, let isError, let resultBytes, let durationMs) = events[3] else {
             Issue.record("3番目のイベントが toolCallFinished ではない")
             return
         }
         #expect(isError == false)
         #expect(resultBytes > 0)
+        let step = viewModel.turns.first(where: { !$0.toolSteps.isEmpty })?.toolSteps.first
+        #expect(step?.durationMs == durationMs)
     }
 
     // 壊れた JSON 引数(ツール未実行)では toolCallStarted/Finished は出ない
@@ -115,6 +117,58 @@ extension ChatViewModelTests {
         #expect(session.model == "gpt-5-mini")
         #expect(session.serverURL == URL(string: "https://caldav.gigun-dev.workers.dev/mcp")!)
         #expect(session.turns.count == 2)
+    }
+
+    @Test func 保存済みセッションを復元して同じIDのまま会話を継続できる() async throws {
+        let id = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let restored = ChatSession(
+            id: id,
+            title: "以前の会話",
+            serverURL: URL(string: "https://example.com/mcp")!,
+            createdAt: createdAt,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100),
+            turns: [
+                ChatTurn(role: .user, text: "前の質問"),
+                // tool-onlyのassistantターンは画面には残すが、不完全なtool_call系列としてwireへ戻さない。
+                ChatTurn(role: .assistant, text: "", toolSteps: [
+                    ToolCallStep(toolName: "lookup", state: .done)
+                ]),
+                ChatTurn(
+                    role: .assistant,
+                    text: "前の回答",
+                    usage: Usage(promptTokens: 10, completionTokens: 4, totalTokens: 14)
+                )
+            ],
+            model: "old-model"
+        )
+        let llm = ScriptedLLMClient(scripts: [[
+            .textDelta("続きの回答"), .completed(.stop, [], usage(6, 3))
+        ]])
+        let viewModel = ChatViewModel(
+            llm: llm,
+            toolExecutor: StubToolExecutor(),
+            tools: [],
+            model: "current-model",
+            systemPrompt: "system",
+            sessionId: id.uuidString,
+            restoredSession: restored
+        )
+
+        #expect(viewModel.turns == restored.turns)
+        #expect(viewModel.lastUsage == restored.turns.last?.usage)
+        #expect(viewModel.cumulativeUsage == restored.turns.last?.usage)
+
+        await viewModel.send("続きの質問")
+
+        let request = try #require(llm.receivedRequests.first)
+        #expect(request.messages.map(\.role) == [.system, .user, .assistant, .user])
+        #expect(request.messages.compactMap(\.content) == ["system", "前の質問", "前の回答", "続きの質問"])
+        #expect(viewModel.currentSession.id == id)
+        #expect(viewModel.currentSession.createdAt == createdAt)
+        #expect(viewModel.currentSession.serverURL == restored.serverURL)
+        #expect(viewModel.currentSession.model == "current-model")
+        #expect(viewModel.turns.last?.text == "続きの回答")
     }
 
     // onTurnSettled: send() が返る直前に必ず1回呼ばれる(ストリーム失敗による早期 return でも)。

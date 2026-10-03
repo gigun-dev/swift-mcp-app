@@ -2,8 +2,9 @@
 // 出力先の抽象。第一実装は OSLogTraceSink(このファイル)。将来 ChatStore 経由の永続化・
 // デバッグ UI 表示に差し替える/追加するときもここだけを触ればよい(seam の価値・設計 03 §3)。
 //
-// ProxyTraceSink は作らない(設計 03 §3 決定): プロキシ段階ではサーバー側が全リクエストを見るため
-// クライアント発トレースは不要。
+// 2026-09-20のADR 0001で旧「proxy側だけを観測する」決定を置き換え、現在は
+// TelemetryRouter/OpenTelemetryServiceもこのseamを購読する。これによりproxyから見えないMCP・カード・
+// 評価を同じclient traceへ含める。
 import Foundation
 import Kernel
 import OSLog

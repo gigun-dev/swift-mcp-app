@@ -46,6 +46,41 @@ extension ChatViewModelTests {
         #expect(toolMsg?.content?.contains("todos") == true)
     }
 
+    @Test func MCPのtextだけを次のLLMへ渡しカードには完全な結果を保持する() async {
+        let llm = ScriptedLLMClient(scripts: [
+            [.completed(
+                .toolCalls,
+                [toolCall(id: "c1", name: "attraction-wait", arguments: "{\"name\":\"Splash Mountain\"}")],
+                usage(20, 3)
+            )],
+            [.textDelta("待ち時間を確認しました"), .completed(.stop, [], usage(30, 8))]
+        ])
+        let largePayload = String(repeating: "history", count: 1_000)
+        let result: JSONValue = .object([
+            "content": .array([
+                .object(["type": .string("text"), "text": .string("現在の待ち時間は20分です。")])
+            ]),
+            "structuredContent": .object(["largePayload": .string(largePayload)]),
+            "_meta": .object(["ui": .object(["resourceUri": .string("ui://wait/chart")])])
+        ])
+        let executor = StubToolExecutor(results: ["attraction-wait": result])
+        let viewModel = ChatViewModel(
+            llm: llm, toolExecutor: executor, tools: [], model: "m", systemPrompt: nil,
+            uiResourceURIs: ["attraction-wait": "ui://wait/chart"])
+
+        await viewModel.send("スプラッシュマウンテン")
+
+        let toolMessage = llm.receivedRequests[1].messages.first { $0.role == .tool }
+        #expect(toolMessage?.content == "現在の待ち時間は20分です。")
+        #expect(toolMessage?.content?.contains("largePayload") == false)
+
+        let card = try? #require(viewModel.turns.first(where: { !$0.cards.isEmpty })?.cards.first)
+        #expect(card?.structuredContent == result)
+
+        let step = try? #require(viewModel.turns.first(where: { !$0.toolSteps.isEmpty })?.toolSteps.first)
+        #expect(step?.resultJSON?.contains("largePayload") == true)
+    }
+
     // MARK: - 監査 2026-07-18 LOW: setCardSnapshot の card 同一性チェック
 
     // expectedResourceUri がその位置の実カードと一致すれば書き戻せる(正常系)。

@@ -77,7 +77,8 @@ extension ToolCallRunner {
             content: "ユーザーがこのツールの実行を拒否しました。実行されていません。",
             failed: true,
             result: nil,
-            arguments: arguments
+            arguments: arguments,
+            durationMs: nil
         )
     }
 }

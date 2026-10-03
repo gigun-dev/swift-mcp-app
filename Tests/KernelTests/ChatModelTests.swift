@@ -44,12 +44,57 @@ func chatSessionRoundTripWithTurns() throws {
                         structuredContent: ["events": []]
                     )
                 ],
-                usage: Usage(promptTokens: 200, completionTokens: 30, totalTokens: 230)
+                usage: Usage(promptTokens: 200, completionTokens: 30, totalTokens: 230),
+                performance: ChatPerformanceMetrics(
+                    firstResponseMilliseconds: 420,
+                    timeToFirstTokenMilliseconds: 171,
+                    generationMilliseconds: 870,
+                    completionTokens: 30,
+                    requestCount: 2
+                )
             )
         ],
         model: "gpt-5-mini"
     )
     #expect(try roundTrip(session) == session)
+}
+
+@Test("ChatPerformanceMetricsの旧JSONはfirst response無しで読める")
+func chatPerformanceDecodesLegacyWithoutFirstResponse() throws {
+    let legacyJSON = #"{"timeToFirstTokenMilliseconds":171,"generationMilliseconds":870,"completionTokens":30,"requestCount":2}"# // swiftlint:disable:this line_length
+    let metrics = try JSONDecoder().decode(ChatPerformanceMetrics.self, from: Data(legacyJSON.utf8))
+    #expect(metrics.firstResponseMilliseconds == nil)
+    #expect(metrics.timeToFirstTokenMilliseconds == 171)
+}
+
+@Test("ChatTurn performanceが無い旧JSONはnilとして読める")
+func chatTurnDecodesLegacyWithoutPerformance() throws {
+    let legacyJSON = #"{"role":"assistant","text":"旧回答","toolSteps":[],"cards":[]}"#
+    let turn = try JSONDecoder().decode(ChatTurn.self, from: Data(legacyJSON.utf8))
+    #expect(turn.performance == nil)
+    #expect(turn.feedback == nil)
+}
+
+@Test("ChatTurn feedbackは保存でき、キーが無い旧JSONではnilになる")
+func chatTurnFeedbackRoundTripAndCompatibility() throws {
+    let rated = ChatTurn(role: .assistant, text: "回答", feedback: .positive)
+    #expect(try roundTrip(rated) == rated)
+
+    let legacyJSON = #"{"role":"assistant","text":"旧回答","toolSteps":[],"cards":[]}"#
+    let legacy = try JSONDecoder().decode(ChatTurn.self, from: Data(legacyJSON.utf8))
+    #expect(legacy.feedback == nil)
+}
+
+@Test("ChatPerformanceMetricsは速度をcompletion tokenと生成時間から算出する")
+func chatPerformanceDerivedRates() {
+    let metrics = ChatPerformanceMetrics(
+        timeToFirstTokenMilliseconds: 171,
+        generationMilliseconds: 1_000,
+        completionTokens: 40,
+        requestCount: 1
+    )
+    #expect(metrics.tokensPerSecond == 40)
+    #expect(metrics.millisecondsPerToken == 25)
 }
 
 @Test("ToolCallStep の state は全ケースで round-trip する")
@@ -66,7 +111,8 @@ func toolCallStepServerNamePersistenceCompatibility() throws {
         toolName: "caldav__list-todos",
         originalToolName: "list-todos",
         serverName: "家族カレンダー",
-        state: .done
+        state: .done,
+        durationMs: 1_234
     )
     #expect(try roundTrip(named) == named)
 
@@ -74,6 +120,7 @@ func toolCallStepServerNamePersistenceCompatibility() throws {
     let legacy = try JSONDecoder().decode(ToolCallStep.self, from: Data(legacyJSON.utf8))
     #expect(legacy.serverName == nil)
     #expect(legacy.originalToolName == nil)
+    #expect(legacy.durationMs == nil)
 }
 
 @Test("CardEmbed はサーバーprovenanceを保存し旧JSONではnilに戻す")
