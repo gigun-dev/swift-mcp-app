@@ -6,3 +6,4 @@ x 2026-10-03 2026-10-03 swift-sdkの一時refresh失敗後にも旧tokenを保�
 x 2026-10-03 2026-10-03 今回の失敗表示・非strict・未完了stream修正を有線iPhone17へbuild/install/launchし既存設定を保った起動結果を確認する +chat +delivery @device see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0008
 x 2026-10-03 2026-10-03 旧NDの未完照合と現行台帳への移行を完了し旧NDとlogを削除する +governance @unattended id:0012
 x 2026-10-03 2026-10-03 繰り返す接続断を調べられるよう復旧したOTelで既存失敗を照合しNSError分類・失敗段階・経過時間を補い保存と実機配送を検証する +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0004
+x 2026-10-04 2026-10-04 miniで署名・exportした版4を固定配布ページへ公開し、署名URLのIPA取得とBark受付を確認する +distribution see:docs/benchmarks/2026-10-03-ota-distribution.md id:0020
