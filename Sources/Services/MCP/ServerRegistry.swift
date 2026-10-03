@@ -242,15 +242,15 @@ public final class ServerRegistryStore {
     /// 登録簿から消えたサーバーのトークンを Keychain に残し続けると、同じ URL を再登録したとき
     /// 古い(失効し得る)トークンで繋ぎに行ってしまう。登録簿とトークンの寿命を一致させる。
     ///
-    /// KeychainTokenStorage は serverURL 単位でインスタンス化する設計(kSecAttrAccount=URL)なので、
-    /// 削除対象 URL でインスタンスを1個作って clear() を呼べば、その URL のトークンだけが消える
-    /// (他サーバーのトークンには触れない)。専用の削除 API を新設せず既存の clear() を再利用する。
+    /// KeychainのaccountはURL単位。接続と共有するOAuthTokenStoreへclearを通すことで、
+    /// 進行中refreshも世代変化を検出し、削除後にtokenを再保存しない。他サーバーは触れない。
+    /// 専用の削除APIや第二の認可パスは作らずTokenStorage.clearを再利用する。
     public func remove(id: UUID) {
         guard let idx = servers.firstIndex(where: { $0.id == id }) else { return }
         let removed = servers.remove(at: idx)
 
-        // 該当 URL のトークンを後始末(上記コメント)。clear() は SecItemDelete + メモリキャッシュ破棄。
-        KeychainTokenStorage(serverURL: removed.url).clear()
+        // clearはKeychain/cache削除と世代更新。SDKのshadow transaction外から即時反映する。
+        OAuthTokenStore.shared(serverURL: removed.url).clear()
 
         persist()
         logger.notice("サーバー削除 url=\(removed.url.absoluteString, privacy: .public)")
