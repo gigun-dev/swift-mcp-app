@@ -1,6 +1,7 @@
 # 配送済み修正のcommit manifest
 
-2026-10-03。親レビュー用の資料であり、stage/commit/pushは未実施。対象は0005/0006/0007/0009/0010の
+2026-10-03の切り分け時点の記録。後続でA〜Eを個別検証・commit・push済み。SHAと検証結果は
+`2026-10-03-isolated-commit-verification.md`を参照。以下の依存整理は当時の判断材料として残す。対象は0005/0006/0007/0009/0010の
 失敗表示、失敗span、未完了stream、non-strict、OAuth保持。実機上書きinstall/launchは配送完了であり、
 本人の利用報告と実trace照合（0011）は別の受入境界。性能0001/0002と中立契約0003の新実装は広げない。
 
@@ -82,7 +83,8 @@ B/C検証記録: `/tmp/swift-mcp-final-check-20261003-r2.log`（Services188/Kern
 
 MCPResultPayloadBenchmarkTests、2026-10-03-mcp-result-payload-baseline.md、
 docs/design/10-provider-neutral-conversation.md、本manifestは調査/検証単位。
-UITests/DeviceReadOnlyChatUITestsは準備済みだが実行未成立・ユーザー指示で再開不要。配送済み修正の成功を
+DeviceReadOnlyChatUITestsは実行未成立・ユーザー指示で再開不要。
+現在は`docs/verification/archive/DeviceReadOnlyChatUITests.swift`へ退避し、通常UITest対象から外した。配送済み修正の成功を
 裏付ける実機受入テストとして扱わず、必要なら別の検証用commitへ分ける。
 todo.txt/done.txtは新規の全タスク台帳であり、既存ADR/docs/log/docs/next-directionsも複数時期の記録を含む。
 台帳導入と今回完了記録を親が別単位でレビューする。0001/0002は未完のままstop済み、0003は未着手。
