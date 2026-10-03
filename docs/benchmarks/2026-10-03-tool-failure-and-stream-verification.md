@@ -252,3 +252,20 @@ VMの稼働設定にある初期projectの資格情報を使い、`http://mini-v
 ios-device-build skillで列挙・dry-run後、同じ明示引数でiPhone17 morita（既存bundle `dev.gigun.mcphost`）へ新しいDerivedDataからビルド・上書きinstall成功。起動・自動UI操作・質問の再送信はしていない。配送証拠は `/tmp/swift-failure-observability-device.json`。他所有のMapPreview/project.yml変更は含めず保持した。
 
 残る確認は通常利用で新属性が自然に保存されることと、その記録を基にした接続断の傾向。本人への再現操作の要求や、合成失敗を実利用の改善証拠に置き換えることはしない。
+
+## 新版の通常利用・22:49 JSTの予定取得
+
+同じ初期projectを2026-10-03 13:00 UTC以降で再取得し、12 observationsを照合した。検証用environmentの合成失敗とは別に、本人の「今日の予定」2 turnが保存されていた。両方とも`gpt-5.6-luna`、generation/tool/turnは成功、`list-events-expanded`の結果は予定なし、最終回答も予定なしだった。鍵・会話原本はGitへ保存しない。
+
+| JSTの開始 | trace | turn全体 | 最初のmodel出力 | 最初のgeneration全体 | CalDAV tool | 後続generation全体 | hostのcard構築 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 22:49:13.092 | `0719ece25f218c861316957d13623dc9` | 14.371 s | 8,752 ms | 9,489 ms | 200 ms | 4,675 ms | 311 ms |
+| 22:49:35.677 | `9814f51fa490850e40382dca64324b85` | 13.188 s | 7,391 ms | 8,943 ms | 125 ms | 4,115 ms | 181 ms |
+
+後者は本人画面のfirst model response約7,392 ms / tool125 msと一致する。最初のmodel出力はtool-call開始を含み、最終回答が読めるまでの時間ではない。最初のgenerationではheadersまで6,655 ms、headersから出力まで735 ms。後続はheadersまで3,119 ms、初出力まで3,690 ms。hostカード構築はtool終了33 ms後に始まり、後続generationと並行している。今回の長い待ち時間はLLM HTTP/SSE待ちにあり、tool125 msだけを改善しても3秒目標には届かない。
+
+各generationへ25 tools、tools JSON62,255 bytes（schema JSON47,144 bytes）を送っている。後者のinput tokensは初回14,808、後続15,047。入力が大きいことは観測できるが、2件の同モデル標本だけではレイテンシの原因と断定できない。次の性能検証は既存0001のtool結果縮約と必要なtool定義の選択を同条件で比較する。provider modeをこの結果だけで変更しない。
+
+`card.render`は`InlineCardView.swift:250–263`でsession開始・webView公開・初期payloadの送信／enqueue後に終わるため、JSのinitialized受信や背景calendar取得完了までの時間ではない。`InlineCardHost+HistoryRevisit.swift:18`はtool input→resultを自動配送し、`AppsBridgeSession.swift:301–306,358–366`はinitialized後にFIFOを配送する。selectorのtapを初期配送条件にはしていない。初期0からtap後に2色となる表示について、CalDAV担当がcalendar取得後の再描画欠落を特定した。Swift host変更は行わず、カード側修正の本人受け入れと区別する。
+
+0018の「新版の通常利用trace保存待ち」は解消した。自然発生の接続断はこの2 turnにはなく、新しい失敗段階属性による原因傾向や失敗率はまだ評価できない。0011は本人の予定取得を実OTelで確認できたが、todo取得と本人による表示の受け入れは別の残件である。今回source変更・新しい監視・追加の実機操作は行っていない。

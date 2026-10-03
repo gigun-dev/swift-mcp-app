@@ -1,10 +1,11 @@
 2026-09-21 MCP結果のLLM再入力をテキストへ縮約してChatとResponsesのターン別レイテンシを3秒目標で検証する +chat +performance see:docs/adr/0002-openai-responses-provider-mode.md id:0001
 2026-09-21 JEVでnoneまたはMCPツールを事前選択する汎用ルーターをautoと比較し、精度・追加遅延・低信頼時フォールバック閾値を決める +chat +performance see:docs/adr/0002-openai-responses-provider-mode.md id:0002
 2026-09-21 ChatCompletionRequest中心のLLMClient契約をprovider中立なconversation item/tool callへ分離し、Responses function bridgeを既定、Chat Completionsを互換fallbackにする +chat +architecture see:docs/adr/0002-openai-responses-provider-mode.md id:0003 @next
-2026-10-03 配送済みiPhone17の本人による任意実利用確認と予定・todo取得の機能OTel照合を行う（実機自動UI試験やロック解除維持は不要） +oauth +verification @device see:docs/benchmarks/2026-10-03-oauth-reconnect-refresh.md id:0011
+2026-10-03 配送済みiPhone17で本人のtodo取得を機能OTelと照合する（予定取得は22:49 JSTの成功2 turn確認済み、表示の本人受け入れは別途） +oauth +verification @device see:docs/benchmarks/2026-10-03-oauth-reconnect-refresh.md id:0011
 2026-10-03 設定画面・接続フォーム・ツール許可の既存操作を決定論のnative UI回帰で確認できるようにする +verification @unattended see:docs/ios-agent-harness-benchmark.md id:0013
 2026-10-03 Composerのツール選択について未合意の4つの体験判断を本人が決め実装範囲を確定する +chat @user see:docs/design/06-composer-tool-picker.md id:0014
 2026-10-03 拒否したツールをLLMの定義から外すかを決め許可設定の契約を揃える +chat @user see:docs/design/09-tool-permission-settings.md id:0015
 2026-10-03 過去に報告されたdelete-todo応答後のspinner固着を現行版で確認し再現したら解消する +cards @unattended see:docs/design/03-tool-io-and-card-freshness.md id:0016
 2026-10-03 複数サーバー混在とツール無効化後の次チャットで設定どおりの呼び出しが行われるか検証する +chat @unattended see:docs/design/06-composer-tool-picker.md id:0017
-2026-10-03 通常利用の新しいSwiftトレースが保存されることを照合し接続断の段階・時間・モデル別の傾向を確認する（観察属性の保存と実機配送は検証済み、新版実利用データ待ち） +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0018
+2026-10-03 通常利用で接続断が発生した際に新しい失敗属性を実トレースと照合し段階・時間・モデル別の傾向を確認する（新版の予定取得2 turn保存成功、自然失敗は未観測） +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0018
+2026-10-03 SafariのOTA配布ページから配送済みad-hoc IPAを上書きインストールし起動と認証保持を本人が確認する（archive・export・対象UDID・HTTPSページは確認済み） +distribution @user see:docs/benchmarks/2026-10-03-ota-distribution.md id:0019
