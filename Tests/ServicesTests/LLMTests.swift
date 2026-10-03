@@ -45,6 +45,23 @@ final class StubURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+
+    // URLSessionはPOST bodyをURLProtocolへInputStreamとして配送する場合がある。
+    // httpBodyだけ読むと空Dataを検証してしまうので、実配送形態を両方扱う。
+    static func requestBody(_ request: URLRequest) -> Data {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        return data
+    }
 }
 
 // .serialized: StubURLProtocol.handler は class 静的変数(全テスト共有)なので、swift-testing の
@@ -95,6 +112,72 @@ final class StubURLProtocol: URLProtocol {
         )
     }
 
+    // encoder単体だけでなくURLSessionへ渡すHTTP bodyでも非strictと任意schemaを保持する。
+    // annotationsはHITL用内部metadataなのでwireへ漏らさず、送信後も入力definitionに残す。
+    @Test func functionHTTPBodyExplicitlyKeepsNonStrictOptionalSchema() async throws {
+        let schema: JSONValue = .object([
+            "type": .string("object"), "properties": .object([
+                "optional": .object(["type": .string("string")])
+            ])
+        ])
+        let annotations = ToolAnnotations(readOnlyHint: true)
+        let definition = ToolDefinition(function: .init(
+            name: "lookup", parameters: schema, annotations: annotations
+        ))
+        let body = sseBody(["[DONE]"])
+        StubURLProtocol.handler = { request in
+            let wire = try? JSONDecoder().decode(JSONValue.self, from: StubURLProtocol.requestBody(request))
+            let function = wire?["tools"]?.arrayValue?.first?["function"]
+            #expect(function?["strict"] == .bool(false))
+            #expect(function?["parameters"] == schema)
+            #expect(function?["annotations"] == nil)
+            return .init(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: body)
+        }
+        var request = makeRequest()
+        request.tools = [definition]
+        for try await _ in makeClient(session: makeStubbedSession()).stream(request) {}
+        #expect(definition.function.annotations == annotations)
+    }
+
+    @Test func v1BaseURLはchatCompletionsへ正規化される() throws {
+        let base = try #require(URL(string: "https://example.invalid/v1"))
+        #expect(OpenAICompatClient.chatCompletionsURL(from: base).absoluteString ==
+            "https://example.invalid/v1/chat/completions")
+
+        let slash = try #require(URL(string: "https://example.invalid/v1/"))
+        #expect(OpenAICompatClient.chatCompletionsURL(from: slash).absoluteString ==
+            "https://example.invalid/v1/chat/completions")
+    }
+
+    @Test func 完全URLと独自パスは変更しない() throws {
+        let complete = try #require(URL(string: "https://example.invalid/v1/chat/completions"))
+        #expect(OpenAICompatClient.chatCompletionsURL(from: complete) == complete)
+
+        let custom = try #require(URL(string: "https://example.invalid/openai/chat/completions"))
+        #expect(OpenAICompatClient.chatCompletionsURL(from: custom) == custom)
+    }
+
+    @Test func modelsURLをbaseと完全URLから組み立てる() throws {
+        let base = try #require(URL(string: "https://example.invalid/v1"))
+        #expect(OpenAICompatClient.modelsURL(from: base).absoluteString == "https://example.invalid/v1/models")
+        let complete = try #require(URL(string: "https://example.invalid/v1/chat/completions"))
+        #expect(OpenAICompatClient.modelsURL(from: complete).absoluteString == "https://example.invalid/v1/models")
+    }
+
+    @Test func モデル一覧を取得し未知の拡張を無視する() async throws {
+        let json = #"{"object":"list","data":[{"id":"gpt-a","owned_by":"provider"},"#
+            + #"{"id":"gpt-b","pricing":{"prompt":"0.1","completion":"0.2"}}]}"#
+        let body = Data(json.utf8)
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.absoluteString == "https://example.invalid/v1/models")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+            return .init(statusCode: 200, headers: ["Content-Type": "application/json"], body: body)
+        }
+        let models = try await makeClient(session: makeStubbedSession()).listModels()
+        #expect(models.map(\.id) == ["gpt-a", "gpt-b"])
+        #expect(models[0].ownedBy == "provider")
+    }
+
     /// SSE イベント列を "data: ...\n\n" 形式にまとめてバイト列化するヘルパ。
     private func sseBody(_ payloads: [String]) -> Data {
         let text = payloads.map { "data: \($0)\n\n" }.joined()
@@ -122,6 +205,8 @@ final class StubURLProtocol: URLProtocol {
         var completions: [Completion] = []
         for try await event in client.stream(makeRequest()) {
             switch event {
+            case .responseStarted: break
+            case .outputStarted: break
             case .textDelta(let text): textDeltas.append(text)
             case .completed(let reason, let calls, let usage):
                 completions.append(.init(reason: reason, calls: calls, usage: usage))
@@ -133,6 +218,32 @@ final class StubURLProtocol: URLProtocol {
         #expect(completions[0].reason == .stop)
         #expect(completions[0].calls.isEmpty)
         #expect(completions[0].usage == Usage(promptTokens: 5, completionTokens: 2, totalTokens: 7))
+    }
+
+    // HTTP headers到着を本文/tool deltaより前に通知できれば、通信・provider queueと
+    // headers後のmodel prefill/生成待ちを別々に観測できる。
+    @Test
+    func responseStartedが最初のoutputより前に届く() async throws {
+        let body = sseBody([
+            #"{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}"#,
+            #"{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "[DONE]"
+        ])
+        StubURLProtocol.handler = { _ in
+            .init(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: body)
+        }
+
+        let client = makeClient(session: makeStubbedSession())
+        var kinds: [String] = []
+        for try await event in client.stream(makeRequest()) {
+            switch event {
+            case .responseStarted: kinds.append("response")
+            case .outputStarted: kinds.append("output")
+            case .textDelta: kinds.append("text")
+            case .completed: kinds.append("completed")
+            }
+        }
+        #expect(kinds == ["response", "text", "completed"])
     }
 
     // tool_calls: 初回 delta(id + function.name)+ 継続 delta(arguments 断片複数)が
@@ -152,12 +263,15 @@ final class StubURLProtocol: URLProtocol {
 
         let client = makeClient(session: makeStubbedSession())
         var completions: [Completion] = []
+        var outputStartedCount = 0
         for try await event in client.stream(makeRequest()) {
+            if case .outputStarted = event { outputStartedCount += 1 }
             if case .completed(let reason, let calls, let usage) = event {
                 completions.append(.init(reason: reason, calls: calls, usage: usage))
             }
         }
 
+        #expect(outputStartedCount == 1)
         #expect(completions.count == 1)
         #expect(completions[0].reason == .toolCalls)
         #expect(completions[0].calls == [
@@ -185,6 +299,25 @@ final class StubURLProtocol: URLProtocol {
             if case .completed(_, _, let completedUsage) = event { usage = completedUsage }
         }
         #expect(usage == Usage(promptTokens: 1, completionTokens: 1, totalTokens: 2))
+    }
+
+    @Test
+    func usageのcachedPromptTokensを保持する() async throws {
+        let body = sseBody([
+            #"{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+            #"{"id":"c1","choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":2,"total_tokens":1202,"prompt_tokens_details":{"cached_tokens":1024}}}"#,
+            "[DONE]"
+        ])
+        StubURLProtocol.handler = { _ in
+            .init(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: body)
+        }
+
+        let client = makeClient(session: makeStubbedSession())
+        var usage: Usage?
+        for try await event in client.stream(makeRequest()) {
+            if case .completed(_, _, let completedUsage) = event { usage = completedUsage }
+        }
+        #expect(usage?.promptTokensDetails?.cachedTokens == 1_024)
     }
 
     // [DONE] で終端したとき、completed はちょうど1回だけ yield される。

@@ -17,14 +17,24 @@ import Kernel
 /// アダプタ実装は並行安全であること(OpenAICompatClient は URLSession + 不変設定なので満たす)。
 public protocol LLMClient: Sendable {
     /// リクエストを送り、delta イベントを非同期ストリームで返す。
-    /// ストリームは textDelta を 0 個以上 yield した後、**必ず最後に completed を1回**
+    /// ストリームは outputStarted / textDelta を 0 個以上 yield した後、**必ず最後に completed を1回**
     /// yield して正常終了する(設計 §2: 終端イベントは completed に統合)。
     /// ネットワーク/デコード/HTTP エラーはストリームの throw で伝える。
     func stream(_ request: ChatCompletionRequest) -> AsyncThrowingStream<LLMEvent, Error>
 }
 
-/// ストリーム中に流れるイベント。設計 §2 の決定どおり2種類だけ。
+/// ストリーム中に流れるイベント。
 public enum LLMEvent: Sendable {
+    /// HTTP response headersを受信し、成功したSSE bodyを読み始められる状態になったことを通知する。
+    /// request開始→このイベントはDNS/TLS・プロバイダqueue・HTTP headers待ちを含み、
+    /// このイベント→outputStartedはheaders到着後にモデルの最初の出力が届くまでを表す。
+    /// 2つを分けないと「巨大schemaのprefill」と「回線/queue」を同じTTFTへ畳み込んでしまうため、
+    /// 性能診断専用イベントとして本文deltaより前に1回だけ流す。
+    case responseStarted
+
+    /// 本文以外の出力（tool call delta）が始まったことを通知する。TTFT計測用でUI本文には使わない。
+    case outputStarted
+
     /// 本文の増分(assistant の吹き出しに逐次追記する)。空文字列は yield しない想定。
     case textDelta(String)
 
