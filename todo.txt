@@ -3,4 +3,8 @@
 2026-09-21 ChatCompletionRequest中心のLLMClient契約をprovider中立なconversation item/tool callへ分離し、Responses function bridgeを既定、Chat Completionsを互換fallbackにする +chat +architecture see:docs/adr/0002-openai-responses-provider-mode.md id:0003 @next
 2026-10-03 繰り返す接続断を個別操作に頼らず調べられるよう復旧したOTelで既存の失敗記録を照合しNSError分類・失敗段階・経過時間の不足を埋めて傾向を観察する +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0004
 2026-10-03 配送済みiPhone17の本人による任意実利用確認と予定・todo取得の機能OTel照合を行う（実機自動UI試験やロック解除維持は不要） +oauth +verification @device see:docs/benchmarks/2026-10-03-oauth-reconnect-refresh.md id:0011
-2026-10-03 旧NDに残る未完項目を現行todoと実装へ照合し重複・古い完了・Swift外の課題を分類して取りこぼしをなくす +governance @unattended see:docs/next-directions.md id:0012
+2026-10-03 設定画面・接続フォーム・ツール許可の既存操作を決定論のnative UI回帰で確認できるようにする +verification @unattended see:docs/ios-agent-harness-benchmark.md id:0013
+2026-10-03 Composerのツール選択について未合意の4つの体験判断を本人が決め実装範囲を確定する +chat @user see:docs/design/06-composer-tool-picker.md id:0014
+2026-10-03 拒否したツールをLLMの定義から外すかを決め許可設定の契約を揃える +chat @user see:docs/design/09-tool-permission-settings.md id:0015
+2026-10-03 過去に報告されたdelete-todo応答後のspinner固着を現行版で確認し再現したら解消する +cards @unattended see:docs/design/03-tool-io-and-card-freshness.md id:0016
+2026-10-03 複数サーバー混在とツール無効化後の次チャットで設定どおりの呼び出しが行われるか検証する +chat @unattended see:docs/design/06-composer-tool-picker.md id:0017

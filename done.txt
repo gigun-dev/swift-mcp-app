@@ -4,3 +4,4 @@ x 2026-10-03 2026-10-03 公開bridgeの同一schema・履歴によるstrict対�
 x 2026-10-03 2026-10-03 再接続時の保存OAuth clientID復元で期限切れtoken更新をブラウザなしで成功させ、初回認可と有効tokenを回帰検証する +oauth +verification see:docs/design/08-oauth-token-lifecycle.md id:0009
 x 2026-10-03 2026-10-03 swift-sdkの一時refresh失敗後にも旧tokenを保持する修正方針を決め、503回帰のknown issueを解消する +oauth +verification see:docs/benchmarks/2026-10-03-oauth-reconnect-refresh.md id:0010
 x 2026-10-03 2026-10-03 今回の失敗表示・非strict・未完了stream修正を有線iPhone17へbuild/install/launchし既存設定を保った起動結果を確認する +chat +delivery @device see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0008
+x 2026-10-03 2026-10-03 旧NDの未完照合と現行台帳への移行を完了し旧NDとlogを削除する +governance @unattended id:0012
