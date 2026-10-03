@@ -10,6 +10,6 @@
 
 Tailscale版は https://mini.tailbf83fe.ts.net/swift-mcp-app/ と https://pro.tailbf83fe.ts.net/swift-mcp-app/ に残す。各MacのLaunchAgent dev.gigun.ota-deployから127.0.0.1:18787をServeへ配信するため、Macの停止中は使えない。Cloudflare向け生成物は別ディレクトリに置き、既存ローカル配布を上書きしない。
 
-mini本体ではghq取得・XcodeGenによるproject.ymlからの生成・Xcode 26.3の依存解決まで成功した。archiveはロックされたloginキーチェーンへの証明書書き込みで失敗（DVTSecErrorDomain -61）。本人の解除後に署名archiveとAd Hoc exportを再検証する。具体的な操作はdotfilesのdocs/mini-vm.mdを参照。
+mini本体ではghq取得・XcodeGenによるproject.ymlからの生成・Xcode 26.3の依存解決まで成功した。archive初回はキーチェーンへの証明書書き込みで失敗（DVTSecErrorDomain -61）。本人の解除後にも再試行し、XcodeはApple側のmini用開発証明書に対応する秘密鍵がローカルにないと報告した。Team・自動署名設定、SSHとGUIのユーザー・参照キーチェーンは一致する。miniのXcodeで証明書と秘密鍵の組を解決してから署名archiveとAd Hoc exportを再検証する。具体的な操作はdotfilesのdocs/mini-vm.mdを参照。
 
 本人確認はTailscaleを切ったiPhoneのSafariで固定ページを開き、ログイン、インストール、起動、既存認証保持の順に行う。BarkのSafariリンクが開けなければ本文のHTTPSリンクからSafariで開く。これらの実機確認は未完了。
