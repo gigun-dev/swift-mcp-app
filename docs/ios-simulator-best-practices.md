@@ -18,7 +18,7 @@
 | **MCPHost を E2E 検証する時**(ビルド・env・資格情報・スパイク・ログ裏取り) | project skill **`.claude/skills/ios-e2e-verify/SKILL.md`**。MCPHost 固有分の正典 |
 | **画面操作を実際に回す時** | `.claude/agents/simulator-operator.md`(sonnet)へ委譲。main のコンテキストをスクショで汚さない |
 | **ツールの採否・版を変えたくなった時**(Codex plugin / XcodeBuildMCP / Apple Xcode MCP) | [`archive/ios-agent-harness-codex-independence-2026-07-23.md`](archive/ios-agent-harness-codex-independence-2026-07-23.md)(判断の Why)、実測は [`ios-agent-harness-benchmark.md`](ios-agent-harness-benchmark.md)、出典は [`codex-plugin-and-ios-agent-audit.md`](codex-plugin-and-ios-agent-audit.md) |
-| **未検証の製品挙動が何か知りたい時** | [`next-directions.md`](next-directions.md) の「実操作チェックリスト」(残件の正典はここ一箇所) |
+| **未検証の製品挙動が何か知りたい時** | [`todo.txt`](../todo.txt) と各タスクの専門docs |
 
 ## ここだけに書く repo 標準(1行ずつ)
 

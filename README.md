@@ -5,7 +5,7 @@
 サーバー・MCP Apps 対応済み)——本アプリは caldav にとって DAV・claude.ai カスタムコネクタに
 次ぐ **MCP 入口第3号**でもある。
 
-## 方針(2026-07-15 第2版。初版「契約のネイティブ SwiftUI 描画」からの転換経緯は docs/next-directions.md)
+## 方針
 
 1. **MCP クライアント** — [swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) の
    `HTTPClientTransport` + OAuth 2.1(DCR→authorize→token のフルフロー)で

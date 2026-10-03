@@ -129,7 +129,7 @@ enum FinishReason { case stop, toolCalls, length, contentFilter, other(String) }
 
 ボツ案: 非ストリーミングで先に通す — 実装は楽だが tool-use ループと相性が悪い(ツール実行の
 合間に「考え中」を見せられない)。SSE は URLSession 標準機能で足せるので最初から入れる。
-ボツ案: Vercel AI SDK / LangChain 相当を持ち込む — JS 前提・重い(next-directions で不採用確定)。
+ボツ案: Vercel AI SDK / LangChain 相当を持ち込む — JS 前提・重い(Swiftホストの依存境界に適合しないため不採用)。
 
 ---
 
@@ -252,7 +252,7 @@ enum FinishReason { case stop, toolCalls, length, contentFilter, other(String) }
   (誤った金額を見せない。BYOK で任意モデルを使える以上、全モデルの単価は持てない)。
 - 表示(モック): 入力欄上「このターン ≈ N tok · $X」+ セッション累計(将来)。
 - ※ 単価はハードコードすると陳腐化する。**モデル ID・単価は実装時に claude-api スキル等で
-  裏取り**し、テーブルにコメントで出典と日付を残す(next-directions の方針)。
+  裏取り**し、テーブルにコメントで出典と日付を残す。
 
 ボツ案: 全モデルの単価を追う — 保守不能。既知のみ + 未知は "—" が誠実。
 

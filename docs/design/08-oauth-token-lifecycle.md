@@ -11,7 +11,7 @@
 
 > 位置づけ: swift-mcp-app ホストのトークン管理設計の正。一次資料調査(MCP Authorization
 > 仕様 2025-06-18/2025-11-25・OAuth 2.1 draft-13・workers-oauth-provider README・
-> Claude 公式 connector docs)に基づく。調査の生データは docs/log.md 2026-07-23 参照。
+> Claude 公式 connector docs)に基づく。調査経緯は[当時のGit記録](https://github.com/gigun-dev/swift-mcp-app/blob/b268586bfa8259cb40b516497eca464f1eb34dc3/docs/log.md)を参照。
 
 ## 経緯(Why)
 
