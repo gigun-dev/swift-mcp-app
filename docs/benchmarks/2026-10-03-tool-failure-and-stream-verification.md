@@ -237,3 +237,18 @@ source fingerprints・署名receipt。commit/push/deploy/CalDAV本番変更な�
 現在のgeneration span開始時にはmodel / turn_id / generation_id / request_index / phaseがある。正常終了ではresponse wait / TTFT / durationを記録するが、失敗時はエラー文字列のみ。NSError domain/codeの独立属性、provider/API方式、失敗時点のstream段階・途中出力までの時間・経過durationが揃っていない。文字列からコードを探すことと、安定した集計属性として比較できることは区別する。
 
 次は復旧後の既存traceで取得範囲を確認し、不足属性を最小限補う。エラー件数・成功率・通信段階・モデルごとの偏りから対策を選ぶ。再現するたびに本人へ端末操作を求めることを既定の進め方にしない。本人が実施済みの操作と、復旧確認の合成probeも分ける。
+
+
+## 復旧後の実トレース照合と失敗属性の配送
+
+VMの稼働設定にある初期projectの資格情報を使い、`http://mini-vm:3000`の`langfuse-cli api observations list`で2026-10-02 00:00 UTC以降を全ページ取得した。22 observations、1ページ、打切りなし。通常のローカルprofileは別projectで12件、旧selfhostは0件、cloud profileも別用途だった。profileの検索結果0件を端末トレース不存在とした前節の問題を、正しいprojectとの照合で解消した。鍵・本文・raw payloadはGitへ保存しない。
+
+実機の会話は3 traces。00:08 JSTのHTTP530、00:33〜00:34 JSTの既知trace `d7a55ab2b23e2df0e3a015f74fb93e91`、01:39 JSTの成功を再取得した。ERROR10件はHTTP530のgeneration/turn各1、同じ不正引数のtool6件、-1005のgeneration/turn各1。最後の失敗generationは2.211秒、会話全体は51.504秒だった。既存失敗はerror文字列のみで、headers前か途中出力後かをこの記録から断定できない。18:03/18:53 JSTの復旧・運用probeを除き、新版実利用traceはこの取得時点で見つからない。旧版の少数標本から新版の失敗率や安定性は判断しない。
+
+`GenerationFailureTelemetry`でNSError domain/code/type、失敗段階、経過時間、観測済みheaders/first output/first textの時刻を追加した。段階はclientイベントの到達位置であり、回線・Tunnel・providerの原因を断定するものではない。HTTP非2xxはstatusを記録する。部分本文と取消し非表示を維持し、再試行や監視基盤を増やしていない。
+
+独立したtracked checkoutで`make verify`成功（Services204 tests、Kernel136 tests、lint183 files違反0、generic iOS Simulator build成功）。-1005の5段階、単調時計の計測、HTTP530、取消しの回帰を確認した。実Swift exporterのHTTP530 fixtureを受信したprotobufに検証用environmentを付け、公開OTLP入口へ送信してHTTP200を確認。CLIでtrace `b48a97f29c0ad32cfb82fb823bf5b0ee`の2 spansを再取得し、`environment=verification`、`verification.synthetic=true`、generation ERROR、failure_stage=http_error、HTTP530、error.type=530、duration_ms=15を照合した。これは合成試験であり実機障害の発生記録ではない。環境属性は[Langfuseの公式仕様](https://langfuse.com/docs/observability/features/environments)に従った。
+
+ios-device-build skillで列挙・dry-run後、同じ明示引数でiPhone17 morita（既存bundle `dev.gigun.mcphost`）へ新しいDerivedDataからビルド・上書きinstall成功。起動・自動UI操作・質問の再送信はしていない。配送証拠は `/tmp/swift-failure-observability-device.json`。他所有のMapPreview/project.yml変更は含めず保持した。
+
+残る確認は通常利用で新属性が自然に保存されることと、その記録を基にした接続断の傾向。本人への再現操作の要求や、合成失敗を実利用の改善証拠に置き換えることはしない。
