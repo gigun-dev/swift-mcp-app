@@ -58,13 +58,13 @@ public enum MCPConnection {
             serverURL,
             allowInsecureLoopback: allowInsecureLoopback
         )
-        let tokenStorage = KeychainTokenStorage(serverURL: serverURL)
+        let tokenStorage = OAuthTokenStore.shared(serverURL: serverURL)
 
-        // 認証方式は `.none(clientID: "")` から開始する。空の clientID は
-        // `OAuthAuthorizer.maybeRegisterClient` が「クライアント登録が未実施」と判定する条件
-        // (`guard case .none = configuration.authentication`)そのものなので、これにより
-        // 初回接続時に自動で DCR(RFC 7591)が走り、caldav 側の契約通り
-        // `token_endpoint_auth_method: "none"` で登録される
+        // 初回は空clientIDで開始し、SDKのDCR(RFC 7591)で公開クライアント登録する。
+        // 再接続では保存tokenのclientIDを復元する。SDKはtokenを読むがauthenticationを
+        // 復元せず、空のままだとrefreshがinvalid_clientとなり再認可へ進んでしまう。
+        // 同じtokenが発行されたclientへ戻すため、汎用ホストでも
+        // `token_endpoint_auth_method: "none"` の契約を維持する
         // (caldav docs/next-directions.md 方向性 E の暗黙契約: 出典コメントを写経)。
         // 先回り refresh の窓を design/08 原則1(ハイブリッド refresh)に合わせて明示指定する。
         //
@@ -81,23 +81,22 @@ public enum MCPConnection {
         // swift-sdk の窓は接続時固定のスカラで、トークンごとの expires_in を見て動的に変える口が無い
         // (OAuthProactiveRefreshPolicy の defaultWindowSeconds コメントに詳細)。よってここでは固定 300 を渡す。
         //
-        // 【single-flight は SDK 側で構造的に担保】refresh の直列化(design/08 原則2)は、この接続の
-        // 全リクエストが単一の HTTPClientTransport(actor)→単一 OAuthAuthorizer を通ることで自動的に成立する
-        // (HTTPClientTransport が actor なので prepareAuthorization/handleChallenge は直列化される)。
-        // rotation 下の並行 refresh 自爆は、この「1接続=1 authorizer」構造がそのまま防いでいるため、
-        // ホスト側に別 actor(TokenLifecycleManager 等)を新設していない(調査結果は最終報告参照)。
+        // 【single-flight】actorもawait中は再入可能なので、SDK transport actorだけで
+        // refresh全体の直列化を保証した、という従来の説明は不十分だった。
+        // 同URLのOAuthTokenStore.mutationGateをSDKのasync呼出全体に保持し、複数接続からも
+        // rotationを直列化する。OAuth自体は既存SDKへ委譲し、二つ目のrefresh実装は作らない。
         let oauthConfiguration = OAuthConfiguration(
             grantType: .authorizationCode,
-            authentication: .none(clientID: ""),
+            authentication: tokenEndpointAuthentication(storage: tokenStorage),
             authorizationRedirectURI: redirectURI,
             clientName: clientName,
             authorizationDelegate: authorizationDelegate,
             proactiveRefreshWindowSeconds: OAuthProactiveRefreshPolicy.defaultWindowSeconds
         )
 
-        let authorizer = OAuthAuthorizer(
+        let authorizer = PreservingOAuthAuthorizer(
             configuration: oauthConfiguration,
-            tokenStorage: tokenStorage
+            store: tokenStorage
         )
 
         // streaming(SSE) は SDK 既定(true)のまま使う。caldav の `/mcp` は
@@ -113,6 +112,14 @@ public enum MCPConnection {
 
         let (tools, _) = try await client.listTools()
         return MCPConnectionResult(client: client, tools: tools)
+    }
+
+    // 再接続も初回認可も同じSDK経路へ渡す。認可済みclientの復元はここだけで判断し、
+    // 二つ目のrefresh実装やベンダー固有token要求を作らない。
+    static func tokenEndpointAuthentication(
+        storage: any TokenStorage
+    ) -> OAuthConfiguration.TokenEndpointAuthentication {
+        .none(clientID: storage.load()?.clientID ?? "")
     }
 
     /// 接続境界の policy をネットワーク無しで単体テストできるよう切り出した内部関数。

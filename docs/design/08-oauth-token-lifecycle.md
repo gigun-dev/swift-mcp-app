@@ -1,5 +1,14 @@
 # 08. OAuth トークンライフサイクル設計(2026-07-23 調査・正典)
 
+> 2026-10-03 再接続追検証: 保存tokenのclientIDはSDK authenticationへ自動復元されず、
+> 新authorizerのrefreshが空clientIDで失敗することをloopback fixtureで再現した。
+> ホスト接続境界で保存clientIDを復元する最小修正を実施。初回認可・有効tokenも回帰確認。
+> またSDKは反応型refresh前にstorageをclearし、503でも旧refresh tokenを失う。
+> 原則3/4がSDKによって全経路で満たされている、という従来の解釈はこの条件では成立しない。
+> 同日0010では標準authorizer wrapperのshadow保存で503/timeoutを保護し、通常回帰へ変換した。
+> 同URLの更新はmutationGateで明示直列化し、削除/別保存の世代競合は取消しを伝播する。
+> 詳細・残課題は[再接続検証記録](../benchmarks/2026-10-03-oauth-reconnect-refresh.md)。
+
 > 位置づけ: swift-mcp-app ホストのトークン管理設計の正。一次資料調査(MCP Authorization
 > 仕様 2025-06-18/2025-11-25・OAuth 2.1 draft-13・workers-oauth-provider README・
 > Claude 公式 connector docs)に基づく。調査の生データは docs/log.md 2026-07-23 参照。
