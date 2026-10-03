@@ -1,4 +1,28 @@
+> 参照記録。タスクは `todo.txt`、決定は `docs/adr/`。本文の旧更新指示は適用しない。旧未完項目の照合はtodoの専用タスクで追跡する。
+
 # 次の方向性（2026-07-24 第6版）
+
+> **2026-10-03 実機反映更新:** ユーザー承認の有線iPhone17 moritaへfresh build・署名install成功。
+> 起動はOS Lockedで拒否され、ユーザーのロック解除待ち（0008 WIP）。既存アプリの削除・設定/Keychain操作なし。
+> 実機の起動・画面受け入れは未確認。証拠は追検証記録とignored device証拠。
+
+> **2026-10-03 追加証拠照合:** CalDAV担当の公開／修正説明schema各3試行も、strict省略で空文字反復・
+> false明示でキー省略と一致。実CalDAV schemaをbridge v0.2.1 HTTP→mock upstreamへ通す18件も再検証成功。
+> 説明文だけでは解消せず、既に実装したChatの標準strict:false明示を支持する。新たなsource/本番変更なし。
+> 元実端末因果・稼働binary captureは引き続き未証明。詳細は追検証記録末尾。
+
+> **2026-10-03 継続更新:** 0005は専用Simulatorの通常Chatでも✅（赤い×・8回上限・OTLP Error一致）。
+> 公開bridgeでstrict省略9呼出しの空文字反復、false対照と同失敗履歴での修正を再現し、Chatもfalse明示へ
+> 揃えた（0007✅）。未完EOFの誤成功も修正（0006✅）。最終make check 324 tests・lint0 / make app成功。
+> 公開tool履歴付きcurl119秒・Swift URLSession81秒は完了したが、実端末の回線/background条件での切断原因は
+> 未特定。0004はそのrequest相関だけを残す。commit/push/deploy/実端末反映は未実施。
+> 詳細・証拠は[追検証記録](benchmarks/2026-10-03-tool-failure-and-stream-verification.md)。
+
+> **2026-10-03 更新:** MCP `isError:true` の失敗表示と反復上限の会話 span Error 化を修正（todo 0005 ✅）。
+> `make check` 321 tests・lint違反0、`make app` 成功。ホスト schema 保持と65秒ローカルstreamを検証。
+> 実端末の切断原因・実稼働bridgeのupstream schema比較（0004）は未完。
+> Chatの完了理由なし正常HTTP EOFの契約見直しを0006へ分離。詳細は
+> [接続断・失敗反復の追検証](benchmarks/2026-10-03-tool-failure-and-stream-verification.md)。
 
 > **位置づけ:** セッション引き継ぎの正典。goal達成状況、未完了タスク、所有者、着手順だけを置く。
 > 完了計画と判断の履歴は
@@ -9,6 +33,24 @@
 > 状況変化は該当箇所へ `> **YYYY-MM-DD 更新:**` を積層し、生記録は `docs/log.md` へ追記する。
 > **棚卸方針:** 完了 queue は打ち消し線+✅ で1〜2行に畳んでから archive へ移す。判断の経緯・
 > ボツ案・実測ログは archive と log.md に残す(消さない)。
+
+> **2026-09-06 更新:** TDR 比較用の隔離ネイティブ地図プレビューを追加。`Sources/Features/MapPreview/`
+> の SwiftUI `#Preview` が共有 fixture の37施設・エリア・目的地・GeoJSON徒歩経路を MapKit で描画する。
+> `MCPHostApp` の通常導線、MCP/LLM、Core Location 権限には接続しない。詳細と Canvas でのレビュー方法は
+> [design/native-map-preview.md](design/native-map-preview.md)。
+
+> **2026-09-21 更新:** MCP事前ルーターとして JEV を実測。3候補の汎用ルーティングは18/18正解、
+> ウォーム時278〜390ms。TDR 71施設の直選択は約4.9k input / 2.7k output tokens と曖昧語の誤確定が
+> あるため不採用。決定論的解決後の少数候補フォールバックは292〜368msで、表記揺れを解決しつつ
+> 一般名を曖昧として保持できた。詳細は
+> [JEV 事前ルーティング実測](benchmarks/jev-routing-2026-09-21.md)。
+> **同日追記:** OpenAI公式 `gpt-5.4` で現行相当function tools、Responses native MCP、
+> `tool_search`、JEV事前ルーティングを比較。3ツールではnative MCP初回4.92〜6.78s、一覧再利用後3.39s、
+> 現行相当2.81s。JEV route + ローカルMCP + 最終回答は分離実測の合算で1.44〜1.97sだった。
+> 通常の施設名は決定論で解決し、JEVは汎用MCPルーターへ集中する。
+> **同日方針再整理:** host独自indexやcapability分類は互換性を下げるため導入しない。標準経路は
+> MCP `tools/list`→function tools、model function call→MCP `tools/call`のbridgeとし、Responsesを優先、
+> 未対応providerだけChat Completionsへ落とす。JEVは標準metadataを直接使う任意の性能実験に限定する。
 
 ## Goal達成状況
 
@@ -174,3 +216,5 @@ plugin操作後はsemantic snapshotで値を再確認する。build/run/UI操作
   commit / pushまでを一単位とする。
 - agentの探索操作だけを恒久回帰とみなさない。安定したnative flowはXCUIAutomationへ昇格する。
 - 実credentialは入力しない。ユーザーが値と用途を明示したdisposable fixtureだけを扱う。
+
+> 2026-09-19 更新: iPhone 17実機へ現作業ツリーのDebug版をビルド・インストールし起動済み。開発者モード有効化と自動プロビジョニングの端末登録を実施。アプリ内MCP接続・景観地図の実機確認はこれから。

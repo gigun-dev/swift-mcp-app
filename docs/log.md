@@ -1,3 +1,5 @@
+> 参照記録。タスクは `todo.txt`、決定は `docs/adr/`。本文の旧更新指示は適用しない。旧未完項目の照合はtodoの専用タスクで追跡する。
+
 # log(追記専用アーカイブ)
 
 - 2026-07-15: リポジトリ作成(caldav-companion → swift-mcp-app にリネーム)。方針 README。
@@ -1249,3 +1251,96 @@ unified log 計装(subsystem dev.gigun.mcphost)+ simctl screenshot + Workers ロ
 - 実機install(iPhone 12 mini・devicectl)。ユーザー確認「よさそう」。
 - UI方針(今後の指針): 設定ナビは階層を深くしない・兄弟設定(有効/状態)と同階層にインライン・
   行タップ→ボトムシートはアンチパターン・claude.aiのコネクタ権限UIを参照点にする。
+
+## 2026-09-06 TDR MapKit ネイティブ地図比較プレビュー
+
+- `Sources/Features/MapPreview/TDRMapPreviewView.swift` と固定 resource
+  `Sources/Features/MapPreview/Resources/tdr-map-preview.json` を追加。`tdr-concierge` の共有 fixture
+  を DTO 変換し、MapKit の `MapPolyline` と施設 Annotation で既存 land 37施設、エリアフィルタ、
+  目的地、64座標の OSM 徒歩経路を描画する。Swift 側でルート計算や TDR データ取得は行わない。
+- 現在地は経路中点を表示上の固定モックとして使い、Core Location / 権限 / MCP / チャット導線は追加しない。
+  OSM 帰属はモック説明行と分け、`© OpenStreetMap contributors` から帰属ページへリンクする。
+- `project.yml` の `resources` 登録を追加し、XcodeGen が生成するアプリ Bundle へ JSON を同梱することを確認。
+  通常起動の `MCPHostApp` は変更していないため、Release 本体に入口は増えない。
+- `make app` は `TDRMapPreviewView.swift` の `SwiftCompile` と resource の `CpResource` を含めて `BUILD SUCCEEDED`。
+  スクリーンショットは未保存。Xcode Canvas の `東京ディズニーランド・ネイティブ地図` Preview を開いて確認する。
+
+### 2026-09-19 iPhone 17実機へインストール
+
+USB接続のiPhone17 moritaで開発者モード有効化後、端末が署名プロファイル未登録のため通常buildが失敗。ユーザー依頼の実機インストールの一環としてxcodebuildのallowProvisioningUpdates/allowProvisioningDeviceRegistrationで再buildし成功。専用DerivedData ios-device-derived-data.4D7rFPのDebug-iphoneos/MCPHost.appをdevicectlでインストール、dev.gigun.mcphostの起動成功。アプリ内MCP接続・地図表示のE2Eはこの作業では未確認。
+
+## 2026-09-21 JEV 事前ルーティング実測
+
+- Cloudflare Unified Billingへクレジット追加後、`typesafe/jev` をAPI実測。`none` / `get_current_time` /
+  `attraction_wait` の3候補は6入力×3回で18/18正解。ウォーム時278〜390ms、初回のみ約2.1s。
+- TDR 71施設+`none` の直選択は約4.9k input / 2.7k output tokens。略称は解けたが
+  `カルーセル`をランド側へ誤確定したため通常経路には不採用。
+- 静的マスタで上位1〜2候補へ絞り、`ambiguous` / `none` を加えると逐次292〜368ms。
+  誤記・言い換えは施設へ解決し、`ジェットコースター`と`カルーセル`は曖昧として保持できた。
+- 採用候補は「汎用 ToolRoutingPort + 薄い認証済みWorker adapter」。TDR固有施設マスタはMCP側に残す。
+  詳細は `docs/benchmarks/jev-routing-2026-09-21.md`。
+
+## 2026-09-21 gpt-5.4 Responses native MCP比較
+
+- OpenAI公式 `gpt-5.4` / reasoning `none` とTDRの3ツールで計測。現行相当のResponses + local function
+  toolsは待ち時間質問2.81s（初回判断1.28s、MCP 0.11s、最終回答1.42s）、ツール不要入力0.87s。
+- Responses native MCPは初回4.92〜6.78s。`previous_response_id` で`mcp_list_tools`を再利用した次ターンも
+  3.39s、ツール不要入力も初回一覧取得を含み2.18s。1 HTTP request化だけでは速くならなかった。
+- `tool_search` + deferred loadingは4.31sで、3ツールには過剰。大規模カタログ時の比較候補として残す。
+- JEV route後のlocal MCP + gpt-5.4最終回答は1.15〜1.58s。別計測のJEV warm 0.29〜0.39sを加えた
+  推定E2Eは1.44〜1.97s。次は一体プロトタイプでp50/p95とfallback精度を測る。
+- TDR施設名は決定論を主経路に維持。JEVは`none / tool / fallback`を返すprovider中立なMCP事前ルーターへ
+  集中し、書き込みツールの確認ゲートは迂回させない。
+
+## 2026-09-21 JEV MCPカタログ・confidence追加実測
+
+- 30ツール+`none`+`multiple_tools`へ16入力×2回。14/16ケースが両試行正解、選択は16/16で安定。
+  誤りは「文章を短くして」→summarize、「調べて」→web searchで、confidence 0.66〜0.75。
+- `min(selected probability, confidence) >= 0.80`の暫定gateでは22/32を自動処理し誤自動処理0、10/32を
+  fallback。ただし小標本のため閾値は未確定。
+- Choice候補3→255でlatency中央値439〜750msと単調増加しなかったが、input 427→9,028、output
+  51→3,310 tokens。候補数は速度よりtoken量・候補集合による分布変化を重視する。
+- Choiceに2つのNoulを同梱するspeculative fan-outは中央値388→530ms。補助判定を直列化せず一括取得できる。
+- TypeSafe公式tool-routerも完全な許可候補一覧+`needs_clarification`、選択確率とconfidence双方0.85、
+  deterministic policy再検証、write approval分離を採用しており、`ToolRoutingPort`案と整合した。
+- 192 toolsの合成カタログでは全tool 1段Choiceが673ms、MCP→tool 2段が960ms。両方5/5正解だが、
+  2段はinput/output tokensを6,573/2,307から1,635/431へ削減。
+- 360 toolsでは180件×2 parallel chunks→rerankが1,042ms・12,456/4,441 tokens、MCP→toolが
+  1,012ms・1,877/531 tokens。速度は同程度でhierarchyが大幅にtoken効率良好。ただしserver top-1誤りを
+  回復できないため、実カタログではtop-K server beamとflat/chunkedの精度を比較する。
+- 個別最適化を避ける案としてcapability cluster、続いてhost独自のrouting-card検索indexを検討したが、
+  MCP/OpenAI互換の外側に独自catalog契約を増やすため、いずれも標準経路から撤回した。
+- 標準経路はMCP `tools/list`→function tools、model function call→MCP `tools/call`のhost-managed bridge。
+  Responsesを優先し、未対応providerだけChat Completionsへ落とす。JEVは`tools/list`標準metadataを直接Choiceへ
+  渡す任意の性能adapterとして比較し、hostの正しさや互換性を依存させない。
+
+
+## 2026-10-03 接続断・MCP失敗反復の検証
+
+実端末Langfuse、ホストstub/OTLP、loopback/公開URL/Swift URLSession、ChatGPT MCP Appを比較。詳細は docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md。UIの論理エラー表示と反復打切りspanの成功扱いを再現。接続断は短い試験では再現せず、誤引数の発生源とともに未確定。source/deploy変更なし。
+
+## 2026-10-03 失敗表示・反復上限span修正と通信境界追検証
+
+subagent fix_tool_failureがisError失敗表示・上限span Error保持・回復会話OKを実装し、investigate_stream_schemaがschema保持と実TCP境界を検証。親が今回差分をレビューしmake check（321 tests、lint0）と最終make appを確認した。todo0005完了。65秒heartbeat付きの両APIローカルstream成功、本文未達切断は両方-1005、正常HTTP EOFのChat/Responses差は0006へ分離。VM bridge versionは0.2.1、旧cache0.1.4を現行比較根拠から除外。実端末原因・upstream schema比較は0004未完。既存dirtyを保護、stage/commit/push/deploy/実ホスト停止なし。詳細と検証境界は上記benchmarks文書の追記を参照。
+
+同日追加: bridge v0.2.1公開source commit12053383bf000940523332173458a4a094f50b0cと実変換関数fixture3 casesを確認。schema保持、Chatのstrict省略も保持しCodex HTTP Responsesへ送る。Swift Responsesのfalse明示との差を調査候補として記録したが、Codex内部でのstrict解釈・実誤引数との因果は未検証。0004を実upstream wire captureと同モデルstrict省略/false対照へ具体化しopenを維持した。
+
+## 2026-10-03 継続・公開strict対照修正とSimulator受け入れ
+
+公開bridge0.2.1/gpt-5.6-lunaの同prompt/schemaでstrict省略は初回3/3＋isError後6/6空文字反復、falseはキー省略と正常回答、同一失敗履歴のfalse変更3/3も修正。Chat functionを標準strict:false明示へ揃え、MCP schema/public API/vendor分岐は変更しなかった（0007へ分離して完了）。正常HTTP EOFの未完了誤成功も修正（0006完了）。専用iPhone17/iOS27 Simulatorの通常Chat＋偽MCP/LLMで赤い×・回復会話OK・反復上限8件と会話Errorをスクショ/AX/wire/log/OTLPで照合（0005受け入れ完了）。一時server停止、専用端末shutdown/delete済み。既存端末は操作していない。
+
+公開tool履歴付きcurl118.697秒・Foundation URLSession81.080秒はHTTP200/DONE、最大event間隔2.669/1.773秒。別の240秒curl28は自前検証上限として区別。実端末-1005は未再現で0004を同回線/background/履歴のrequest相関へ絞ってopen継続。元Langfuse traceは現配置projectとの一致が確認できず、再取得空を不存在の証拠にしない。最終make check324 tests/lint0、make app/git diff --check成功。総合初回のTCP本文配送前提のtest失敗を修正し、通信断-1005必須へ強化して再実行成功。証拠はignored .build/verification-20261003、詳細はbenchmarks文書。commit/push/deploy/本番設定/実端末反映なし。
+
+## 2026-10-03 CalDAV担当の追加証拠照合
+
+CalDAVのmonitoring-follow-up文書、実モデル引数12件、MCP判定12件、schema snapshotsとverify-range-schema scriptを読んだ。公開/説明修正schemaとも省略6件空文字拒否・false6件キー省略成功を確認。説明文/エラー文変更だけでは反復は解消していない。subagent investigate_stream_schemaがv0.2.1同commitの一時cloneで実CalDAV schemaのHTTP handler→mock upstream18/18を再検証、schema/strict保持を確認。現行Swiftのstrict:false encoderはそのChat false経路と一致する。製品sourceや実API試験は追加せず、修正妥当性の追加証拠としてbenchmarksへ追記。元実端末因果・稼働binary capture・受け入れは未証明、commit/push/deployなし。
+
+## 2026-10-03 実機への反映・起動保留
+
+ユーザー承認で、有線のiPhone17 morita（00008150-000964443A88C01C）へfresh DerivedData
+`.build/device-accepted-20261003-02`でbuild・署名installに成功した。既存アプリを削除せず、
+設定・Keychainへの操作もしていない。起動はOS Locked（FBSOpenApplicationErrorDomain7）で拒否され、
+processも未確認。ユーザーのロック解除後、再buildせずlaunchだけ再実行する（todo0008 WIP）。
+Xcodeの実機interaction sessionは対象UDIDを拒否し、画面取得は未実施。Simulator受け入れ結果とは区別する。
+証拠: `.build/verification-20261003/device/device-evidence.md`、build/install log・installed app readback・
+source fingerprints・署名receipt。commit/push/deploy/CalDAV本番変更なし。
