@@ -99,7 +99,12 @@ struct HistoryDetailView: View {
         case .user:
             HStack {
                 Spacer(minLength: 40)
-                bubble(turn.text, isUser: true)
+                SelectableUserBubble(
+                    text: turn.text,
+                    canEdit: false,
+                    onCopy: { copy(turn.text) },
+                    onEdit: {}
+                )
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 6) {
@@ -108,9 +113,17 @@ struct HistoryDetailView: View {
                     toolStepRow(step)
                 }
                 if !turn.text.isEmpty {
-                    HStack {
-                        bubble(turn.text, isUser: false)
-                        Spacer(minLength: 40)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            bubble(turn.text, isUser: false)
+                            Spacer(minLength: 40)
+                        }
+                        if let performance = turn.performance {
+                            ChatPerformanceView(metrics: performance)
+                                .padding(.leading, 4)
+                        }
+                        historyAssistantActions(turn)
+                            .padding(.leading, 2)
                     }
                 }
                 // 会話本文は固定だが、安全に由来を解決できるカードだけ live に戻す。
@@ -182,6 +195,7 @@ struct HistoryDetailView: View {
                 card: connection.card,
                 containerWidth: columnWidth,
                 maxHeight: inlineMaxHeight,
+                telemetry: telemetry,
                 // 履歴レコードは不変。復元後の DOM を snapshotHTML へ上書きせず、再訪時は常に
                 // 保存時の tool-input/result を起点にする。
                 onSnapshot: nil,

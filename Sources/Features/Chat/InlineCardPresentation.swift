@@ -38,6 +38,7 @@ struct InlineCardView: View {
     let containerWidth: CGFloat
     /// inline の実 maxHeight(可視高 × 0.65・P4-DM 決定1・設計 04 §5 H1)。ChatBodyView が可視高から算出して渡す。
     let maxHeight: CGFloat
+    let telemetry: any TelemetryPort
     /// スナップショット取得時に呼ばれる(T6・設計 §5)。ChatBodyView が identity=(turnIndex,cardIndex)
     /// を閉じ込めて渡し、最終的に ChatViewModel.setCardSnapshot を叩く。既定 nil で T5 の既存呼び出し
     /// (スナップショット不要のプレビュー等)を壊さない。
@@ -60,6 +61,7 @@ struct InlineCardView: View {
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
+        telemetry: any TelemetryPort = NullTelemetry(),
         onSnapshot: (@MainActor (String) -> Void)? = nil,
         isHistoryRevisit: Bool = false
     ) {
@@ -68,6 +70,7 @@ struct InlineCardView: View {
         self.card = card
         self.containerWidth = containerWidth
         self.maxHeight = maxHeight
+        self.telemetry = telemetry
         self.onSnapshot = onSnapshot
         self.isHistoryRevisit = isHistoryRevisit
         // @ObservedObject を host の cardState に束ねる(init で _cardState を組む標準パターン)。
@@ -89,7 +92,8 @@ struct InlineCardView: View {
                     card: card,
                     containerWidth: containerWidth,
                     maxHeight: maxHeight,
-                    colorScheme: colorScheme
+                    colorScheme: colorScheme,
+                    telemetry: telemetry
                 )
                 // 履歴再訪で既に build 済みの host を再表示したときだけ、保存済み toolResult を再 push して
                 // caldav 側 SWR に revalidate 機会を与える(2026-07-24・鮮度ギャップ修正)。新規 build 時は

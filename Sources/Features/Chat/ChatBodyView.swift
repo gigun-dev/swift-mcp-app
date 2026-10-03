@@ -24,6 +24,10 @@ struct ChatBodyView: View {
     // (複数サーバー同時接続では単一 proxy 前提が崩れる)。ChatHomeViewModel.cardProxy(forToolName:) を
     // ここへ渡す。nil を返すツール(未知 prefix・切断済みサーバー)はカードを描画しない。
     let cardProxyResolver: (String) -> AppsServerProxy?
+    let telemetry: any TelemetryPort
+    let modelName: String
+    let reasoningEffort: String
+    let onShowModelSelection: () -> Void
 
     // 入力欄のローカル下書き。送信で空にする。View ローカルの @State でよい(VM に持たせる必要なし)。
     @State private var draft: String = ""
@@ -135,11 +139,20 @@ struct ChatBodyView: View {
                 chatVM: chatVM,
                 draft: $draft,
                 inputFocused: $inputFocused,
-                haptics: haptics
+                haptics: haptics,
+                modelName: modelName,
+                reasoningEffort: reasoningEffort,
+                onShowModelSelection: onShowModelSelection,
+                onWillSend: { chatVM.commitEditing() }
             )
         }
         // 画面表示直後に generator を prepare しておく(最初の発火遅延を減らす)。
         .task { haptics.prepareAll() }
+        .onChange(of: inputFocused) { _, focused in
+            guard !focused, chatVM.isEditingUserTurn else { return }
+            chatVM.cancelEditing()
+            draft = ""
+        }
         // fullscreen カードの器(P4-DM・設計 04 §5 決定2・2026-07-17 更新: sheet→fullScreenCover)。
         // item に activeHost をラップした Binding を渡し、⤡ による dismiss(item→nil)で
         // coordinator.dismiss()(= host.restoreInline の順序復帰)を呼ぶ。sheet(.large)は「上余白 dead 領域・
@@ -177,6 +190,7 @@ struct ChatBodyView: View {
                             turn: turn,
                             turnIndex: index,
                             chatVM: chatVM,
+                            telemetry: telemetry,
                             cardProxyResolver: cardProxyResolver,
                             visibleHeight: visibleHeight,
                             columnWidth: columnWidth,
@@ -184,7 +198,8 @@ struct ChatBodyView: View {
                             cardRegistry: cardRegistry,
                             fullscreenCoordinator: fullscreenCoordinator,
                             cardZoom: cardZoom,
-                            haptics: haptics
+                            haptics: haptics,
+                            onEditUserTurn: editUserTurn
                         )
                         .id(index)
                     }
@@ -343,6 +358,7 @@ struct ChatBodyView: View {
         // カードを見た目上 inline に戻す意味は無く、teardownAll が直後に全 session を畳むので
         // restoreInline の host-context-changed 送信は無駄な往復になるだけ(最小修正)。
         .onDisappear {
+            chatVM.cancelEditing()
             // 監査 2026-07-18 MEDIUM: 画面破棄で進行中の送信(LLM ストリーミング・MCP tools/call)を
             // 止める。newChat() 経路(ChatHomeViewModel.newChat 冒頭)とは別の破棄経路
             // (タブ切り替え・ナビゲーション pop 等、ChatBodyView 自体が画面から外れるケース)を
@@ -352,6 +368,13 @@ struct ChatBodyView: View {
             cardRegistry.teardownAll()
             fullscreenCoordinator.activeHost = nil
         }
+    }
+
+    private func editUserTurn(at turnIndex: Int, fallbackText: String) {
+        guard let text = chatVM.rewindForEditing(userTurnAt: turnIndex) else { return }
+        cardRegistry.teardownAll()
+        draft = text.isEmpty ? fallbackText : text
+        DispatchQueue.main.async { inputFocused = true }
     }
 
     /// 送信された user ターン(index 指定)を画面上部へ寄せる(ChatGPT 式・2026-07-17 再設計・Fable)。

@@ -25,6 +25,7 @@
 // 【ライブ WKWebView の枚数上限(§4 の5枚→スナップショット降格)は T5 では未実装】スナップショット機構
 // (outerHTML 取得・JS 無効ロード)は T6 で作るので、その転用である枚数上限も T6 送り(設計 §4 も
 // 「スナップショット機構を作る以上、転用はほぼタダ」と T6 前提で書く)。ここでは上限を設けない。
+// swiftlint:disable file_length
 import SwiftUI
 import UIKit     // UIScreen(fullscreen 推定寸法の算出・§5 H4)
 import WebKit
@@ -159,7 +160,8 @@ final class InlineCardHost: Identifiable {
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        telemetry: any TelemetryPort = NullTelemetry()
     ) -> Bool {
         guard buildTask == nil else { return false }  // 既に構築開始済み(= host は生存中)なら何もしない。
         // 寸法を保持(onSizeChanged クランプ・inline 復帰通知で使う)。build は非同期なのでここで確定させる。
@@ -171,20 +173,28 @@ final class InlineCardHost: Identifiable {
             card: card,
             containerWidth: containerWidth,
             maxHeight: maxHeight,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            telemetry: telemetry
         ) }
         // 初回 build 開始 = true。build 内 sendInitialPayload が toolResult を1度 push するので、履歴再訪の
         // 再 push はこの初回では走らせない(false のとき=既 build のときだけ再送・二重送信回避)。
         return true
     }
 
+    // swiftlint:disable:next function_body_length function_parameter_count
     private func build(
         proxy: AppsServerProxy,
         card: CardEmbed,
         containerWidth: CGFloat,
         maxHeight: CGFloat,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        telemetry: any TelemetryPort
     ) async {
+        let cardID = UUID().uuidString
+        let input = (try? JSONEncoder().encode(card)).flatMap { String(bytes: $0, encoding: .utf8) } ?? "{}"
+        telemetry.event("card.render.started", fields: [
+            "card_id": cardID, "resource_uri": card.resourceUri, "card.render.input": input
+        ], level: .info)
         do {
             // 1. HTML プリフェッチ(接続内キャッシュが効くので2枚目以降の同一 URI は resources/read を省く)。
             //    uiMeta = content-level の _meta.ui(#6: prefersBorder はここに載る・AppsServerProxy.fetchAppHTML)。
@@ -248,6 +258,9 @@ final class InlineCardHost: Identifiable {
             //    initialized 受信で FIFO flush される(設計 §2・スパイクと同順)。
             await sendInitialPayload(card: card, session: session)
             logger.notice("インラインカード構築完了 uri=\(card.resourceUri, privacy: .public)")
+            telemetry.event("card.render.finished", fields: [
+                "card_id": cardID, "resource_uri": card.resourceUri, "card.render.output": "rendered"
+            ], level: .info)
         } catch {
             // 構築失敗(HTML 取得失敗・mimeType 不一致など)。webView は nil のままだが、buildFailed を
             // 立てることで View 側がローディングとエラーを区別できるようにする(fable #3・上のコメント参照)。
@@ -258,6 +271,9 @@ final class InlineCardHost: Identifiable {
                 .error(
                     "インラインカード構築失敗 uri=\(card.resourceUri, privacy: .public): \(String(reflecting: error), privacy: .public)"
                 )
+            telemetry.event("card.render.error", fields: [
+                "card_id": cardID, "resource_uri": card.resourceUri, "error": String(reflecting: error)
+            ], level: .error)
             self.buildFailed = true
         }
     }

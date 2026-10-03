@@ -51,6 +51,12 @@ struct ToolStepRow: View {
             // tool-calling 行の見た目に合わせる・ユーザー参照画像)。トーンは secondary 寄りで控えめ。
             attribution
 
+            if let durationMs = step.durationMs {
+                Text(formattedToolDuration(durationMs))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer(minLength: 4)
 
             // 右端 `</>`: リク/レス JSON パネルの開閉トリガ(このビュー唯一の開閉合図)。
@@ -179,6 +185,14 @@ private struct JSONCodeBlock: View {
         .padding(4)  // ブロック角から少し離す。
         .accessibilityLabel("\(title)をコピー")
     }
+}
+
+/// ツールの実測時間を、短時間は整数ms、1秒以上は小数1桁の秒で表示する。
+private func formattedToolDuration(_ durationMs: Int) -> String {
+    if durationMs < 1_000 {
+        return "\(durationMs) ms"
+    }
+    return String(format: "%.1f s", locale: Locale(identifier: "en_US_POSIX"), Double(durationMs) / 1_000)
 }
 
 /// サーバー URL の host 先頭ラベル(例: caldav.gigun-dev.workers.dev → "caldav")を attribution 用に
