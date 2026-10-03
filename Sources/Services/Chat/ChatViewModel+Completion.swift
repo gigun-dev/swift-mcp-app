@@ -63,10 +63,12 @@ extension ChatViewModel {
             ]) { _, new in new }
         }
         telemetry.event("llm.generation.started", fields: startedFields, level: .info)
+        var progress = ChatCompletionStreamConsumer.Progress()
         do {
-            let completion = try await ChatCompletionStreamConsumer.consume(llm.stream(request)) { text in
-                turns[assistantIndex].text = text
-            }
+            let completion = try await ChatCompletionStreamConsumer.consume(
+                llm.stream(request), onProgress: { progress = $0 },
+                onTextChanged: { text in turns[assistantIndex].text = text }
+            )
             performance.record(
                 requestStartedAt: requestStartedAt,
                 firstOutputAt: completion.firstOutputAt,
@@ -119,16 +121,19 @@ extension ChatViewModel {
             }
             telemetry.event("llm.generation.finished", fields: fields, level: .info)
             return completion
-        } catch is CancellationError {
-            telemetry.event("llm.generation.error", fields: [
-                "turn_id": turnId, "generation_id": generationId, "error": "cancelled"
-            ], level: .error)
-            return nil
         } catch {
-            errorMessage = "LLM ストリームに失敗しました: \(error)"
-            telemetry.event("llm.generation.error", fields: [
-                "turn_id": turnId, "generation_id": generationId, "error": String(reflecting: error)
-            ], level: .error)
+            // 既存のcancelled非表示と部分本文を保つ。NSError分類の追加でUI文言や
+            // エラー型・通信の再試行動作を変えず、同じgeneration spanの終了属性だけを補う。
+            let cancelled = error is CancellationError
+            if !cancelled { errorMessage = "LLM ストリームに失敗しました: \(error)" }
+            var fields = GenerationFailureTelemetry.fields(
+                error: error, requestStartedAt: requestStartedAt,
+                failedAt: ProcessInfo.processInfo.systemUptime, progress: progress
+            )
+            fields["turn_id"] = turnId
+            fields["generation_id"] = generationId
+            fields["error"] = cancelled ? "cancelled" : String(reflecting: error)
+            telemetry.event("llm.generation.error", fields: fields, level: .error)
             return nil
         }
     }

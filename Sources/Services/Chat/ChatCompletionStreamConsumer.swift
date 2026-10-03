@@ -4,6 +4,15 @@ import Kernel
 /// LLMイベント列を1回分の確定応答へ畳み込み、本文deltaだけを逐次UIへ通知する。
 @MainActor
 enum ChatCompletionStreamConsumer {
+    // Completionだけではthrow時にheaders/出力の到着時点が失われる。本文やErrorを別の
+    // wrapperへ詰め直さず、同じ時計で観測した小さなsnapshotだけを呼出元へ渡す。
+    struct Progress {
+        var responseStartedAt: TimeInterval?
+        var firstOutputAt: TimeInterval?
+        var firstTextDeltaAt: TimeInterval?
+        var receivedCompletion = false
+    }
+
     struct Completion {
         let text: String
         let finishReason: FinishReason
@@ -18,6 +27,7 @@ enum ChatCompletionStreamConsumer {
     static func consume(
         _ stream: AsyncThrowingStream<LLMEvent, Error>,
         now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        onProgress: (Progress) -> Void = { _ in },
         onTextChanged: (String) -> Void
     ) async throws -> Completion {
         var text = ""
@@ -47,6 +57,12 @@ enum ChatCompletionStreamConsumer {
                 toolCalls = calls
                 usage = turnUsage
             }
+            onProgress(Progress(
+                responseStartedAt: responseStartedAt,
+                firstOutputAt: firstOutputAt,
+                firstTextDeltaAt: firstTextDeltaAt,
+                receivedCompletion: finishReason != nil
+            ))
         }
         // 中立LLMClient契約のcompletedを受けていないEOFは未確定。adapter側の取りこぼしも
         // 成功へ変換せず、onTextChangedで表示済みの部分本文を残して失敗経路へ返す。
