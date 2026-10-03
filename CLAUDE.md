@@ -13,8 +13,8 @@ DAV・claude.ai カスタムコネクタに次ぐ **MCP 入口第3号**でもあ
 **コア価値: MCP Apps のホスト側プロトコルを Swift で実装する + LLM オーケストレーション。**
 この2つに寄与しない機能は後回し。iOS ネイティブの汎用 MCP Apps ホストは前例がほぼ無く、
 ext-apps のホスト SDK も TypeScript のみ — 「ホスト側を Swift で実装した」こと自体が主張。
-(旧コア価値「契約のネイティブ SwiftUI 描画」= 路線A は撤退先として保持。
-経緯は docs/next-directions.md「路線の定義」)
+(契約のネイティブ SwiftUI 描画は、MCP AppsのWebView方式が成立しない場合の撤退先として保持。
+詳細は docs/design/01-apps-bridge.md。)
 
 長期ビジョン(設計判断はこれを裏切らないこと):
 1. **SaaS 展開** — 授業フェーズは BYOK(API キー手入力)だが、LLM 呼び出しは
@@ -105,4 +105,4 @@ Sources/
 
 Tasks live in todo.txt; use the todo skills.
 Decisions live in docs/adr/; use the adr skill.
-旧 `docs/next-directions.md` と `docs/log.md` は参照記録。本文の更新指示は適用しない。
+過去の計画と作業経緯はGit履歴に残す。現行仕様・検証結果は該当する専門docsへ記録する。

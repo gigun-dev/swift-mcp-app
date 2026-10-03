@@ -118,8 +118,8 @@ OpenAI stock pluginでPass済みであり、plugin onboardingの追加試験は�
 
 当時「不足しているのはplugin能力ではなく直近実装の製品E2E」として挙げていた4件
 (ゆっくりdrawer drag / MCP App内の横gesture / 復元履歴カード / 60秒超カードの背景revalidate)は、
-**すべて `docs/next-directions.md` の「実操作チェックリスト」で ✅ 済み**。
-→ **残件の正典は `docs/next-directions.md` 一箇所**。ここでは追跡しない(二重管理の解消)。
+当時の検証完了は[Git記録](https://github.com/gigun-dev/swift-mcp-app/blob/b268586bfa8259cb40b516497eca464f1eb34dc3/docs/next-directions.md)に残る。
+現在の残件は`todo.txt`で追跡する。
 
 ## 5. Codex非依存化の完了条件
 

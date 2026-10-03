@@ -1,7 +1,7 @@
 # Codex公式pluginとiOS agent harness調査（2026-07-23）
 
 > **目的:** Claude Code / Codex共有harnessのうち、Codex公式仕様と現在のCodex環境でしか
-> 確認できない事項を固定する。製品ロードマップは`docs/next-directions.md`、比較のraw履歴は
+> 確認できない事項を固定する。製品タスクは`todo.txt`、比較のraw履歴は
 > `docs/ios-agent-harness-benchmark.md`を正とする。
 
 ## 1. 結論

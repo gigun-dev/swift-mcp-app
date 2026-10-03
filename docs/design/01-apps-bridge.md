@@ -383,7 +383,7 @@ apps.mdx:718)**。View 側は autoResize(ResizeObserver)が既定で有効(app.t
 - [x] size-changed で高さが追従し、チャットスクロールと喧嘩しない
 
 > **2026-07-23 更新:** S2〜S6と実caldavカードの往復を完走し、路線Bを採用済み。
-> 完了経緯と実機E2Eは`docs/archive/next-directions-v2-2026-07-23.md`へ保存した。
+> 完了経緯と実機E2Eは[当時のGit記録](https://github.com/gigun-dev/swift-mcp-app/blob/b268586bfa8259cb40b516497eca464f1eb34dc3/docs/archive/next-directions-v2-2026-07-23.md)を参照。
 
 ---
 
@@ -396,7 +396,7 @@ apps.mdx:718)**。View 側は autoResize(ResizeObserver)が既定で有効(app.t
 | WKContentWorld 分離時に世界間で event 伝播/stopImmediatePropagation の意味論が変わる | P3 堅牢化で S2 の再現テストが割れる | スパイクは .page world 固定(§1 で決定済み)。P3 で駄目なら page world + `Object.freeze` 系の自衛に留める |
 | iOS 26 SwiftUI ネイティブ WebView(WebPage API) | — | **採用しない(WKWebView + UIViewRepresentable で行く)**。根拠: 最小 OS バージョンが授業要件で未決(CLAUDE.md)であり iOS 26 固定は不可逆に高い賭け。WKUserScript/ContentRuleList 相当の制御が新 API で揃うかも未検証。WebView 部分は Features の 1 View に閉じるので、将来の載せ替えは可逆 |
 | caldav 側契約変更(_meta キー・mimeType) | 発見・検証で弾かれる | 契約の正は caldav 側(CLAUDE.md)。ズレたら caldav docs を先に直す規律で吸収 |
-| すべて失敗 | ゲート NO | 路線A(TodosViewModel 契約のネイティブ SwiftUI 描画)へ撤退 — next-directions.md「路線の定義」に撤退先として明記済み |
+| すべて失敗 | ゲート NO | 契約のネイティブ SwiftUI 描画へ撤退する |
 
 ## 8. 決定サマリ
 

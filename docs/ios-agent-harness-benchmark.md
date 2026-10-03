@@ -7,9 +7,8 @@
 > 直交するevidence / regression層として積む。判断の要約と公式出典は
 > [`codex-plugin-and-ios-agent-audit.md`](codex-plugin-and-ios-agent-audit.md)を正とする。
 > **正典の範囲:** Claude Code / Codex から `swift-mcp-app` を build・操作・E2E 検証する
-> plugin / skill / MCP / CLI の比較と採否。製品ロードマップ自体は `docs/next-directions.md` を正とする。
-> **更新方法:** 結果を上書きせず、各試験のチェックボックスと結果表を更新する。生の経緯は
-> `docs/log.md` に追記する。
+> plugin / skill / MCP / CLI の比較と採否。製品タスクは `todo.txt`、現行仕様は `docs/design/` を正とする。
+> 新たな検証結果は本書の該当試験へ記録する。作業経緯はコミットメッセージに残す。
 
 ## 1. 目的と判断基準
 
@@ -244,7 +243,7 @@ main sessionは実装担当にならず評価者になる。subagentの「成功
   > XcodeBuildMCP経由の`xcode-ide` gateway timeoutとは別経路なので、gatewayを重ねずApple MCPを使う。
 - [ ] dotfilesはまずBun/NodeとMCP登録を管理し、XcodeBuildMCPは固定版`bunx`で運用する。
 - [ ] Claude Code / Codex双方のvalidator、`make check`、必須E2Eを通す。
-- [x] ~~`docs/next-directions.md`と`docs/log.md`へ最終判断を反映する。~~ ✅ 2026-07-23
+- 2026-07-23の判断反映は[当時のGit記録](https://github.com/gigun-dev/swift-mcp-app/blob/b268586bfa8259cb40b516497eca464f1eb34dc3/docs/log.md)に残る。
 
 ### X-01: Apple Xcode MCP（A〜Dと直交するIDE層）
 

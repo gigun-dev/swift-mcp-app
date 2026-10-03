@@ -86,7 +86,7 @@ docs/design/10-provider-neutral-conversation.md、本manifestは調査/検証単
 DeviceReadOnlyChatUITestsは実行未成立・ユーザー指示で再開不要。
 現在は`docs/verification/archive/DeviceReadOnlyChatUITests.swift`へ退避し、通常UITest対象から外した。配送済み修正の成功を
 裏付ける実機受入テストとして扱わず、必要なら別の検証用commitへ分ける。
-todo.txt/done.txtは新規の全タスク台帳であり、既存ADR/docs/log/docs/next-directionsも複数時期の記録を含む。
+todo.txt/done.txtはタスク台帳であり、ADRと専門docsは判断・仕様・検証を保持する。
 台帳導入と今回完了記録を親が別単位でレビューする。0001/0002は未完のままstop済み、0003は未着手。
 
 ## 無関係dirtyの保護

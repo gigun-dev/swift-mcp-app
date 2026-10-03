@@ -236,7 +236,7 @@ public protocol TraceSink: Sendable {
   LLMClient(LLMClient.swift:18-37)は**触らない** — トレースは「ループの観測」であって
   「LLM ワイヤの観測」ではないので、抽象の外側(ChatViewModel)に置く。
 - 第一実装は2つ: `OSLogTraceSink`(subsystem `dev.gigun.mcphost`, category `"chat-trace"` —
-  既存規約に乗る。next-directions の simctl E2E 自走検証にもそのまま効く)と、ChatStore への
+  既存規約に乗る。project skillのsimctl E2E検証にもそのまま効く)と、ChatStore への
   書き込み(こちらは既に T6 計画がイベントと同型のデータを持つので、Sink 経由に一本化するか
   ChatStore 直書きのままにするかは T6 実装時に判断してよい)。
 - 将来: `ProxyTraceSink` は**作らない**。プロキシ段階ではサーバー側が全リクエストを見るので
