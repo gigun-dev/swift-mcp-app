@@ -70,19 +70,86 @@ public struct ChatTurn: Codable, Equatable, Sendable {
     public var toolSteps: [ToolCallStep]
     public var cards: [CardEmbed]
     public var usage: Usage?
+    /// このassistant応答を作るために行ったLLMリクエスト群の速度指標。
+    /// Optionalなので、このキーを持たない既存の履歴JSONはnilとしてそのまま読める。
+    public var performance: ChatPerformanceMetrics?
+    /// assistant応答に対するユーザー評価。Optionalなので旧履歴JSONとの互換性を保つ。
+    public var feedback: ChatTurnFeedback?
+    /// 後から行う評価を生成traceへ関連付けるopaqueなW3C traceparent。旧履歴とOTel未設定時はnil。
+    public var telemetryContext: String?
+    /// 評価の選択・変更・解除を同じ一連の操作として識別する安定ID。
+    public var feedbackEventID: String?
 
     public init(
         role: ChatMessage.Role,
         text: String,
         toolSteps: [ToolCallStep] = [],
         cards: [CardEmbed] = [],
-        usage: Usage? = nil
+        usage: Usage? = nil,
+        performance: ChatPerformanceMetrics? = nil,
+        feedback: ChatTurnFeedback? = nil,
+        telemetryContext: String? = nil,
+        feedbackEventID: String? = nil
     ) {
         self.role = role
         self.text = text
         self.toolSteps = toolSteps
         self.cards = cards
         self.usage = usage
+        self.performance = performance
+        self.feedback = feedback
+        self.telemetryContext = telemetryContext
+        self.feedbackEventID = feedbackEventID
+    }
+}
+
+/// assistant応答単位の評価。再タップ時はChatViewModel側でnilへ戻す。
+public enum ChatTurnFeedback: String, Codable, Equatable, Sendable {
+    case positive
+    case negative
+}
+
+/// assistantの表示ターンに付随するLLM生成速度。
+///
+/// tool-useでは1つのユーザー発話に複数のLLMリクエストが発生するため、最終の本文吹き出しに
+/// 全ラウンドを集約して保存する。TTFTは単一LLM requestの送信から最初の出力tokenまで、
+/// firstResponseMillisecondsはユーザー送信開始から最初の本文またはtool-call deltaまで、
+/// generationMillisecondsは各ラウンドの生成区間の合計、completionTokensはusageの合計を表す。
+public struct ChatPerformanceMetrics: Codable, Equatable, Sendable {
+    /// ユーザー送信から最初のモデル出力まで。画面描画完了時刻ではない。旧履歴ではnil。
+    public var firstResponseMilliseconds: Double?
+    public var timeToFirstTokenMilliseconds: Double?
+    public var generationMilliseconds: Double
+    public var completionTokens: Int
+    public var requestCount: Int
+
+    public init(
+        firstResponseMilliseconds: Double? = nil,
+        timeToFirstTokenMilliseconds: Double?,
+        generationMilliseconds: Double,
+        completionTokens: Int,
+        requestCount: Int
+    ) {
+        self.firstResponseMilliseconds = firstResponseMilliseconds
+        self.timeToFirstTokenMilliseconds = timeToFirstTokenMilliseconds
+        self.generationMilliseconds = generationMilliseconds
+        self.completionTokens = completionTokens
+        self.requestCount = requestCount
+    }
+
+    public var tokensPerSecond: Double? {
+        guard completionTokens > 0, generationMilliseconds > 0 else { return nil }
+        return Double(completionTokens) / (generationMilliseconds / 1_000)
+    }
+
+    public var millisecondsPerToken: Double? {
+        guard completionTokens > 0, generationMilliseconds > 0 else { return nil }
+        return generationMilliseconds / Double(completionTokens)
+    }
+
+    /// 複数requestを集約したassistant bubbleでは単一のTTFTとして解釈できないため返さない。
+    public var singleRequestTTFTMilliseconds: Double? {
+        requestCount == 1 ? timeToFirstTokenMilliseconds : nil
     }
 }
 
@@ -107,6 +174,9 @@ public struct ToolCallStep: Codable, Equatable, Sendable {
     /// 「何を渡して何が返ったか」が追える。デフォルト nil で既存の round-trip テスト・
     /// argumentsJSON のみの既存データとの後方互換を保つ。
     public var resultJSON: String?
+    /// MCP executor の呼び出し開始から成功・失敗が確定するまでの実測時間。
+    /// 実行前に拒否された場合や、このキーを持たない旧履歴では nil。
+    public var durationMs: Int?
 
     public init(
         toolName: String,
@@ -114,7 +184,8 @@ public struct ToolCallStep: Codable, Equatable, Sendable {
         serverName: String? = nil,
         state: State,
         argumentsJSON: String? = nil,
-        resultJSON: String? = nil
+        resultJSON: String? = nil,
+        durationMs: Int? = nil
     ) {
         self.toolName = toolName
         self.originalToolName = originalToolName
@@ -122,6 +193,7 @@ public struct ToolCallStep: Codable, Equatable, Sendable {
         self.state = state
         self.argumentsJSON = argumentsJSON
         self.resultJSON = resultJSON
+        self.durationMs = durationMs
     }
 
     public enum State: String, Codable, Equatable, Sendable {

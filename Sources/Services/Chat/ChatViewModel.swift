@@ -4,7 +4,6 @@ import Foundation
 import Observation
 import Kernel
 import os // tools/call診断ログ(chat-diag)。原因確定後は撤去可能。
-
 /// チャット1画面ぶんの状態 + tool-use ループ。
 ///
 /// `@MainActor @Observable`: 公開状態(turns・isRunning・usage・error)を SwiftUI が観測する
@@ -23,13 +22,11 @@ import os // tools/call診断ログ(chat-diag)。原因確定後は撤去可能�
 @Observable
 public final class ChatViewModel {
     // MARK: - 公開状態(UI が観測)
-
     // internal(set): setCardSnapshot を別ファイル extension(ChatViewModel+Persistence.swift・
     // file_length 分割)へ出したため同一モジュールからの書き込みを許す(外部からは依然 read-only)。
     /// 表示用のターン列。user 発話と assistant 応答が交互に並ぶ。
     /// ストリーミング中は末尾 assistant ターンの text/toolSteps を逐次書き換える。
     public internal(set) var turns: [ChatTurn] = []
-
     /// userと空assistantが同一トランザクションで追加されても失われない、明示的な送信イベント。
     /// retryで同じindexを再利用してもseqを増やすため、Viewは配列形状を推測せず変化を観測できる。
     public struct UserSubmission: Equatable, Sendable {
@@ -39,19 +36,18 @@ public final class ChatViewModel {
         public let seq: Int
     }
     public private(set) var lastSubmission: UserSubmission?
-
     /// ループ実行中フラグ(送信ボタンの無効化・スピナー表示に使う)。
     public private(set) var isRunning: Bool = false
 
     /// 直近ターンの usage(入力欄上の「このターン ≈ N tok」表示・設計 §6)。
-    public private(set) var lastUsage: Usage?
+    public internal(set) var lastUsage: Usage?
 
     /// セッション累計 usage(将来の累計コスト表示・設計 §6)。プロバイダが usage を
     /// 返さないターンがあっても壊れないよう、届いたぶんだけ足す。
-    public private(set) var cumulativeUsage: Usage?
+    public internal(set) var cumulativeUsage: Usage?
 
     /// ユーザーに見せるエラー(最大反復超過・ストリーム失敗など)。次の send で消える。
-    public private(set) var errorMessage: String?
+    public internal(set) var errorMessage: String?
 
     /// R4 許可ゲート(HITL)の確認キュー。Runner の confirm と確認 UI を仲介する(別型に隔離)。
     /// View は `chatVM.toolConfirmations.pending` を観測し `respond(id:response:)` で応答する。
@@ -78,17 +74,19 @@ public final class ChatViewModel {
 
     // MARK: - 依存(注入)
 
-    private let llm: any LLMClient
+    let llm: any LLMClient
     private let toolCallRunner: ToolCallRunner
 
     /// 【診断 2026-07-17】実機ハング位置特定用の一時ロガー(chat-diag)。原因確定後に撤去可。
     static let diagLogger = Logger(subsystem: "dev.gigun.mcphost", category: "chat-diag")
     /// LLM に見せるツール定義。**呼び出し側が ToolConversion.toolDefinitions で visibility 除外
     /// 済みのものを渡す**前提(設計 §7 の除外は変換時に済む — ループは再判定しない)。
-    private let tools: [ToolDefinition]
-    private let model: String
+    let tools: [ToolDefinition]
+    /// 次の送信に使うモデルと reasoning effort。送信中の差し替えは拒否し、1ターンの途中で
+    /// リクエスト条件が変わらないようにする。チャット画面の選択ピルから会話履歴を保ったまま更新する。
+    public internal(set) var model: String
+    public internal(set) var reasoningEffort: String?
     private let maxIterations: Int
-
     /// toolName → ui:// リソース URI の事前計算マップ(設計 §3-4・§4)。
     ///
     /// 【なぜ AppsServerProxy を握らず precomputed マップだけ見るか(重要な設計判断)】
@@ -102,14 +100,16 @@ public final class ChatViewModel {
     /// 方針と対称)。空マップ = カードを持たないホスト(テキスト往復のみ)で後方互換。
     /// 観測 sink(設計 03 §3・T6 前半)。既定 nil で T3/T5 の既存呼び出し・テストを壊さない
     /// (fire-and-forget: nil なら emit 自体を呼ばずスキップする=コストゼロ)。
-    private let traceSink: (any TraceSink)?
+    let traceSink: (any TraceSink)?
+    /// 汎用 span lifecycle 用。OpenTelemetry SDK はこのポートの実装より上へ漏らさない。
+    let telemetry: any TelemetryPort
 
     /// このチャットセッションの識別子(ChatTraceEvent.chatId・ChatSession.id の元)。
     /// 文字列で受け取る理由は「呼び出し側(ChatHomeViewModel)がどんな ID 生成方式を選んでも
     /// 素通しできるようにする」(設計に型の指定は無い・こう解釈)。ChatSession.id は UUID 型なので、
     /// 有効な UUID 文字列でなければランダム UUID にフォールバックする(壊れた文字列で
     /// currentSession の構築自体が失敗しないように)。
-    private let sessionId: String
+    let sessionId: String
     private let sessionUUID: UUID
     /// currentSession に積む接続先(設計 §5 ChatSession.serverURL)。既定は placeholder
     /// (T3/T5 の既存呼び出し・テストが serverURL を渡さなくても initializer が壊れないように)。
@@ -118,7 +118,7 @@ public final class ChatViewModel {
     /// currentSession.serverURLs に積む全接続先(M2・複数サーバー同時接続)。nil = 単一/未設定
     /// (ChatSession.serverURLs の後方互換 nil と同義)。ChatHomeViewModel が ready 全サーバーの URL を渡す。
     private let sessionServerURLs: [URL]?
-    private let sessionCreatedAt = Date()
+    private let sessionCreatedAt: Date
 
     // internal(private でなく): setCardSnapshot(別ファイル extension)から参照するため。
     /// 1ユーザーターン(send 呼び出し)が確定(.stop 到達 or 最大反復打ち切り)したときに呼ばれる。
@@ -129,15 +129,14 @@ public final class ChatViewModel {
     let onTurnSettled: (() -> Void)?
 
     // MARK: - 内部状態
-
     /// LLM へ送る厳密な履歴(上のクラスコメント参照)。system をあれば先頭に据える。
-    private var wireMessages: [ChatMessage] = []
+    var wireMessages: [ChatMessage] = []
 
+    var editingSnapshot: (turns: [ChatTurn], wireMessages: [ChatMessage])?
     /// send/retryを1本に制限し、画面破棄後のLLM・MCP処理継続を防ぐ。
     private let sendTaskController = ChatSendTaskController()
 
     // MARK: - init
-
     /// - Parameters:
     ///   - llm: 中立 LLM クライアント(本番は OpenAICompatClient、テストはスタブ)。
     ///   - toolExecutor: MCP ツール実行口(本番は AppsServerProxy、テストはスタブ)。
@@ -151,12 +150,15 @@ public final class ChatViewModel {
     ///   - sessionId: このチャットの識別子。既定は新規 UUID 文字列(呼び出し側が省略しても
     ///     currentSession が破綻しない)。
     ///   - serverURL: currentSession.serverURL に積む接続先。既定 placeholder(T3/T5 互換)。
+    ///   - restoredSession: 履歴から継続するセッション。ID・作成日時・接続先・表示ターンを復元し、
+    ///     LLMへは保存済みのuser/assistant本文だけを安全なwire履歴として戻す。既定nilは新規チャット。
     ///   - onTurnSettled: 1ユーザーターン確定時のコールバック(A5・永続化のトリガ)。既定 nil。
     public init(
         llm: any LLMClient,
         toolExecutor: any MCPToolExecuting,
         tools: [ToolDefinition],
         model: String,
+        reasoningEffort: String? = nil,
         systemPrompt: String?,
         maxIterations: Int = 8,
         uiResourceURIs: [String: String] = [:],
@@ -165,9 +167,11 @@ public final class ChatViewModel {
         serverIDs: [String: UUID] = [:],
         serverURLsByTool: [String: URL] = [:],
         traceSink: (any TraceSink)? = nil,
+        telemetry: any TelemetryPort = NullTelemetry(),
         sessionId: String = UUID().uuidString,
         serverURL: URL = ChatViewModel.placeholderServerURL,
         serverURLs: [URL]? = nil,
+        restoredSession: ChatSession? = nil,
         annotationsByTool: [String: ToolAnnotations] = [:],
         permissionStore: any ToolPermissionResolving = AllowAllToolPermissionStore(),
         onTurnSettled: (() -> Void)? = nil
@@ -181,23 +185,37 @@ public final class ChatViewModel {
             serverIDs: serverIDs,
             serverURLs: serverURLsByTool,
             traceSink: traceSink,
+            telemetry: telemetry,
             annotationsByTool: annotationsByTool,
             permissionStore: permissionStore
         )
         self.tools = tools
         self.model = model
+        self.reasoningEffort = reasoningEffort
         self.maxIterations = maxIterations
         self.traceSink = traceSink
-        self.sessionId = sessionId
-        self.sessionUUID = UUID(uuidString: sessionId) ?? UUID()
-        self.sessionServerURL = serverURL
-        self.sessionServerURLs = serverURLs
+        self.telemetry = telemetry
+        self.sessionId = restoredSession?.id.uuidString ?? sessionId
+        self.sessionUUID = restoredSession?.id ?? UUID(uuidString: sessionId) ?? UUID()
+        self.sessionServerURL = restoredSession?.serverURL ?? serverURL
+        self.sessionServerURLs = restoredSession?.serverURLs ?? serverURLs
+        self.sessionCreatedAt = restoredSession?.createdAt ?? Date()
         self.onTurnSettled = onTurnSettled
 
         if let systemPrompt {
             // system は履歴の不変の先頭。毎リクエストで送られる(設計に system の扱いの
             // 明示は無いが、OpenAI 標準どおり履歴先頭に固定するのが自然 — こう解釈)。
             wireMessages.append(ChatMessage(role: .system, content: systemPrompt))
+        }
+        if let restoredSession {
+            turns = restoredSession.turns
+            lastUsage = restoredSession.turns.reversed().compactMap(\.usage).first
+            cumulativeUsage = restoredSession.turns.compactMap(\.usage).reduce(nil) {
+                UsageAccumulator.add($0, $1)
+            }
+            // ToolCallStepに保存した名前・引数・結果から厳密なassistant/toolペアも戻す。
+            // 元のcall IDは表示DTOに無いため、復元内で一意なIDを合成して対応関係を保つ。
+            wireMessages.append(contentsOf: RestoredWireHistoryBuilder.build(from: restoredSession.turns))
         }
     }
 
@@ -233,6 +251,13 @@ public final class ChatViewModel {
         }
     }
 
+    /// 任意のassistant応答を、その直前のuser発話から再生成する。
+    public func submitRegeneration(fromAssistantTurnAt turnIndex: Int) {
+        sendTaskController.submit { [weak self] in
+            await self?.regenerateResponse(fromAssistantTurnAt: turnIndex)
+        }
+    }
+
     /// 進行中のsend/retryを打ち切る。構造化並行のtool callにもキャンセルが伝播する。
     public func cancelActiveSend() {
         sendTaskController.cancel()
@@ -241,10 +266,12 @@ public final class ChatViewModel {
         toolConfirmations.failAll()
     }
 
+    // swiftlint:disable function_body_length
     /// ユーザー発話を1つ受けて、tool-use ループを .stop / 最大反復まで回す。
     ///
     /// 失敗はerrorMessageへ載せるが、ユーザー操作によるキャンセルは失敗として表示しない。
     public func send(_ userText: String) async {
+        let turnStartedAt = ProcessInfo.processInfo.systemUptime
         errorMessage = nil
         isRunning = true
         defer { isRunning = false }
@@ -253,6 +280,21 @@ public final class ChatViewModel {
         // 一連の反復」全体を指す(反復1周ごとの ID ではない)。
         let turnId = UUID().uuidString
         traceSink?.emit(.turnStarted(chatId: sessionId, turnId: turnId, model: model))
+        let telemetryContext = telemetry.correlationContext(for: turnId)
+        telemetry.event("chat.turn.input", fields: ["turn_id": turnId, "input": userText], level: .info)
+        var didEndTrace = false
+        defer {
+            if !didEndTrace {
+                telemetry.event(
+                    "chat.turn.aborted",
+                    fields: [
+                        "turn_id": turnId,
+                        "error": Task.isCancelled ? "cancelled" : (errorMessage ?? "incomplete")
+                    ],
+                    level: .error
+                )
+            }
+        }
         // A5: 1ユーザーターンの処理が(成功でも失敗でも)終わったら必ず呼ぶ。ストリーム失敗による
         // 早期 return を含めて確実に発火させたいので defer にする(「確定」の厳密な意味は
         // tool-use ループの settled だが、ここでは「この send 呼び出しの処理が終わった」を指す
@@ -273,6 +315,7 @@ public final class ChatViewModel {
         // 2) 反復。各周で assistant ターンを1つ起こし、そこへ text/toolSteps を書き込む。
         var settled = false
         var iterations = 0
+        let performance = ChatPerformanceAccumulator(turnStartedAt: turnStartedAt)
         for _ in 0 ..< maxIterations {
             // 周の頭でキャンセルを確認する(監査 2026-07-18 MEDIUM)。cancelActiveSend() が
             // 前周の tool 実行中〜次周開始までの間に呼ばれた場合、ここで static に打ち切る
@@ -282,18 +325,18 @@ public final class ChatViewModel {
             iterations += 1
             // 今周の assistant 表示ターンを起こす(空テキストで append し、以降 index で書き換える)。
             let assistantIndex = turns.count
-            turns.append(ChatTurn(role: .assistant, text: ""))
+            turns.append(ChatTurn(role: .assistant, text: "", telemetryContext: telemetryContext,
+                                  feedbackEventID: UUID().uuidString))
 
-            let request = ChatCompletionRequest(
-                model: model,
-                messages: wireMessages,
-                // tools が空なら nil を送る(空配列 tools を嫌うプロバイダがある・OpenAI は
-                // 空でも許すが、無用なフィールドは付けない)。
-                tools: tools.isEmpty ? nil : tools,
-                stream: true
-            )
+            let request = makeCompletionRequest()
 
-            guard let completion = await receiveCompletion(request, assistantIndex: assistantIndex) else { return }
+            guard let completion = await receiveCompletion(
+                request,
+                assistantIndex: assistantIndex,
+                turnId: turnId,
+                timing: GenerationTimingContext(requestIndex: iterations, turnStartedAt: turnStartedAt),
+                performance: performance
+            ) else { return }
 
             let finishReason = completion.finishReason
             let calls = completion.toolCalls
@@ -306,6 +349,7 @@ public final class ChatViewModel {
 
             // 4) tool_calls が無ければ(=.stop 等)このターンで確定。
             guard finishReason == .toolCalls, !calls.isEmpty else {
+                turns[assistantIndex].performance = performance.metrics
                 settled = true
                 break
             }
@@ -338,63 +382,19 @@ public final class ChatViewModel {
         // cumulativeUsage が一度も届いていない(usage 非対応プロバイダ等)場合は 0 埋めの Usage を積む
         // — turnSettled.cumulativeUsage が非 optional(設計 03 §3 のコードブロックどおり)なので
         // 欠損を「ゼロ」として表現する(設計に明記なし・こう解釈)。
+        // 上限打切り理由をOTLPへ渡す。turnSettledの既存契約は保ち、回復後の.stopはOKにする。
+        telemetry.event(
+            "chat.turn.output",
+            fields: ["turn_id": turnId, "output": turns.last(where: { $0.role == .assistant })?.text,
+                     "error": errorMessage].compactMapValues { $0 },
+            level: errorMessage == nil ? .info : .error
+        )
         traceSink?.emit(.turnSettled(
             turnId: turnId,
             iterations: iterations,
             cumulativeUsage: cumulativeUsage ?? Usage(promptTokens: 0, completionTokens: 0)
         ))
+        didEndTrace = true
     }
-
-    public func retryLastTurn() async {
-        guard !isRunning,
-              let retryText = ChatRetryPlanner.rewind(turns: &turns, wireMessages: &wireMessages)
-        else { return }
-
-        errorMessage = nil
-        await send(retryText)
-    }
-
-    private func receiveCompletion(
-        _ request: ChatCompletionRequest,
-        assistantIndex: Int
-    ) async -> ChatCompletionStreamConsumer.Completion? {
-        do {
-            return try await ChatCompletionStreamConsumer.consume(llm.stream(request)) { text in
-                turns[assistantIndex].text = text
-            }
-        } catch is CancellationError {
-            return nil
-        } catch {
-            errorMessage = "LLM ストリームに失敗しました: \(error)"
-            return nil
-        }
-    }
-
-    private func recordCompletion(
-        _ completion: ChatCompletionStreamConsumer.Completion,
-        assistantIndex: Int,
-        turnId: String
-    ) {
-        traceSink?.emit(.llmCompleted(
-            turnId: turnId,
-            finishReason: completion.finishReason.wireValue,
-            usage: completion.usage
-        ))
-        if let usage = completion.usage {
-            lastUsage = usage
-            cumulativeUsage = UsageAccumulator.add(cumulativeUsage, usage)
-            turns[assistantIndex].usage = usage
-        }
-        wireMessages.append(ChatMessage(
-            role: .assistant,
-            content: completion.text.isEmpty ? nil : completion.text,
-            toolCalls: completion.toolCalls.isEmpty ? nil : completion.toolCalls
-        ))
-    }
-
-    private func recordToolBatch(_ batch: ToolCallRunner.Batch, assistantIndex: Int) {
-        turns[assistantIndex].toolSteps = batch.steps
-        turns[assistantIndex].cards.append(contentsOf: batch.cards)
-        wireMessages.append(contentsOf: batch.wireMessages)
-    }
+    // swiftlint:enable function_body_length
 }

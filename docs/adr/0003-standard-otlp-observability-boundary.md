@@ -1,0 +1,8 @@
+# 標準OTLPを観測境界としベンダー連携を外部アダプターへ分離する
+
+Date: 2026-09-21
+
+ADR 0001ではクライアントからLangfuseへの直接送信を決めたが、利用者の裁定により、アプリは標準OpenTelemetryのGenAI semantic conventionsと汎用`chat.feedback`イベントをOTLPで送るclientとして実装し、Langfuse固有の認証はcomposition root、Scoreへの変換や他ベンダー固有集計はcollectorまたは外部adapterへ分離する。この境界により、観測ドメインを現在の保存先へ結合せず、同じtrace相関を保ったままOTLP backendを差し替えられるため、ADR 0001を置き換える。
+
+Rejected: アプリからLangfuse Score APIを直接呼ぶ案は、評価操作を特定vendorのデータモデルと認証へ結合するため。
+Rejected: `langfuse.*`属性をOTLP adapterの標準出力にする案は、別backendで同じtelemetryを再利用しにくくするため。

@@ -6,10 +6,9 @@
 // snapshot-fallback / placeholder のどれに落ちたか + 理由(serverID mismatch 等)」を
 // クライアントが構造化イベントで吐いていれば一撃だった —— という反省から入れる観測基盤。
 //
-// この規模で OpenTelemetry Swift のフルスタックは過剰(依存が重く、この用途はローカル分岐の
-// 成否ログで足りる)。よってポートだけを Kernel に純粋な抽象として置き、第一実装は Services 側の
-// OSLog(Unified Logging)にする。将来 OTLP エクスポータ実装を足すだけでフル OTel へ移行できる
-// (ビジョン1「LLM 呼び出しはエンドポイント1箇所に抽象」の観測版・ビジョン2 中立性を壊さない)。
+// 初版はOSLogだけを実装し、その後、公式OpenTelemetry Swift SDKによるOTLP送信を追加した。
+// このポートはKernel/FeaturesをSDK型や観測バックエンドへ依存させず、OSLogとOTLPを同じ
+// ドメインイベントから併用・テストできる境界として維持する（ADR 0003）。
 // TraceSink(設計 03 §3・ChatViewModel 専用の tool-use ループ観測)とは別レイヤー: あちらは
 // 「1ターンの LLM/ツール往復」を追う専用 seam、こちらは「クライアント固有のローカル解決の成否」を
 // 汎用イベント名 + fields で吐く横断ポート。将来 TraceSink をこのポート上に載せ替える余地はあるが、
@@ -31,15 +30,22 @@ public enum TelemetryLevel: String, Sendable {
 /// (UI 描画・ローカル解決)を絶対にブロックしてはならない。重い処理を伴う実装は内部で非同期に逃がす。
 ///
 /// fields は「相関 ID・outcome・reason・tool 名・server URL」など **grep/parse しやすい構造化 KV** を想定。
-/// 引数本文などのユーザーデータは載せない方針(載せる必要が出たら実装側で hash 化する。OSLogTelemetry の
-/// コメント参照)。name はイベント種別(例: "card.resolve")で、OSLog の category へ写像してよい。
+/// ADR 0001によりLLM/MCPのinput/outputもOTLP向けフィールドとして通るため、出力先ごとの秘匿・整形は
+/// Services側adapterが担う。name はイベント種別(例: "card.resolve")で、OSLogのcategoryへ写像してよい。
 public protocol TelemetryPort: Sendable {
     func event(_ name: String, fields: [String: String], level: TelemetryLevel)
+    /// 後から発生する操作を元のtraceへ関連付けるためのopaqueなW3C traceparent。
+    /// 対応しない実装はnilでよい。
+    func correlationContext(for operationID: String) -> String?
+}
+
+public extension TelemetryPort {
+    func correlationContext(for operationID: String) -> String? { nil }
 }
 
 /// 何もしない no-op 実装。**テスト/プレビュー/注入省略時の無害な既定**として使う
 /// (AllowAllToolPermissionStore と同じ「注入省略時は無害」パターン・ToolPermissionStore 冒頭コメント参照)。
-/// 本番の合成ルート(ChatHomeViewModel)は必ず OSLogTelemetry を注入するので、実機では常に観測が効く。
+/// 本番の合成ルート(ChatHomeViewModel)はOSLogと設定済みOTLPを束ねるTelemetryRouterを注入する。
 public struct NullTelemetry: TelemetryPort {
     public init() {}
     public func event(_ name: String, fields: [String: String], level: TelemetryLevel) {}
