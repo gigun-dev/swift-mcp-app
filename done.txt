@@ -10,3 +10,4 @@ x 2026-10-04 2026-10-04 miniで署名・exportした版4を固定配布ページ
 x 2026-10-04 2026-10-04 完了記録・現行コードと残件を照合し重複と古い前提を除き検証担当を整理する +governance @unattended id:0021
 x 2026-10-04 2026-10-03 接続断の段階・時間・モデルを観察できるよう実URLSessionの制御した切断からOTLP保存・再取得まで検証し旧観測方針の説明を整理する +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0018
 x 2026-10-04 2026-10-03 実CalDAVの22 VTODOがSwiftサービス層から次LLM入力に保持され短い2件の回答とOTLP全span保存まで一致することを検証する（配送済み実機・使い心地は別確認） +oauth +verification @unattended see:docs/design/10-provider-neutral-conversation.md id:0011
+x 2026-10-04 2026-09-21 同じ実VTODO・モデル・質問で全model-visibleツールと1件の定義を交互3組比較し速度と回答一致を検証する（自動選択精度は未証明のため既定full維持、選択UXは0014） +chat +performance @unattended see:docs/adr/0002-openai-responses-provider-mode.md id:0002
