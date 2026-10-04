@@ -1,12 +1,11 @@
 2026-09-21 MCP結果のLLM再入力をテキストへ縮約してChatとResponsesのターン別レイテンシを3秒目標で検証する +chat +performance see:docs/adr/0002-openai-responses-provider-mode.md id:0001
 2026-09-21 回答を遅くしないツール定義の絞り込みを全ツールautoと同条件で比較し必要なら事前選択方式とfallbackを決める +chat +performance @unattended see:docs/adr/0002-openai-responses-provider-mode.md id:0002
 2026-09-21 ChatCompletionRequest中心のLLMClient契約をprovider中立なconversation item/tool callへ分離し、Responses function bridgeを既定、Chat Completionsを互換fallbackにする +chat +architecture see:docs/adr/0002-openai-responses-provider-mode.md id:0003 @next
-2026-10-03 配送済み版のVTODO取得を機能OTelと照合する（VEVENTは成功2turnを保存済み、使い心地の判断はCalDAVの0058） +oauth +verification @unattended see:docs/benchmarks/2026-10-03-oauth-reconnect-refresh.md id:0011
+2026-10-03 配送済み版のVTODO取得を機能OTelと照合する（VEVENTは成功2turnを保存済み、使い心地の判断はCalDAVの0058） +oauth +verification @unattended see:docs/benchmarks/2026-10-03-oauth-reconnect-refresh.md id:0011 @wip
 2026-10-03 設定画面・接続フォーム・ツール許可の既存操作を決定論のnative UI回帰で確認できるようにする +verification @unattended see:docs/ios-agent-harness-benchmark.md id:0013
 2026-10-03 Composerのツール選択について未合意の4つの体験判断を本人が決め実装範囲を確定する +chat @user see:docs/design/06-composer-tool-picker.md id:0014
 2026-10-03 拒否したツールをLLMの定義から外すかを決め許可設定の契約を揃える +chat @user see:docs/design/09-tool-permission-settings.md id:0015
 2026-10-03 過去に報告されたdelete-todo応答後のspinner固着を現行版で確認し再現したら解消する +cards @unattended see:docs/design/03-tool-io-and-card-freshness.md id:0016
 2026-10-03 複数サーバー混在とツール無効化後の次チャットで設定どおりの呼び出しが行われるか検証する +chat @unattended see:docs/design/06-composer-tool-picker.md id:0017
-2026-10-03 接続断を個別対応にせず観察できるよう新しい失敗属性の保存を制御した切断で検証し自然発生の-1005を段階・時間・モデル別に追跡する +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0018
 2026-10-03 新しい配布版でTailscaleなしの起動と既存認証保持を本人が確認する（配布通知からのインストール確認はasc-mcpの0003、以前のBark→Safari→installは確認済み） +distribution @user see:docs/benchmarks/2026-10-03-ota-distribution.md id:0019
 2026-10-04 新しいcheckoutでもiOSビルドできるよう依存再解決のrevision取得失敗を切り分けPackage.resolvedとXcode依存キャッシュの扱いを揃える（今回の台帳変更は既存固定依存で検証） +build @unattended id:0022
