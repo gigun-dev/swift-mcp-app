@@ -2,7 +2,6 @@
 
 > 2026-07-15 起票。P3(T1〜T5 実装済み・実機 end-to-end 成立)で表面化した3論点の恒久設計。
 > docs/design/01-apps-bridge.md / 02-chat-llm.md と同じ書式(決定・根拠・ボツ案・一次資料への出典行)。
-> 実装前の設計文書であり、実装で判明した事実は「> 日付 更新:」で積層する。
 >
 > 一次資料(すべてローカル or raw GitHub で確認済み。行番号は 2026-07-15 時点のチェックアウト):
 > - MCP 仕様 schema: https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/2025-11-25/schema.ts
@@ -181,103 +180,19 @@ guard let arguments else { return [:] }
 - **エラー時も「エラーカード」を表示**: エラー表現は View(カード HTML)の責務ではなくチャット UI の
   責務(既に toolSteps の failed 表示がある)。二重表現になるだけ。却下。
 
-## 3. 論点3: 観測・トレース基盤の置き場と継ぎ目
+## 3. 観測とツール結果の扱い
 
-> **2026-09-20 更新:** client側OpenTelemetryを入れない決定は
-> [ADR 0001](../adr/0001-client-otel-langfuse.md) が置き換えた。以下は当時の背景として残す。
+観測境界は [ADR 0003](../adr/0003-standard-otlp-observability-boundary.md) を参照する。
+ホストは turn・LLM generation・tool call・カード配送のイベントを標準OTLPで送る。
+サーバー側の観測だけでは、ホスト内の反復や接続断、カード配送の経路は確認できない。
+保存先固有の認証はcomposition root、ベンダー固有の変換は外部アダプターへ分離する。
 
-### 決定: 観測は swift-mcp-app の責務。今は ChatStore + OSLog、外部トレース(Langfuse/OTel)は LLM プロキシ段階でサーバー側に置く。今やるのは「TraceSink 1 seam」の設計のみ
+LLMへの再入力には成功したMCP結果のテキストを使い、テキストがなければ完全なJSONへ戻す。
+エラー結果もJSONを保持する。元のcontent・structuredContent・isError・_metaは
+会話記録とカード配送のため別途保持し、LLM向けの縮約で失わない。
+接続断と失敗spanの検証は [検証記録](../benchmarks/2026-10-03-tool-failure-and-stream-verification.md) を参照する。
 
-**責務の線引き**(明文化):
-
-| 層 | 見えるもの | 置き場 |
-|---|---|---|
-| caldav(サーバー) | 自分への /mcp リクエストのみ | Workers observability(caldav 側の既存要件・変更なし) |
-| swift-mcp-app(ホスト) | 会話全体: turn・tool_call 選択・args・result・usage | ChatStore(T6)+ OSLog + TraceSink |
-| LLM プロキシ(将来・Workers) | 全ユーザーの LLM トラフィック | Langfuse / OTel(サーバー側計装) |
-
-「ユーザーのチャットと tool calling の分析」は LLM オーケストレーションの観測であり、
-ツールサーバー(caldav)には構造的に見えない(どのモデルが・なぜそのツールを・いくらで、は
-ホストにしか無い)。**caldav の要件にはならない**。
-
-**今クライアント側 Langfuse を入れない根拠**:
-- BYOK 単一ユーザーの現在、分析対象は自分のデバイス内で完結する。ChatStore(T6 設計済み:
-  02 §5、turns/toolSteps/args/results/usage の JSON 永続化)がそのまま一次データになる。
-- クライアントから外部 SaaS へ会話データを送る経路を作ると、SaaS 化(ビジョン1)のとき
-  「ユーザーデータがクライアントから第三者に出る」設計を背負い直すことになる。プロキシ段階なら
-  サーバー側(Workers → Langfuse/OTel エクスポート)に置けて、クライアントは何も知らなくてよい。
-  LLM エンドポイント抽象(CLAUDE.md ビジョン1「Services/LLM の1箇所」)とトレースの継ぎ目が
-  同じ場所に落ちるのが利点。
-- 可逆性の観点: 「後で足す」は seam があれば軽い。「今入れて後で剥がす」は SDK 依存・
-  データ持ち出し済みの両面で重い。→ 遅延が正しい。
-
-**TraceSink seam の輪郭**(T6 と同時に実装):
-
-```swift
-// Sources/Kernel/Tracing/ChatTraceEvent.swift — 純データ・Codable(Kernel: プラットフォーム非依存)
-public enum ChatTraceEvent: Sendable, Codable {
-    case turnStarted(chatId: String, turnId: String, model: String)
-    case llmCompleted(turnId: String, finishReason: String, usage: Usage?)   // 02 の Usage を再利用
-    case toolCallStarted(turnId: String, callId: String, name: String, arguments: JSONValue)
-    case toolCallFinished(turnId: String, callId: String, isError: Bool,
-                          resultBytes: Int, durationMs: Int)                  // result 本体は ChatStore 側が持つ
-    case turnSettled(turnId: String, iterations: Int, cumulativeUsage: Usage)
-}
-
-// Sources/Services/Chat/TraceSink.swift
-public protocol TraceSink: Sendable {
-    func emit(_ event: ChatTraceEvent)   // fire-and-forget。ループを絶対にブロックしない
-}
-```
-
-- **注入点は ChatViewModel の既存の継ぎ目に1対1で対応**(調査で確定した行):
-  send ループ開始 :124(turnStarted)、`.completed` 受領 :159-163(llmCompleted — usage 計上 :173-178 と同所)、
-  execute の callTool 前後 :289(toolCallStarted/Finished)、settled :189-192(turnSettled)。
-  LLMClient(LLMClient.swift:18-37)は**触らない** — トレースは「ループの観測」であって
-  「LLM ワイヤの観測」ではないので、抽象の外側(ChatViewModel)に置く。
-- 第一実装は2つ: `OSLogTraceSink`(subsystem `dev.gigun.mcphost`, category `"chat-trace"` —
-  既存規約に乗る。project skillのsimctl E2E検証にもそのまま効く)と、ChatStore への
-  書き込み(こちらは既に T6 計画がイベントと同型のデータを持つので、Sink 経由に一本化するか
-  ChatStore 直書きのままにするかは T6 実装時に判断してよい)。
-- 将来: `ProxyTraceSink` は**作らない**。プロキシ段階ではサーバー側が全リクエストを見るので
-  クライアント発トレースは不要 — seam の将来価値は「ローカル分析の出力先差し替え(SQLite/
-  ファイル/デバッグ UI)」であり、これで十分。
-
-**付随: UI 資源ツール結果のフル JSON(≈8,000 tok/ターン)の要約化 → 今は据え置き(02 §4 の JSON 採用を維持)**
-
-- 正しさが先: モデルが結果本体を参照するケース(「3番目の todo の期限は?」)が現実にあり、
-  カードは app-only の refresh で LLM と独立に生きている(論点2)ため「カードが見せるから LLM は
-  要約でよい」は成立しない — LLM はカードを読めない。
-- コスト実測が先: TraceSink の `resultBytes` + usage で「UI 資源ツール結果が実際に何 tok/何円
-  食っているか」を取ってから、閾値ベースの切り詰め(例: structuredContent の tasks 配列を N 件+
-  件数サマリに丸める)を検討する。最適化を観測より先にやらない。
-- 可逆性: role:"tool" content の組み立ては execute の1箇所(:292-303)なので、後から要約器を
-  挟むのは軽い。逆に今要約して「モデルが答えられない」退行を出すと原因切り分けが重い。
-
-**可逆性: 高。** protocol 1つ+enum 1つ+呼び出し5箇所。捨てるのも差し替えるのも局所。
-唯一半不可逆なのは「クライアントから外部へデータを出す」選択で、それを**しない**のが本決定。
-
-**ボツ案:**
-- **今から Langfuse iOS(クライアント直送)**: 上記の通りデータ持ち出しの先行コミット。BYOK キーと
-  会話を第三者 SaaS に並べる構図はプライバシー説明責任も先食いする。却下。
-- **OTel Swift SDK を今入れる**: 依存が重く(gRPC/protobuf)、単一ユーザーのローカル分析には
-  過剰。seam があれば後から Sink 実装1個で足せる。却下。
-- **LLMClient をデコレータでラップしてトレース**: LLM ワイヤしか見えず tool 実行・iteration が
-  取れない。観測したいのはループなので却下。
-- **結果の即時要約化(LLM へは要約のみ)**: 正しさの退行リスクをコスト実測なしで取ることになる。却下(実測後に再訪)。
-
-## 4. 実装ステップ(すべてコード変更は本文書の合意後)
-
-- **F1(即修正・論点1)**: AppsServerProxy.mcpArguments nil→`[:]`、decodeArguments の空畳み込み削除+
-  壊れ JSON はツール未実行で role:"tool" エラー、swift-testing 3本。
-- **F2(論点2)**: CardEmbed 生成条件に `isError != true`。docs/caldav-feedback.md に提案1件追記。
-- **F3(論点3・T6 と同時)**: Kernel/Tracing/ChatTraceEvent + Services/Chat/TraceSink +
-  OSLogTraceSink、ChatViewModel の5注入点。
-- 判断ゲート:
-  - [ ] F1 後、実機で「todoを見せて」が1回で成功し、カードに初回から4件入る(追加演出なし)
-  - [ ] F3 後、1ターンの resultBytes/usage が unified log で読める → 要約化の再訪判断材料
-
-## 5. 決定サマリ
+## 4. 決定サマリ
 
 1. **arguments は常に JSON object としてワイヤに載せる(省略しない)** — 担保点は
    AppsServerProxy.mcpArguments(nil→`[:]`)。仕様は optional だが TS SDK 系サーバーが実質 `{}` を
@@ -286,5 +201,4 @@ public protocol TraceSink: Sendable {
    カード自己 refresh(caldav カードの設計と一致)。isError 結果ではカードを起こさない。
    「+ ボタンで同期」は事実無根(FAB はローカルドラフトのみ)、「追加」誤演出は論点1起因で
    カードの diff は契約通り。
-3. **観測はホスト責務**。今は ChatStore + OSLog + TraceSink 1 seam のみ設計、Langfuse/OTel は
-   LLM プロキシ段階でサーバー側。UI 資源ツール結果のフル JSON はコスト実測が出るまで維持。
+3. **観測はホスト責務**。標準OTLPで送信する。LLM向けテキストと完全なMCP結果を分離して保持する。
