@@ -269,3 +269,18 @@ ios-device-build skillで列挙・dry-run後、同じ明示引数でiPhone17 mor
 `card.render`は`InlineCardView.swift:250–263`でsession開始・webView公開・初期payloadの送信／enqueue後に終わるため、JSのinitialized受信や背景calendar取得完了までの時間ではない。`InlineCardHost+HistoryRevisit.swift:18`はtool input→resultを自動配送し、`AppsBridgeSession.swift:301–306,358–366`はinitialized後にFIFOを配送する。selectorのtapを初期配送条件にはしていない。初期0からtap後に2色となる表示について、CalDAV担当がcalendar取得後の再描画欠落を特定した。Swift host変更は行わず、カード側修正の本人受け入れと区別する。
 
 0018の「新版の通常利用trace保存待ち」は解消した。自然発生の接続断はこの2 turnにはなく、新しい失敗段階属性による原因傾向や失敗率はまだ評価できない。0011は本人の予定取得を実OTelで確認できたが、todo取得と本人による表示の受け入れは別の残件である。今回source変更・新しい監視・追加の実機操作は行っていない。
+
+## 2026-10-04 制御した接続断の実OTLP保存（0018）
+
+`TelemetryFailureVerificationTests.realConnectionLossIsExportedWithStageAndErrorParent` はChat Completions / Responses両adapterの実URLSessionへSSE本文を送り、200 ms後にContent-Length未達で接続を閉じる。stubのURLErrorではなくOSが返す`NSURLErrorDomain -1005`をChatViewModelから公式gzip/protobuf exporter、loopback HTTP receiverまで通した。両方式で部分本文`probe`、generation / 親turnのERROR、trace/parent相関、モデル、独立したdomain/code/type、`streaming_output`、headers/初出力/初本文の観測時刻、失敗時の経過時間を確認した。既存HTTP530の配送・再送試験も成功（2 tests / 3 cases、20.476秒）。製品ソースは変更していない。
+
+受信protobufに公式の`deployment.environment.name=verification`と`verification.synthetic=true`を付け、稼働VMのLangfuse OTLP入口へ送信した（各HTTP200）。初期projectをCLIでtrace ID指定して再取得し、各generationとturnの2 observationsが保存されていることを確認した。
+
+| API | trace | 失敗時経過 | generation / turn | 保存された分類 |
+| --- | --- | ---: | --- | --- |
+| Chat Completions | `910858c7f7630262296d00cb8dc79bb7` | 225 ms | ERROR / ERROR | NSURLErrorDomain / -1005 / streaming_output |
+| Responses | `cc137adeb169fe026ed5176752d839fa` | 204 ms | ERROR / ERROR | NSURLErrorDomain / -1005 / streaming_output |
+
+両方とも`model=disconnect-verification-model`、`environment=verification`、合成印、親observation IDが一致。これはMac上の制御試験であり、実iPhoneでの自然発生接続断・原因・失敗率やCloudflare公開入口の配送を証明しない。自然発生時には同じ分類と経過を使って比較できるが、この合成2件を実利用の安定性改善として数えない。原本・CLI readbackは一時検証ディレクトリに保持し、鍵・raw payloadは公開Gitへ入れない。
+
+関連する失敗分類・実TCP終端・ツール失敗ループの回帰は9 tests / 3 suites成功（36.127秒）。変更したSwiftファイルのSwiftFormat lint / SwiftLint strict違反0、`git diff --check`成功。依存は既存キャッシュのcopy-on-write複製を使ったため、clean cloneの依存解決成功を示すものではない。製品UIを変更していないため、この試験で実機操作や新ビルドの配送は行っていない。

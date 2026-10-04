@@ -9,6 +9,55 @@ import Testing
 @Suite(.serialized)
 struct TelemetryFailureVerificationTests {
     @MainActor
+    @Test(arguments: [false, true])
+    func realConnectionLossIsExportedWithStageAndErrorParent(responses: Bool) async throws {
+        let receiver = try FailureReceiver(disconnect: true)
+        defer { receiver.stop() }
+        let base = try await receiver.baseURL()
+        let local = FailureRecordingTelemetry()
+        let router = TelemetryRouter(localTelemetry: local)
+        router.configure(.init(endpoint: base.appendingPathComponent("v1/traces")))
+        let client: any LLMClient = responses
+            ? OpenAIResponsesClient(baseURL: base.appendingPathComponent("v1"), apiKey: "test-only")
+            : OpenAICompatClient(baseURL: base.appendingPathComponent("v1"), apiKey: "test-only")
+        let viewModel = ChatViewModel(
+            llm: client, toolExecutor: StubToolExecutor(), tools: [], model: "disconnect-verification-model",
+            systemPrompt: nil, traceSink: router, telemetry: router
+        )
+        await viewModel.send("synthetic connection-loss verification")
+        #expect(viewModel.errorMessage != nil)
+        let batch = try await receiver.request(number: 0)
+        let spans = batch.resourceSpans.flatMap(\.scopeSpans).flatMap(\.spans)
+        let generation = try #require(spans.first { $0.name == "llm.generation" })
+        let turn = try #require(spans.first { $0.name == "chat.turn" })
+        let attributes = Dictionary(uniqueKeysWithValues: generation.attributes.map { ($0.key, $0.value.stringValue) })
+        #expect(generation.status.code == .error)
+        #expect(turn.status.code == .error)
+        #expect(generation.parentSpanID == turn.spanID)
+        #expect(generation.traceID == turn.traceID)
+        #expect(attributes["error.domain"] == NSURLErrorDomain)
+        #expect(attributes["error.code"] == "-1005")
+        #expect(attributes["error.type"] == "\(NSURLErrorDomain):-1005")
+        #expect(attributes["gen_ai.request.model"] == "disconnect-verification-model")
+        #expect(attributes["llm.generation.failure_stage"] == "streaming_output")
+        #expect(Int(attributes["duration_ms"] ?? "").map { $0 >= 100 } == true)
+        #expect(attributes["llm.generation.response_headers_ms"] != nil)
+        #expect(attributes["llm.generation.ttft_ms"] != nil)
+        #expect(attributes["llm.generation.time_to_first_text_ms"] != nil)
+        #expect(attributes["generation_id"] == local.errors().first?["generation_id"])
+        #expect(viewModel.turns.last?.text == "probe")
+        // 手動検証時だけ原本を保持する。通常gateでは既存receiver同様に一時データを削除する。
+        if let path = ProcessInfo.processInfo.environment["MCPHOST_VERIFY_OTLP_DIRECTORY"] {
+            let directory = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent(responses ? "responses.pb" : "chat.pb")
+            try batch.serializedData().write(to: file)
+        }
+        let traceID = generation.traceID.map { String(format: "%02x", $0) }.joined()
+        print("DISCONNECT_OTLP_VERIFIED api=\(responses ? "responses" : "chat") trace=\(traceID) domain=NSURLErrorDomain code=-1005 stage=streaming_output model=disconnect-verification-model parent_error=true")
+    }
+
+    @MainActor
     @Test func http530IsRecordedAndFailedOTLPBatchIsRetriedWithNextGeneration() async throws {
         let receiver = try FailureReceiver()
         defer { receiver.stop() }
@@ -75,11 +124,11 @@ private final class FailureReceiver {
     private let directory: URL
     private let process = Process()
 
-    init() throws {
+    init(disconnect: Bool = false) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["python3", "-u", "-c", Self.script, directory.path]
+        process.arguments = ["python3", "-u", "-c", Self.script, directory.path, disconnect ? "disconnect" : "http530"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
@@ -111,8 +160,9 @@ private final class FailureReceiver {
     }
 
     private static let script = #"""
-import gzip, http.server, pathlib, sys
+import gzip, http.server, json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])
+disconnect = sys.argv[2] == 'disconnect'
 class Handler(http.server.BaseHTTPRequestHandler):
     count = 0
     def log_message(self, *args): pass
@@ -125,9 +175,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             temp = root / 'receiving.tmp'
             temp.write_bytes(data)
             temp.replace(root / f'{number}.pb')
-            self.send_response(503 if number == 0 else 200)
+            self.send_response(503 if number == 0 and not disconnect else 200)
             self.send_header('Content-Length', '0')
             self.end_headers()
+        elif disconnect:
+            if self.path.endswith('/responses'):
+                value = {'type': 'response.output_text.delta', 'delta': 'probe'}
+            else:
+                value = {'id': 'local', 'object': 'chat.completion.chunk', 'created': 0,
+                         'model': 'disconnect-verification-model',
+                         'choices': [{'index': 0, 'delta': {'content': 'probe'}, 'finish_reason': None}]}
+            data = ('data: ' + json.dumps(value) + '\n\n').encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Content-Length', str(len(data) + 1024))
+            self.end_headers()
+            self.wfile.write(data)
+            self.wfile.flush()
+            # 完了前にbodyを閉じる。delta配送の時間を確保し段階の観測を安定させる。
+            time.sleep(0.2)
+            self.close_connection = True
         else:
             data = b'<!doctype html><title>Cloudflare Tunnel error</title><p>Error 1033</p>'
             self.send_response(530)
