@@ -38,6 +38,12 @@ class LiveProbeStreamRecorder: URLProtocol, URLSessionDataDelegate, @unchecked S
                 }
                 forwarded.httpBody = bytes
             }
+            if let body = forwarded.httpBody {
+                let bodyPath = directory.appendingPathComponent("request-body-\(UUID().uuidString).json")
+                try body.write(to: bodyPath, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bodyPath.path)
+                FileHandle.standardError.write(Data("LIVE_VTODO wireBytes=\(body.count)\n".utf8))
+            }
             forwardingTask = session?.dataTask(with: forwarded)
             forwardingTask?.resume()
         } catch { client?.urlProtocol(self, didFailWithError: error) }

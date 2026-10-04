@@ -3,6 +3,8 @@
 // To opt in, set MCPHOST_LIVE_VTODO=1 and supply MCPHOST_LIVE_MCP_URL and MCPHOST_LIVE_MCP_TOKEN,
 // MCPHOST_LIVE_CALENDAR_ID, MCPHOST_LLM_BASEURL/KEY/MODEL, MCPHOST_LIVE_OTLP_URL/AUTH.
 // Run swift test --filter LiveVTODOProbeTests. This verifies service logic, not device UX or OAuth UI.
+// MCPHOST_LIVE_CATALOG=full exposes the real model-visible catalog; default is list-todos alone.
+// MCPHOST_LIVE_DEADLINE_SECONDS can bound a comparison turn (default 180).
 import Foundation
 import MCP
 import Testing
@@ -97,9 +99,12 @@ private struct ProbeTelemetry: TelemetryPort {
         let serverURL = try #require(URL(string: required("MCPHOST_LIVE_MCP_URL")))
         let client = try await connect(serverURL: serverURL)
         FileHandle.standardError.write(Data("LIVE_VTODO connected\n".utf8))
-        let available = try await client.listTools().tools.filter { $0.name == "list-todos" }
+        let discovered = try await client.listTools().tools
+        let fullCatalog = ProcessInfo.processInfo.environment["MCPHOST_LIVE_CATALOG"] == "full"
+        let available = fullCatalog ? discovered : discovered.filter { $0.name == "list-todos" }
         let definitions = try toolDefinitions(from: available)
-        #expect(definitions.count == 1)
+        #expect(!definitions.isEmpty)
+        #expect(fullCatalog || definitions.count == 1)
         let proxy = AppsServerProxy(client: client)
         let calendarID = try required("MCPHOST_LIVE_CALENDAR_ID")
         let tools = ProbeTools(proxy: proxy, calendarID: calendarID)
@@ -113,17 +118,7 @@ private struct ProbeTelemetry: TelemetryPort {
             serverURL: serverURL
         )
         FileHandle.standardError.write(Data("LIVE_VTODO sending\n".utf8))
-        let send = Task { await viewModel.send(
-            "検証用のVTODOリスト \(calendarID) をlist-todosで取得してください。" +
-                "timeZoneはAsia/Tokyo。返却順の最初の2件のタイトルだけをそのまま答えてください。" +
-                "作成・変更・削除はせず、この1リストだけ確認してください。"
-        ) }
-        let deadline = Task {
-            try await Task.sleep(for: .seconds(180))
-            send.cancel()
-        }
-        await send.value
-        deadline.cancel()
+        await sendWithDeadline(viewModel: viewModel, calendarID: calendarID)
         FileHandle.standardError.write(Data("LIVE_VTODO settled\n".utf8))
         let results = await tools.results
         let output = viewModel.turns.last?.text ?? ""
@@ -135,7 +130,7 @@ private struct ProbeTelemetry: TelemetryPort {
         let allInOutput = titles.prefix(2).allSatisfy { output.contains($0) }
         try saveEvidence(sessionID: sessionID, results: results, llm: llm, viewModel: viewModel)
         print("LIVE_VTODO session=\(sessionID) tasks=\(titles.count) calls=\(results.count) " +
-              "requests=\(llm.requests.count) inputMatch=\(allInInput) outputMatch=\(allInOutput)")
+              "catalog=\(definitions.count) requests=\(llm.requests.count) inputMatch=\(allInInput) outputMatch=\(allInOutput)")
         #expect(viewModel.errorMessage == nil)
         #expect(!titles.isEmpty)
         #expect(!toolInputs.isEmpty)
@@ -146,12 +141,31 @@ private struct ProbeTelemetry: TelemetryPort {
         try await Task.sleep(for: .seconds(8))
         await client.disconnect()
     }
+    @MainActor private func sendWithDeadline(viewModel: ChatViewModel, calendarID: String) async {
+        let send = Task { await viewModel.send(
+            "検証用のVTODOリスト \(calendarID) をlist-todosで取得してください。" +
+                "timeZoneはAsia/Tokyo。返却順の最初の2件のタイトルだけをそのまま答えてください。" +
+                "作成・変更・削除はせず、この1リストだけ確認してください。"
+        ) }
+        let configured = ProcessInfo.processInfo.environment["MCPHOST_LIVE_DEADLINE_SECONDS"] ?? "180"
+        let deadlineSeconds = Double(configured) ?? 180
+        let deadline = Task {
+            try await Task.sleep(for: .seconds(deadlineSeconds))
+            send.cancel()
+        }
+        await send.value
+        deadline.cancel()
+    }
+
     private func makeTelemetry() throws -> OpenTelemetryService {
         return try OpenTelemetryService(configuration: .init(
             endpoint: #require(URL(string: required("MCPHOST_LIVE_OTLP_URL"))),
             headers: [
                 ("Authorization", required("MCPHOST_LIVE_OTLP_AUTH")), ("x-langfuse-ingestion-version", "4")
-            ], resourceAttributes: ["deployment.environment.name": "verification"]
+            ], resourceAttributes: [
+                "deployment.environment.name": "verification",
+                "verification.catalog": ProcessInfo.processInfo.environment["MCPHOST_LIVE_CATALOG"] ?? "single"
+            ]
         ))
     }
 
