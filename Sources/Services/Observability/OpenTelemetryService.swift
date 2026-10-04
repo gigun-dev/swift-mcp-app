@@ -33,6 +33,7 @@ public final class OpenTelemetryService: TelemetryPort, TraceSink, @unchecked Se
     private var turnSpans: [String: any Span] = [:]
     private var generationSpans: [String: any Span] = [:]
     private var toolSpans: [String: any Span] = [:]
+    private var cardToolSpans: [String: any Span] = [:]
     private var cardSpans: [String: any Span] = [:]
     private var correlationContextsByTurnID: [String: String] = [:]
 
@@ -152,6 +153,22 @@ public final class OpenTelemetryService: TelemetryPort, TraceSink, @unchecked Se
             case "mcp.tool.output":
                 guard let id = fields["call_id"], let span = toolSpans[id] else { return }
                 span.setAttribute(key: "gen_ai.tool.call.result", value: fields["output"] ?? "")
+            case "card.tool.started":
+                guard let id = fields["operation_id"] else { return }
+                // Card actions are independent of LLM turns; no server trace correlation is inferred.
+                let span = tracer.spanBuilder(spanName: "card.tool")
+                    .setSpanKind(spanKind: .client).setNoParent().startSpan()
+                set(fields, on: span)
+                cardToolSpans[id] = span
+            case "card.tool.finished":
+                guard let id = fields["operation_id"], let span = cardToolSpans.removeValue(forKey: id) else { return }
+                set(fields, on: span)
+                switch fields["outcome"] {
+                case "success": span.status = .ok
+                case "cancelled": break
+                default: span.status = .error(description: fields["outcome"] ?? "Card tool failed")
+                }
+                span.end()
             case "card.render.started":
                 guard let id = fields["card_id"] else { return }
                 let span = tracer.spanBuilder(spanName: "card.render").setNoParent().startSpan()

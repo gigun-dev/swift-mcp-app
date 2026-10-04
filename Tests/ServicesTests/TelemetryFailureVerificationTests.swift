@@ -120,7 +120,7 @@ private final class FailureRecordingTelemetry: TelemetryPort, @unchecked Sendabl
 
 // ephemeral port と一時ディレクトリで並行検証との競合を避ける。Python 標準ライブラリだけを
 // 使い、追加 Collector や新しい永続化構成を持ち込まない。受信データは終了時に削除する。
-private final class FailureReceiver {
+final class FailureReceiver {
     private let directory: URL
     private let process = Process()
 

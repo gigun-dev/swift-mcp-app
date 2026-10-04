@@ -10,15 +10,19 @@ actor AppsBridgePassthroughDispatcher {
     private let logger = Logger(subsystem: "dev.gigun.mcphost", category: "appspassthrough")
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var isClosed = false
+    private let telemetry: any TelemetryPort
+    private var operations: [UUID: (fields: [String: String], start: ContinuousClock.Instant)] = [:]
 
     init(
         transport: any AppsBridgeTransport,
         proxy: any AppsServerProxying,
-        onCardToolCall: (@Sendable () async -> Void)?
+        onCardToolCall: (@Sendable () async -> Void)?,
+        telemetry: any TelemetryPort = NullTelemetry()
     ) {
         self.transport = transport
         self.proxy = proxy
         self.onCardToolCall = onCardToolCall
+        self.telemetry = telemetry
     }
 
     func dispatch(method: String, id: RequestID?, params: JSONValue?) {
@@ -27,26 +31,37 @@ actor AppsBridgePassthroughDispatcher {
             Task { await onCardToolCall() }
         }
         let key = UUID()
+        if method == AppsMethod.toolsCall {
+            var fields = ["operation_id": key.uuidString, "mcp.tool.name": params?["name"]?.stringValue ?? ""]
+            switch id {
+            case .string(let value): fields["bridge.request_id"] = value
+            case .int(let value): fields["bridge.request_id"] = String(value)
+            case nil: break
+            }
+            operations[key] = (fields, .now)
+            telemetry.event("card.tool.started", fields: fields, level: .notice)
+        }
         tasks[key] = Task { [weak self] in
-            await self?.handle(method: method, id: id, params: params)
+            await self?.handle(method: method, id: id, params: params, operationID: key)
             await self?.remove(key)
         }
     }
 
     func close() {
         isClosed = true
+        for key in Array(operations.keys) { finish(key, outcome: "cancelled") }
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
     }
 
-    private func handle(method: String, id: RequestID?, params: JSONValue?) async {
+    private func handle(method: String, id: RequestID?, params: JSONValue?, operationID: UUID) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(operationID, outcome: "cancelled")
+            return
+        }
         switch method {
         case AppsMethod.toolsCall:
-            // 【2026-07-23・queue 2】以前はここで tools/call の成功完了を観測し、履歴 revalidation gate へ
-            // 「現在状態を取得できたか」を報告していた。その gate は caldav 側裁定で撤去した
-            // (caldavリポジトリ docs/modeling/15・SWR)。今は素の passthrough に戻し、成否は proxyRequest 内の
-            // JSON-RPC 応答配送だけで完結する(観測フックは持たない)。
-            _ = await proxyRequest(id: id, label: "tools/call") {
+            _ = await proxyRequest(id: id, label: "tools/call", operationID: operationID) {
                 try await self.proxy.passthroughToolsCall(params: params)
             }
         case AppsMethod.resourcesRead:
@@ -63,27 +78,55 @@ actor AppsBridgePassthroughDispatcher {
     private func proxyRequest(
         id: RequestID?,
         label: String,
+        operationID: UUID? = nil,
         work: @Sendable () async throws -> JSONValue
     ) async -> Bool {
         do {
             let result = try await work()
+            if let operationID {
+                let outcome = result["isError"]?.boolValue == true ? "isError" : "success"
+                finish(operationID, outcome: Task.isCancelled || isClosed ? "cancelled" : outcome)
+            }
             guard !isClosed else { return false }
             if let id {
                 await transport.deliver(response: JSONRPCResponse(id: id, result: result))
                 logger.notice("\(label, privacy: .public) 素通し応答済み")
             }
-            // MCP tools/call はtransport上の成功応答でも CallToolResult.isError=true を返し得る。
-            // 呼び出し側は現状この戻り値を使わない(履歴 gate 撤去で観測フックが消えた・queue 2)が、
-            // 「成功応答=成功とは限らない」という契約はヘルパの真実として残す(将来の観測再導入に備える)。
             return result["isError"]?.boolValue != true
         } catch {
-            logger.error("\(label, privacy: .public) 素通し失敗: \(String(reflecting: error), privacy: .public)")
+            let nsError = error as NSError
+            let cancelled = Task.isCancelled || isClosed || error is CancellationError
+                || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+            if let operationID {
+                finish(operationID, outcome: cancelled ? "cancelled" : "transport", error: nsError)
+            }
+            if cancelled {
+                logger.notice("\(label, privacy: .public) 素通しcancelled")
+            } else {
+                logger.error("\(label, privacy: .public) 素通し失敗 domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+            }
             guard !isClosed else { return false }
             guard let id else { return false }
             let rpcError = JSONRPCError(code: -32603, message: "\(label) 失敗: \(error)")
             await transport.deliver(response: JSONRPCResponse(id: id, error: rpcError))
             return false
         }
+    }
+
+    // Remove before emitting: close and a late proxy completion must end the same operation once.
+    private func finish(_ key: UUID, outcome: String, error: NSError? = nil) {
+        guard let operation = operations.removeValue(forKey: key) else { return }
+        var fields = operation.fields
+        let elapsed = operation.start.duration(to: .now).components
+        fields["duration_ms"] = String(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
+        fields["outcome"] = outcome
+        if let error {
+            fields["error.domain"] = error.domain
+            fields["error.code"] = String(error.code)
+            fields["error.type"] = "\(error.domain):\(error.code)"
+        }
+        let level: TelemetryLevel = outcome == "transport" || outcome == "isError" ? .error : .notice
+        telemetry.event("card.tool.finished", fields: fields, level: level)
     }
 
     private func rejectUnknown(method: String, id: RequestID?) async {

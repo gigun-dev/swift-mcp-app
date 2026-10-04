@@ -244,7 +244,8 @@ final class InlineCardHost: Identifiable {
                 },
                 // Self.openLink 直渡しは「非 Sendable 関数値→@Sendable クロージャ変換」で data race 警告が
                 // 出る。何もキャプチャしないクロージャで包むと @Sendable 推論が効く(static 呼び出しは安全)。
-                onOpenLink: { await Self.openLink($0) }
+                onOpenLink: { await Self.openLink($0) },
+                telemetry: telemetry
             )
             self.session = session
             await session.start()
