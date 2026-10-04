@@ -284,3 +284,24 @@ ios-device-build skillで列挙・dry-run後、同じ明示引数でiPhone17 mor
 両方とも`model=disconnect-verification-model`、`environment=verification`、合成印、親observation IDが一致。これはMac上の制御試験であり、実iPhoneでの自然発生接続断・原因・失敗率やCloudflare公開入口の配送を証明しない。自然発生時には同じ分類と経過を使って比較できるが、この合成2件を実利用の安定性改善として数えない。原本・CLI readbackは一時検証ディレクトリに保持し、鍵・raw payloadは公開Gitへ入れない。
 
 関連する失敗分類・実TCP終端・ツール失敗ループの回帰は9 tests / 3 suites成功（36.127秒）。変更したSwiftファイルのSwiftFormat lint / SwiftLint strict違反0、`git diff --check`成功。依存は既存キャッシュのcopy-on-write複製を使ったため、clean cloneの依存解決成功を示すものではない。製品UIを変更していないため、この試験で実機操作や新ビルドの配送は行っていない。
+
+## 2026-10-04: カード削除後のpending解除
+
+Swift `37492ee` とCalDAV `70a06c7` のカードで、以前報告されたdelete-todo応答後のspinner固着を再確認した。
+実際のCalDAV HTML／ext-apps SDKをmacOSのWKWebViewへ読み込み、本番の
+`WebViewTransport` → `AppsBridgeSession` → passthrough dispatcherを通した。
+proxyのみ手動開放のfixtureへ差し替え、削除応答を待っている状態と応答配送後の状態を観測した。
+カードの処理は変更せず、検証用bundleに状態読取とdeleteTask呼出の入口だけを追加した。
+
+| 応答 | 応答前 | 応答後 | 表示 |
+| --- | --- | --- | --- |
+| 成功、tasks空 | pending=1、optimisticDeletes=1 | 両方0、confirmedTasks空 | 削除した行がない |
+| CallToolResult.isError | 同上 | 両方0、confirmedTasksに元の行 | 行が復元され、削除失敗／再試行バナー |
+| proxyがURLError.networkConnectionLostをthrow | 同上 | 両方0、confirmedTasksに元の行 | 行が復元され、削除失敗／再試行バナー |
+
+3経路とも実JavaScriptのPromiseがSwiftの応答配送で終了し、pendingが残る現象は再現しなかった。
+Swift本番コードの変更は不要。これはmacOS WebKit上の決定論的なbridge検証であり、
+iOSで画面を往復・fullscreen切替した場合のWebView寿命や、本番通信の遅延・接続断までの受け入れ確認ではない。
+
+追加検証1 test（3応答経路）成功。既存`make verify`も成功：Services 207 tests、Kernel 136 tests、
+SwiftFormat／SwiftLint違反0、generic iOS Simulator app build成功。既存のMapPreview／project.ymlの未コミット差分は保持した。
