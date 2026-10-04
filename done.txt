@@ -7,3 +7,4 @@ x 2026-10-03 2026-10-03 今回の失敗表示・非strict・未完了stream修�
 x 2026-10-03 2026-10-03 旧NDの未完照合と現行台帳への移行を完了し旧NDとlogを削除する +governance @unattended id:0012
 x 2026-10-03 2026-10-03 繰り返す接続断を調べられるよう復旧したOTelで既存失敗を照合しNSError分類・失敗段階・経過時間を補い保存と実機配送を検証する +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0004
 x 2026-10-04 2026-10-04 miniで署名・exportした版4を固定配布ページへ公開し、署名URLのIPA取得とBark受付を確認する +distribution see:docs/benchmarks/2026-10-03-ota-distribution.md id:0020
+x 2026-10-04 2026-10-04 完了記録・現行コードと残件を照合し重複と古い前提を除き検証担当を整理する +governance @unattended id:0021
