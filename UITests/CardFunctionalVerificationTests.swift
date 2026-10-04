@@ -94,8 +94,15 @@ final class CardFunctionalVerificationTests: XCTestCase {
         for _ in 0 ..< 6 where !row.isHittable {
             let bounds = card.frame
             let target = row.frame
-            if target.maxY <= bounds.minY {
-                card.swipeDown()
+            let header = card.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@", "Functional verification 0016")).firstMatch
+            let visibleTop = header.isHittable ? header.frame.maxY + 8 : bounds.minY
+            print("REVEAL row=\(target) visibleTop=\(visibleTop)")
+            if target.maxY <= visibleTop {
+                // Keep the drag inside card content; the sheet chrome has a different gesture owner.
+                let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+                let end = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65))
+                start.press(forDuration: 0.05, thenDragTo: end)
             } else if target.minY >= bounds.maxY {
                 card.swipeUp()
             } else {
