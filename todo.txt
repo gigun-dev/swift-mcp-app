@@ -9,3 +9,4 @@
 2026-10-03 複数サーバー混在とツール無効化後の次チャットで設定どおりの呼び出しが行われるか検証する +chat @unattended see:docs/design/06-composer-tool-picker.md id:0017
 2026-10-03 接続断を個別対応にせず観察できるよう新しい失敗属性の保存を制御した切断で検証し自然発生の-1005を段階・時間・モデル別に追跡する +chat +observability @unattended see:docs/benchmarks/2026-10-03-tool-failure-and-stream-verification.md id:0018
 2026-10-03 新しい配布版でTailscaleなしの起動と既存認証保持を本人が確認する（配布通知からのインストール確認はasc-mcpの0003、以前のBark→Safari→installは確認済み） +distribution @user see:docs/benchmarks/2026-10-03-ota-distribution.md id:0019
+2026-10-04 新しいcheckoutでもiOSビルドできるよう依存再解決のrevision取得失敗を切り分けPackage.resolvedとXcode依存キャッシュの扱いを揃える（今回の台帳変更は既存固定依存で検証） +build @unattended id:0022
