@@ -9,14 +9,17 @@ import OpenTelemetryProtocolExporterHttp
 public struct OpenTelemetryConfiguration: Sendable, Equatable {
     public let endpoint: URL
     public let headers: [(String, String)]
+    public let resourceAttributes: [String: String]
 
-    public init(endpoint: URL, headers: [(String, String)] = []) {
+    public init(endpoint: URL, headers: [(String, String)] = [], resourceAttributes: [String: String] = [:]) {
         self.endpoint = endpoint
         self.headers = headers
+        self.resourceAttributes = resourceAttributes
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.endpoint == rhs.endpoint
+            && lhs.resourceAttributes == rhs.resourceAttributes
             && lhs.headers.map { "\($0.0):\($0.1)" } == rhs.headers.map { "\($0.0):\($0.1)" }
     }
 }
@@ -47,11 +50,20 @@ public final class OpenTelemetryService: TelemetryPort, TraceSink, @unchecked Se
         )
         let processor = BatchSpanProcessor(spanExporter: exporter)
         provider = TracerProviderBuilder()
-            .with(resource: Resource(attributes: ["service.name": .string("swift-mcp-app")]))
+            .with(resource: Self.resource(for: configuration))
             .with(sampler: Samplers.alwaysOn)
             .add(spanProcessor: processor)
             .build()
         tracer = provider.get(instrumentationName: "dev.gigun.mcphost", instrumentationVersion: "1")
+    }
+
+    // Resource attributes apply equally to chat, generation, tool and card spans.
+    // The default keeps shipping behaviour; verification can identify itself without vendor-specific fields.
+    static func resource(for configuration: OpenTelemetryConfiguration) -> OpenTelemetrySdk.Resource {
+        let attributes = configuration.resourceAttributes.mapValues(AttributeValue.string)
+        return OpenTelemetrySdk.Resource(
+            attributes: ["service.name": .string("swift-mcp-app")].merging(attributes) { _, new in new }
+        )
     }
 
     public func emit(_ event: ChatTraceEvent) {

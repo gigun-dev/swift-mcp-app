@@ -73,3 +73,25 @@ Chat送信bodyは7483/700483から304 bytes、Responsesは7468/700468から289 b
 LLM用textは38 UTF-8 bytesで、完全step/card保持とfallbackも成功。stub turnは0.827/3.151 ms。
 Responsesの履歴typed item変換とstream function call/usageも通過した。外部推論・実機・OTel VMの
 操作は含まない。この再検証は未実装の中立契約や保存履歴再開後の縮約を保証しない。
+
+## 実サービスのVTODO機能probe
+
+`LiveVTODOProbeTests`はmacOS上で実MCPの発見・AppsServerProxy・ToolCallRunner・ChatViewModel・
+OpenAICompatClient・標準OTLP送信を通す。`MCPHOST_LIVE_VTODO=1`を明示した実行だけ外部接続する。
+必要な環境変数はテスト冒頭に記載し、通常の`swift test`は資格情報なしでskipする。
+専用リストを指定し、実行口はそのリストの`list-todos`だけを許す。要求・結果・SSE原本は
+`.build/live-vtodo-probe/`（directory 0700、file 0600）へ保存する。失敗した要求も最終回答を待たず退避する。
+
+2026-10-04の実接続ではgpt-5.6-luna/low、公開bridge、実CalDAVの22件を取得し、
+全22タイトルが次LLM入力へ渡り、返却順の短い2件が最終回答へ一致することを確認した。
+LLMに提示したツールは`list-todos`1件。OTLP保存先を再取得し、turn・generation2本・toolの
+4 observationが全てverification環境・正常であることを照合した。保存側の時間は
+turn 16.824秒、初回LLM 4.852秒、tool 1.851秒、最終LLM 10.119秒。
+配送済みアプリの25ツールでの性能比較、OAuth認可UI、実機での使い心地はそれぞれ別の検証で扱う。
+
+同じリストの1000字タイトルを含む回答要求では長時間の生成が続いた。22件の全タイトル要求は
+約299秒後にid欠落のdecodeエラーとなり、元の終端error envelopeは未取得。先頭3件要求も
+1000字タイトルを含み、正常deltaのままresource timeout（-1001）になった。
+現在の送信型はmax_tokensを指定していない。これらは応答上限・独立deadline・長文時の失敗観測を
+検討する0001の実測根拠であり、単にidをoptionalへ変えて成功扱いにはしない。
+probeは独立した180秒deadlineを持つ。通常アプリの設定は変更していない。
