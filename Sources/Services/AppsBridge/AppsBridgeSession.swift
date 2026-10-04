@@ -20,11 +20,12 @@ public struct DisplayModeResolution: Sendable {
 
 /// MCP Apps ホスト側のセッション状態機械。
 ///
-/// 依存は2つだけ:
+/// プロトコル処理の依存:
 ///  - `AppsBridgeTransport`(実装は `WebViewTransport`): View との postMessage 往復
 ///    (Host→View 配送・View→Host 受信ストリーム)。プロトコルに切ってあるのはテスト用の
 ///    インメモリ実装を挿せるようにするため(WebViewTransport のコメント参照・P4-DM H3)。
 ///  - `AppsServerProxy`: passthrough(tools/call・resources/read)を実サーバーへ流す口。
+/// TelemetryPortはカード発操作の終了を観測する。引数・結果本文は送らない。
 /// caldav 非依存(ツール名も structuredContent の形も知らない — 設計 §0)。
 public actor AppsBridgeSession {
     // MARK: - 状態
@@ -109,14 +110,16 @@ public actor AppsBridgeSession {
         // カード発tools/callのハプティクスフック。
         onCardToolCall: (@Sendable () async -> Void)? = nil,
         // ui/open-link の実行フック(既定 nil = 常に拒否)。本番は Features が UIApplication.open へ配線する。
-        onOpenLink: (@Sendable (URL) async -> Bool)? = nil
+        onOpenLink: (@Sendable (URL) async -> Bool)? = nil,
+        telemetry: any TelemetryPort = NullTelemetry()
     ) {
         self.transport = transport
         self.delivery = AppsBridgeDelivery(transport: transport)
         self.passthroughDispatcher = AppsBridgePassthroughDispatcher(
             transport: transport,
             proxy: proxy,
-            onCardToolCall: onCardToolCall
+            onCardToolCall: onCardToolCall,
+            telemetry: telemetry
         )
         self.hostInfo = hostInfo
         self.containerWidth = containerWidth
